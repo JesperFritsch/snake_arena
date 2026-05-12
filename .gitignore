@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated protobuf stubs (generated at build time)
+**/stubs/*_pb2.py
+**/stubs/*_pb2_grpc.py
+**/stubs/*_pb2.pyi
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Build artifacts
+*.log
+dist/
+build/
+target/         # Rust, for later
+
+# Local env
+.env
+.env.local

@@ -1,0 +1,17 @@
+[project]
+name = "snake-arena-runner"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "docker>=7.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[project.scripts]
+runner = "runner.cli:main"

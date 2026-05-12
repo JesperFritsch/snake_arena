@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package snake_sim;
+
+message Coord {
+    int32 x = 1;
+    int32 y = 2;
+}
+
+message SnakeId {
+    int32 id = 1;
+}
+
+message StartLength {
+    int32 length = 1;
+}
+
+message StartPosition {
+    Coord start_position = 1;
+}
+
+message EnvInitData {
+    int32 height = 1;
+    int32 width = 2;
+    int32 free_value = 3;
+    int32 blocked_value = 4;
+    int32 food_value = 5;
+    map<int32, SnakeValues> snake_values = 6;
+    map<int32, Coord> start_positions = 7;
+    bytes base_map = 8;
+    string base_map_dtype = 9;
+}
+
+message SnakeValues {
+    int32 head_value = 1;
+    int32 body_value = 2;
+}
+
+message EnvData {
+    bytes map = 1;
+    map<int32, SnakeRep> snakes = 2;
+    repeated Coord food_locations = 3;
+}
+
+message SnakeRep {
+    bool is_alive = 1;
+    int32 length = 2;
+}
+
+message UpdateResponse {
+    Coord direction = 1;
+}
+
+message Empty {} // Custom Empty message
+
+service RemoteSnake {
+    rpc SetId(SnakeId) returns (Empty);
+    rpc SetStartLength(StartLength) returns (Empty);
+    rpc SetStartPosition(StartPosition) returns (Empty);
+    rpc SetInitData(EnvInitData) returns (Empty); // Updated SetInitData RPC
+    rpc Update(stream EnvData) returns (stream UpdateResponse); // Updated Update RPC
+    rpc Reset(Empty) returns (Empty); // Reset snake
+    rpc Kill(Empty) returns (Empty); // Kill the snake
+}
