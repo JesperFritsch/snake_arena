@@ -36,6 +36,16 @@ def main():
         artifacts_host_dir=args.artifacts_dir,
     )
 
+    if result.artifacts_path:
+        artifact_dir = result.artifacts_path.parent
+    else:
+        artifact_dir = args.artifacts_dir
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    (artifact_dir / "sim.log").write_text(result.sim_logs)
+    for name, logs in result.agent_logs.items():
+        (artifact_dir / f"{name}.log").write_text(logs)
+
     print(f"success: {result.success}")
     print(f"sim exit: {result.sim_exit_code}")
     print(f"artifacts: {result.artifacts_path}")

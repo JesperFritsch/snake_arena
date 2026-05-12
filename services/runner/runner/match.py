@@ -72,6 +72,7 @@ def run_match(
                     read_only=True,
                     tmpfs={"/tmp": "size=64m"},
                     mem_limit=agent_mem_limit,
+                    runtime="runsc",
                     memswap_limit=agent_mem_limit,
                     nano_cpus=int(agent_cpus * 1_000_000_000),
                     pids_limit=agent_pids_limit,

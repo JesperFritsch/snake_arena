@@ -1,4 +1,4 @@
 [language]
 name = "python"
-user_code_filename = "my_snake.py"
-user_code_dest = "/app/harness/usercode/my_snake.py"
+user_code_filename = "snake.py"
+user_code_dest = "/app/harness/usercode/snake.py"
