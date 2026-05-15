@@ -1,0 +1,7 @@
+docker build --no-cache -f sim-image/Dockerfile -t snake-sim:v1 .
+
+# let containers reach out to host
+sudo ufw allow from 172.16.0.0/12 to any port 6000 proto tcp comment "snake_arena runner callback"
+
+
+uv pip install --force-reinstall 'snake_sim @ git+https://github.com/JesperFritsch/snake_sim.git@master'

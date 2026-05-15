@@ -11,6 +11,8 @@ from pathlib import Path
 import docker
 from docker.errors import BuildError, ImageNotFound
 
+from services.common.common.types import BuildResult
+
 log = logging.getLogger(__name__)
 
 
@@ -19,15 +21,6 @@ class LanguageManifest:
     name: str
     user_code_filename: str
     user_code_dest: str
-
-
-@dataclass
-class BuildResult:
-    success: bool
-    image_tag: str | None
-    build_logs: str
-    duration_s: float
-    error: str | None = None
 
 
 def _sandbox_images_dir() -> Path:
@@ -139,6 +132,8 @@ def build_submission(
             build_logs=build_logs,
             duration_s=time.monotonic() - start,
         )
+
+        #TODO: Store the build result.
 
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)

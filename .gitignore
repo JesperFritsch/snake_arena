@@ -25,3 +25,6 @@ target/         # Rust, for later
 # Local env
 .env
 .env.local
+
+# Match artifacts
+sim-artifacts/

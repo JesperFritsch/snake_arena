@@ -36,8 +36,8 @@ def main():
         artifacts_host_dir=args.artifacts_dir,
     )
 
-    if result.artifacts_path:
-        artifact_dir = result.artifacts_path.parent
+    if result.replay_path:
+        artifact_dir = result.replay_path.parent.parent
     else:
         artifact_dir = args.artifacts_dir
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,7 @@ def main():
 
     print(f"success: {result.success}")
     print(f"sim exit: {result.sim_exit_code}")
-    print(f"artifacts: {result.artifacts_path}")
+    print(f"artifacts: {result.replay_path}")
     if result.error:
         print(f"error: {result.error}")
     sys.exit(0 if result.success else 1)
