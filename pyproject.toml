@@ -12,6 +12,7 @@ snake-arena-runner = { workspace = true }
 snake-arena-builder = { workspace = true }
 snake-arena-common = { workspace = true }
 snake-arena-orchestrator = { workspace = true }
+snake-arena-submitter = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -19,4 +20,5 @@ dev = [
     "snake-arena-builder",
     "snake-arena-common",
     "snake-arena-orchestrator",
+    "snake-arena-submitter"
 ]

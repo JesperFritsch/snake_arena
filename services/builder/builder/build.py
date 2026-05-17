@@ -12,8 +12,17 @@ import docker
 from docker.errors import BuildError, ImageNotFound
 
 from sa_common.types import BuildResult
-from sa_common.db.projects import unpack_archive, get_project, Project
-from sa_common.db.projects import get_conn
+from sa_common.db.connection import get_conn
+from sa_common.db.projects import (
+    get_project,
+    Project,
+    record_dev_build_start,
+    record_dev_build_success,
+    record_dev_build_failure,
+    get_project_meta,
+    promote_to_submitted,
+    unpack_archive,
+)
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +66,21 @@ def build_project(
     start = time.monotonic()
     with get_conn() as conn:
         project: Project = get_project(conn, project_id=project_id)
+        if project is None:
+            return BuildResult(
+                success=False, 
+                build_logs="", 
+                duration_s=time.monotonic() - start, 
+                error="project not found"
+            )
+        if project.dev_code_archive is None:
+            return BuildResult(
+                success=False,
+                build_logs="", 
+                duration_s=time.monotonic() - start, 
+                error="project has no dev code"
+            )
+        record_dev_build_start(conn, project_id)
     language = project.language
     user_id = project.user_id
     manifests = discover_languages()
@@ -85,9 +109,9 @@ def build_project(
             error=f"base image not found: {base_image}",
         )
     
-    build_dir = Path(tempfile.mkdtemp(prefix=f"build-{user_id}-{project.name}"))
+    build_dir = Path(tempfile.mkdtemp(prefix=f"build-{user_id}-{safe_name}"))
 
-    unpack_archive(project.code_archive, build_dir)
+    unpack_archive(project.dev_code_archive, build_dir)
 
     if not (build_dir / manifest.user_entry_file).is_file():
         return BuildResult(
@@ -135,14 +159,21 @@ def build_project(
             if entry.get("stream")
         )
 
-        return BuildResult(
+        result = BuildResult(
             success=True,
             image_tag=image_tag,
             build_logs=build_logs,
             duration_s=time.monotonic() - start,
         )
 
-        #TODO: Store the build result.
+        with get_conn(autocommit=True) as conn:
+            if result.success:
+                record_dev_build_success(conn, project_id, image_tag)
+            else:
+                record_dev_build_failure(conn, project_id)
+
+        return result
+
 
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)

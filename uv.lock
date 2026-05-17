@@ -17,6 +17,7 @@ members = [
     "snake-arena-common",
     "snake-arena-orchestrator",
     "snake-arena-runner",
+    "snake-arena-submitter",
 ]
 
 [[package]]
@@ -1238,6 +1239,7 @@ dev = [
     { name = "snake-arena-common" },
     { name = "snake-arena-orchestrator" },
     { name = "snake-arena-runner" },
+    { name = "snake-arena-submitter" },
 ]
 
 [package.metadata]
@@ -1248,6 +1250,7 @@ dev = [
     { name = "snake-arena-common", editable = "services/sa_common" },
     { name = "snake-arena-orchestrator", editable = "services/orchestrator" },
     { name = "snake-arena-runner", editable = "services/runner" },
+    { name = "snake-arena-submitter", editable = "services/submitter" },
 ]
 
 [[package]]
@@ -1256,21 +1259,29 @@ version = "0.1.0"
 source = { editable = "services/builder" }
 dependencies = [
     { name = "docker" },
+    { name = "snake-arena-common" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "docker", specifier = ">=7.0" }]
+requires-dist = [
+    { name = "docker", specifier = ">=7.0" },
+    { name = "snake-arena-common", editable = "services/sa_common" },
+]
 
 [[package]]
 name = "snake-arena-common"
 version = "0.1.0"
 source = { editable = "services/sa_common" }
 dependencies = [
+    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = "==2.13" }]
+requires-dist = [
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "pydantic", specifier = ">=2.13" },
+]
 
 [[package]]
 name = "snake-arena-orchestrator"
@@ -1278,10 +1289,16 @@ version = "0.1.0"
 source = { editable = "services/orchestrator" }
 dependencies = [
     { name = "psycopg", extra = ["binary"] },
+    { name = "snake-arena-common" },
+    { name = "snake-arena-runner" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "psycopg", extras = ["binary"], specifier = ">=3.2" }]
+requires-dist = [
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "snake-arena-common", editable = "services/sa_common" },
+    { name = "snake-arena-runner", editable = "services/runner" },
+]
 
 [[package]]
 name = "snake-arena-runner"
@@ -1289,17 +1306,32 @@ version = "0.1.0"
 source = { editable = "services/runner" }
 dependencies = [
     { name = "docker" },
-    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
+    { name = "snake-arena-common" },
     { name = "snake-sim" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "docker", specifier = ">=7.0" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.13" },
+    { name = "snake-arena-common", editable = "services/sa_common" },
     { name = "snake-sim", git = "https://github.com/JesperFritsch/snake_sim.git?rev=master" },
+]
+
+[[package]]
+name = "snake-arena-submitter"
+version = "0.1.0"
+source = { editable = "services/submitter" }
+dependencies = [
+    { name = "docker" },
+    { name = "snake-arena-common" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "docker", specifier = ">=7.0" },
+    { name = "snake-arena-common", editable = "services/sa_common" },
 ]
 
 [[package]]
@@ -1315,7 +1347,7 @@ dependencies = [
 [[package]]
 name = "snake-sim"
 version = "0.1.1"
-source = { git = "https://github.com/JesperFritsch/snake_sim.git?rev=master#884762fcd44697e01461825c6289bfffd6634359" }
+source = { git = "https://github.com/JesperFritsch/snake_sim.git?rev=master#18e282e49ee6020e27da11634c6c745a714b32b2" }
 dependencies = [
     { name = "bitarray" },
     { name = "grpcio-tools" },

@@ -22,6 +22,9 @@ dist/
 build/
 target/         # Rust, for later
 
+#Postgres
+pg-data/
+
 # Local env
 .env
 .env.local

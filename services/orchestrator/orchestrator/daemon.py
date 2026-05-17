@@ -74,7 +74,7 @@ def run_one_iteration(conn: psycopg.Connection, config: OrchestratorConfig) -> b
 
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
-        setup = resolve_agents(conn, job.submission_ids)
+        setup = resolve_agents(conn, job.project_ids)
 
         # --- The match itself: no transaction, no row locks held ---
         result = run_match(
@@ -88,7 +88,7 @@ def run_one_iteration(conn: psycopg.Connection, config: OrchestratorConfig) -> b
         participants = build_participants(
             result=result,
             project_by_agent_name=setup.project_by_name,
-            submission_by_agent_name=setup.submission_by_name,
+            version_by_agent_name=setup.version_by_name,
             seat_by_agent_name=setup.seat_by_name,
         )
 

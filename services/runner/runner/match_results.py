@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 def build_participants(
     result: MatchResult,
     project_by_agent_name: dict[str, int],
-    submission_by_agent_name: dict[str, int],
+    version_by_agent_name: dict[str, int],
     seat_by_agent_name: dict[str, int],
 ) -> list[ParticipantRow]:
     """Convert a MatchResult into ParticipantRow values for the DB.
@@ -26,7 +26,7 @@ def build_participants(
         result: the runner's MatchResult, possibly without analysis.
         project_by_agent_name: runner setup info — which project each agent
             represents.
-        submission_by_agent_name: runner setup info — which submission each
+        version_by_agent_name: runner setup info — which project version each
             agent was built from.
         seat_by_agent_name: runner setup info — the position the runner
             assigned to each agent in this match. Used for PK disambiguation,
@@ -44,7 +44,7 @@ def build_participants(
             ParticipantRow(
                 seat=seat_by_agent_name[name],
                 project_id=project_by_agent_name[name],
-                submission_id=submission_by_agent_name[name],
+                project_version=version_by_agent_name[name],
             )
             for name in result.agent_logs.keys()
             if name in seat_by_agent_name  # skip anything we didn't set up
@@ -79,7 +79,7 @@ def build_participants(
             ParticipantRow(
                 seat=seat_by_agent_name[agent_name],
                 project_id=project_by_agent_name[agent_name],
-                submission_id=submission_by_agent_name[agent_name],
+                project_version=version_by_agent_name[agent_name],
                 final_length=None,  # TODO: pull from analysis once API confirmed
                 fatal_step=fatal_steps.get(sid),
                 survival_rank=rank_of_snake[sid],

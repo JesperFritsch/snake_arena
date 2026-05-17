@@ -83,7 +83,7 @@ class SimArgs(BaseModel):
 class ParticipantRow(BaseModel):
     seat: int
     project_id: int
-    submission_id: int
+    project_version: int
     final_length: int | None = None
     fatal_step: int | None = None
     survival_rank: int | None = None
