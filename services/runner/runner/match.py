@@ -1,25 +1,30 @@
 # services/runner/runner/match.py
+"""Pure match execution. No database access.
+
+Given a sim image, agent specs, and sim args, this module starts the
+containers, runs the match, collects logs and analysis, and returns a
+MatchResult. Persistence is the orchestrator's job.
+"""
 import logging
+import os
+import socket
 import time
 import uuid
-import os
-import docker
-import socket
 
 from dataclasses import dataclass
 from pathlib import Path
 
+import docker
 from docker.errors import APIError, ImageNotFound, NotFound
 from docker.models.containers import Container
 from docker.models.networks import Network
 
 from snake_sim.environment.interfaces.loop_observable_interface import ILoopObservable
 from snake_sim.loop_observables.socket_observable import SocketObservable
+from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from runner.cpu_budget_observer import CpuBudgetObserver
-from sa_common.types import MatchResult
-
-from snake_sim.analyze.scripts.run_analyzer import analyze
+from sa_common.types import MatchResult, SimArgs
 
 
 log = logging.getLogger(__name__)
@@ -42,7 +47,7 @@ def get_docker_host_ip() -> str:
 def run_match(
     sim_image: str,
     agents: list[AgentSpec],
-    sim_args: list[str],
+    sim_args: SimArgs,
     artifacts_host_dir: Path,
     *,
     match_id: str | None = None,
@@ -130,8 +135,9 @@ def run_match(
             "--record-file", replay_filename,
             "--log-dir", "/tmp",
             "--no-render",
+            "--snake-count", "0",  # don't run any inproc snakes
             "--socket-observer", observable_addr,
-            *sim_args,
+            *sim_args.to_args(),
         ]
 
         sim_net = client.networks.create(f"{match_id}-sim", driver="bridge", internal=False)
@@ -141,7 +147,7 @@ def run_match(
             snake_name_to_container=target_to_container,
             per_step_budget_seconds=0.2,
             initial_budget_seconds=1.0,
-            poll_interval_s=0.01
+            poll_interval_s=0.01,
         )
         loop_observable.add_observer(cpu_observer)
         loop_observable.start()
@@ -163,10 +169,10 @@ def run_match(
             net.connect(sim_container)
 
         try:
-            result = sim_container.wait()
-            exit_code = result.get("StatusCode", -1)
+            ex_result = sim_container.wait()
+            exit_code = ex_result.get("StatusCode", -1)
         except Exception as e:
-            log.warning("sim wait failed", e)
+            log.warning("sim wait failed: %s", e)
             try:
                 sim_container.kill()
             except (NotFound, APIError) as kill_err:

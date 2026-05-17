@@ -1,0 +1,14 @@
+# docker-compose.yml at the repo root
+services:
+  postgres:
+    image: postgres:16
+    container_name: snake-arena-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: snake_arena
+      POSTGRES_PASSWORD: dev_password_change_me
+      POSTGRES_DB: snake_arena
+    ports:
+      - "127.0.0.1:5432:5432"     # localhost only, not exposed
+    volumes:
+      - ./pg-data:/var/lib/postgresql/data

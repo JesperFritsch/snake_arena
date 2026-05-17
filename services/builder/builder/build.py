@@ -11,7 +11,9 @@ from pathlib import Path
 import docker
 from docker.errors import BuildError, ImageNotFound
 
-from services.common.common.types import BuildResult
+from sa_common.types import BuildResult
+from sa_common.db.projects import unpack_archive, get_project, Project
+from sa_common.db.projects import get_conn
 
 log = logging.getLogger(__name__)
 
@@ -19,8 +21,8 @@ log = logging.getLogger(__name__)
 @dataclass
 class LanguageManifest:
     name: str
-    user_code_filename: str
     user_code_dest: str
+    user_entry_file: str
 
 
 def _sandbox_images_dir() -> Path:
@@ -46,18 +48,17 @@ def discover_languages() -> dict[str, LanguageManifest]:
     return languages
 
 
-def build_submission(
-    language: str,
-    user_code: bytes | Path,
-    user_id: str,
-    submission_id: str,
-    *,
+def build_project(
+    project_id: int,
     base_image_version: str = "v1",
     registry_prefix: str = "snake",
     build_timeout_s: int = 60,
 ) -> BuildResult:
     start = time.monotonic()
-
+    with get_conn() as conn:
+        project: Project = get_project(conn, project_id=project_id)
+    language = project.language
+    user_id = project.user_id
     manifests = discover_languages()
     if language not in manifests:
         return BuildResult(
@@ -68,8 +69,12 @@ def build_submission(
     manifest = manifests[language]
 
     client = docker.from_env()
+    safe_name = "".join(
+        c if c.isalnum() or c in "-_." else "-"
+        for c in project.name.lower()
+    )
     base_image = f"{registry_prefix}-base-{language}:{base_image_version}"
-    submission_tag = f"{registry_prefix}-submission-{user_id}-{submission_id}:latest"
+    image_tag = f"{registry_prefix}-{user_id}-{safe_name}:latest"
 
     try:
         client.images.get(base_image)
@@ -79,32 +84,36 @@ def build_submission(
             duration_s=time.monotonic() - start,
             error=f"base image not found: {base_image}",
         )
+    
+    build_dir = Path(tempfile.mkdtemp(prefix=f"build-{user_id}-{project.name}"))
 
-    if isinstance(user_code, Path):
-        if not user_code.is_file():
-            return BuildResult(
-                success=False, image_tag=None, build_logs="",
-                duration_s=time.monotonic() - start,
-                error=f"user code file not found: {user_code}",
-            )
-        code_bytes = user_code.read_bytes()
-    else:
-        code_bytes = user_code
+    unpack_archive(project.code_archive, build_dir)
 
-    build_dir = Path(tempfile.mkdtemp(prefix=f"build-{submission_id}-"))
-    try:
-        (build_dir / manifest.user_code_filename).write_bytes(code_bytes)
-        (build_dir / "Dockerfile").write_text(
-            f"FROM {base_image}\n"
-            f"COPY {manifest.user_code_filename} {manifest.user_code_dest}\n"
+    if not (build_dir / manifest.user_entry_file).is_file():
+        return BuildResult(
+            success=False, image_tag=None, build_logs="",
+            duration_s=time.monotonic() - start,
+            error=f"{manifest.user_entry_file} file not found in project '{project.name}'",
         )
 
-        log.info("building %s from %s", submission_tag, base_image)
+    try:
+        (build_dir / "Dockerfile").write_text(
+            f"FROM {base_image}\n"
+            f"COPY . {manifest.user_code_dest}\n"
+        )
+
+        (build_dir / ".dockerignore").write_text(
+            "Dockerfile\n"
+            ".dockerignore\n"
+        )
+
+
+        log.info("building %s from %s", image_tag, base_image)
 
         try:
             image, log_stream = client.images.build(
                 path=str(build_dir),
-                tag=submission_tag,
+                tag=image_tag,
                 rm=True,
                 forcerm=True,
                 pull=False,
@@ -128,7 +137,7 @@ def build_submission(
 
         return BuildResult(
             success=True,
-            image_tag=submission_tag,
+            image_tag=image_tag,
             build_logs=build_logs,
             duration_s=time.monotonic() - start,
         )

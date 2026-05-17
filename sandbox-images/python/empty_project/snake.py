@@ -32,5 +32,5 @@ class Snake:
         # providing your snake with necessary data about the current state of the environment, 
         # which you can use to decide which direction to move in
         # return a tuple representing the direction you want to move in 
-        # (e.g. (0, 1) for up, (0, -1) for down, (-1, 0) for left, (1, 0) for right), or return None to not move
-        return (0, 1)  # example: always move up
+        # (e.g. (0, -1) for up, (0, 1) for down, (-1, 0) for left, (1, 0) for right), or return None to not move
+        return (0, 1)  # example: always move down

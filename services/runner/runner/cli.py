@@ -1,10 +1,17 @@
 # services/runner/runner/cli.py
+"""Ad-hoc single-match CLI for the runner.
+
+This CLI does not interact with the database — it just runs a match and
+writes logs/artifacts to disk. For queue-driven execution (with DB
+persistence), use the orchestrator daemon instead.
+"""
 import argparse
 import logging
 import sys
 from pathlib import Path
 
 from runner.match import AgentSpec, run_match
+from sa_common.types import SimArgs
 
 
 def main():
@@ -32,7 +39,7 @@ def main():
     result = run_match(
         sim_image=args.sim_image,
         agents=agents,
-        sim_args=args.sim_args,
+        sim_args=SimArgs.from_args(args.sim_args),
         artifacts_host_dir=args.artifacts_dir,
     )
 

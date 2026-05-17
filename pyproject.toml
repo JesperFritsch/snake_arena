@@ -11,10 +11,12 @@ members = ["services/*", "sa_common"]
 snake-arena-runner = { workspace = true }
 snake-arena-builder = { workspace = true }
 snake-arena-common = { workspace = true }
+snake-arena-orchestrator = { workspace = true }
 
 [dependency-groups]
 dev = [
     "snake-arena-runner",
     "snake-arena-builder",
     "snake-arena-common",
+    "snake-arena-orchestrator",
 ]

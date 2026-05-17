@@ -1,9 +1,9 @@
 [project]
-name = "snake-arena-common"
+name = "snake-arena-orchestrator"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic==2.13"
+    "psycopg[binary]>=3.2",
 ]
 
 [build-system]
@@ -14,5 +14,4 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 
 [project.scripts]
-db_user = "sa_common.db.users:main"
-db_project = "sa_common.db.projects:main"
+runner = "runner.cli:main"
