@@ -1,13 +1,17 @@
 # services/orchestrator/orchestrator/cli.py
 """Entry point for the orchestrator.
 
-Two modes:
+Two daemons share this CLI:
+    match    poll match_jobs, dispatch matches via the runner
+    build    poll build_jobs, build project images via the builder
+
+Each supports:
     (default)   long-running daemon, polls the queue forever
     --once      claim and process one job, then exit
 
 Exit codes for --once:
-    0   one job processed (whether the job itself succeeded or failed)
-    1   the orchestrator crashed while trying to process
+    0   one job processed (whether it succeeded or failed)
+    1   the daemon crashed while trying to process
     2   queue was empty; nothing to do
 """
 from __future__ import annotations
@@ -19,63 +23,113 @@ import signal
 import sys
 import threading
 from pathlib import Path
+from typing import Any, Callable
 
+import psycopg
 from sa_common.db.connection import get_conn
 
-from orchestrator.daemon import OrchestratorConfig, run_forever, run_one_iteration
+from orchestrator.runner_daemon import (
+    RunnerDaemonConfig,
+    run_forever as run_match_forever,
+    run_one_iteration as run_match_iteration,
+)
+from orchestrator.builder_daemon import (
+    BuildDaemonConfig,
+    run_forever as run_build_forever,
+    run_one_iteration as run_build_iteration,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="snake_arena orchestrator")
-    parser.add_argument(
+    parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    p_match = subparsers.add_parser("match", help="poll match_jobs and run matches")
+    p_match.add_argument(
         "--sim-image",
         default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
         help="Docker image tag for the sim (env: ORCHESTRATOR_SIM_IMAGE)",
     )
-    parser.add_argument(
+    p_match.add_argument(
         "--artifacts-dir",
         type=Path,
         default=Path(os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts")),
         help="Host directory for match artifacts (env: ORCHESTRATOR_ARTIFACTS_DIR)",
     )
-    parser.add_argument(
-        "--poll-interval",
-        type=float,
-        default=float(os.environ.get("ORCHESTRATOR_POLL_INTERVAL_S", "1.0")),
-        help="Seconds to sleep when the queue is empty (daemon mode only)",
+    _add_shared_args(p_match, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
+
+    p_build = subparsers.add_parser("build", help="poll build_jobs and build project images")
+    p_build.add_argument(
+        "--registry-prefix",
+        default=os.environ.get("BUILDER_REGISTRY_PREFIX", "snake"),
     )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Process at most one job, then exit. Exit 2 if queue is empty.",
+    p_build.add_argument(
+        "--build-timeout",
+        type=int,
+        default=int(os.environ.get("BUILDER_BUILD_TIMEOUT_S", "60")),
     )
-    parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
+    _add_shared_args(p_build, default_poll=2.0, poll_env="BUILDER_POLL_INTERVAL_S")
+
     args = parser.parse_args()
 
     logging.basicConfig(
         level=args.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    log = logging.getLogger("orchestrator")
+    log = logging.getLogger(f"orchestrator.{args.command}")
 
-    if not args.sim_image:
-        print("--sim-image or ORCHESTRATOR_SIM_IMAGE is required", file=sys.stderr)
-        sys.exit(2)
+    if args.command == "match":
+        if not args.sim_image:
+            print("--sim-image or ORCHESTRATOR_SIM_IMAGE is required", file=sys.stderr)
+            sys.exit(2)
+        config = RunnerDaemonConfig(
+            sim_image=args.sim_image,
+            artifacts_dir=args.artifacts_dir,
+            poll_interval_s=args.poll_interval,
+        )
+        run_one, run_forever = run_match_iteration, run_match_forever
 
-    config = OrchestratorConfig(
-        sim_image=args.sim_image,
-        artifacts_dir=args.artifacts_dir,
-        poll_interval_s=args.poll_interval,
-    )
+    elif args.command == "build":
+        config = BuildDaemonConfig(
+            registry_prefix=args.registry_prefix,
+            build_timeout_s=args.build_timeout,
+            poll_interval_s=args.poll_interval,
+        )
+        run_one, run_forever = run_build_iteration, run_build_forever
+
+    else:
+        # argparse `required=True` should prevent this
+        raise RuntimeError(f"unknown command: {args.command}")
 
     if args.once:
-        _run_once(config, log)
-        return  # unreachable; _run_once always exits
+        _run_once(config, run_one, log)
+    else:
+        _run_daemon(config, run_forever, log)
 
-    _run_daemon(config, log)
+
+def _add_shared_args(
+    p: argparse.ArgumentParser, *, default_poll: float, poll_env: str
+) -> None:
+    p.add_argument(
+        "--poll-interval",
+        type=float,
+        default=float(os.environ.get(poll_env, str(default_poll))),
+        help="Seconds to sleep when the queue is empty (daemon mode only)",
+    )
+    p.add_argument(
+        "--once",
+        action="store_true",
+        help="Process at most one job, then exit. Exit 2 if queue is empty.",
+    )
 
 
-def _run_once(config: OrchestratorConfig, log: logging.Logger) -> None:
+def _run_once(
+    config: Any,
+    run_one: Callable[[psycopg.Connection, Any], bool],
+    log: logging.Logger,
+) -> None:
     """Single-shot mode: claim one job, run it, exit.
 
     Doesn't install signal handlers — Ctrl-C produces a normal
@@ -83,7 +137,7 @@ def _run_once(config: OrchestratorConfig, log: logging.Logger) -> None:
     """
     try:
         with get_conn(autocommit=True) as conn:
-            had_work = run_one_iteration(conn, config)
+            had_work = run_one(conn, config)
     except KeyboardInterrupt:
         log.warning("interrupted")
         sys.exit(1)
@@ -99,11 +153,15 @@ def _run_once(config: OrchestratorConfig, log: logging.Logger) -> None:
         sys.exit(2)
 
 
-def _run_daemon(config: OrchestratorConfig, log: logging.Logger) -> None:
+def _run_daemon(
+    config: Any,
+    run_forever: Callable[[Any, threading.Event], None],
+    log: logging.Logger,
+) -> None:
     """Long-running mode: poll the queue, process jobs as they appear.
 
     Installs SIGINT/SIGTERM handlers so the daemon finishes its current
-    iteration cleanly instead of being killed mid-match.
+    iteration cleanly instead of being killed mid-job.
     """
     shutdown = threading.Event()
 

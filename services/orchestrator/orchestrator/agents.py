@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import psycopg
-
 from runner.match import AgentSpec
 from sa_common.db.projects import get_project_meta
 

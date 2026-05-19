@@ -51,6 +51,7 @@ def build_participants(
         ]
 
     analysis = result.run_analysis
+    tags_to_names = result.tags_to_names
     snake_tags = analysis.env_meta_data.snake_tags  # snake_id -> agent_name
     fatal_steps = analysis.fatal_steps
     final_step = analysis.final_step_idx
@@ -66,7 +67,9 @@ def build_participants(
 
     participants: list[ParticipantRow] = []
     for sid in snake_ids:
-        agent_name = snake_tags.get(sid)
+        agent_tag = snake_tags.get(sid)
+        agent_name = tags_to_names.get(agent_tag)
+        print(agent_name, seat_by_agent_name)
         if agent_name is None or agent_name not in seat_by_agent_name:
             log.warning(
                 "snake_id %s has no setup mapping (tag=%r); skipping",

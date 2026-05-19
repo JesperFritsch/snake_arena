@@ -4,7 +4,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-VERSION="${VERSION:-v1}"
 REGISTRY="${REGISTRY:-snake}"  # local tag prefix; replace later for a real registry
 
 LANGUAGES=()
@@ -15,7 +14,7 @@ done
 
 for lang in "${LANGUAGES[@]}"; do
     dockerfile="sandbox-images/${lang}/Dockerfile"
-    tag="${REGISTRY}-base-${lang}:${VERSION}"
+    tag="${REGISTRY}-base-${lang}"
 
     echo "==> building ${tag}"
     docker build -f "$dockerfile" -t "$tag" .

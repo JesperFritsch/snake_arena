@@ -83,6 +83,7 @@ def run_match(
             )
 
         target_to_container: dict[str, Container] = {}
+        target_to_name: dict[str, str] = {}
         targets: list[str] = []
         for agent, net in zip(agents, networks):
             target = f"{agent.name}:50051"
@@ -109,12 +110,10 @@ def run_match(
                 )
                 agent_containers.append(container)
                 target_to_container[target] = container
+                target_to_name[target] = agent.name
             except ImageNotFound:
                 return MatchResult(
                     success=False,
-                    sim_exit_code=-1,
-                    sim_logs="",
-                    agent_logs={},
                     error=f"agent image not found: {agent.image}",
                 )
 
@@ -122,8 +121,6 @@ def run_match(
         if not _wait_for_agents_ready(agent_containers, timeout=grpc_ready_timeout_s):
             return MatchResult(
                 success=False,
-                sim_exit_code=-1,
-                sim_logs="",
                 agent_logs=_collect_agent_logs(agent_containers),
                 error="agents not ready within timeout",
             )
@@ -193,9 +190,9 @@ def run_match(
 
         return MatchResult(
             success=(exit_code == 0 and replay_path is not None),
-            sim_exit_code=exit_code,
             sim_logs=sim_logs,
             agent_logs=agent_logs,
+            tags_to_names=target_to_name,
             replay_path=replay_path,
             run_analysis=run_analysis,
         )

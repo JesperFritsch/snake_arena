@@ -11,6 +11,8 @@ dependencies = [
 db_user = "sa_common.db.users:main"
 db_project = "sa_common.db.projects:main"
 db_match_jobs = "sa_common.db.match_jobs:main"
+db_build_jobs = "sa_common.db.build_jobs:main"
+db_matches = "sa_common.db.matches:main"
 
 [build-system]
 requires = ["hatchling"]

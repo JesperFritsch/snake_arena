@@ -14,12 +14,7 @@ def main():
         type=int,
         help="Project ID to build",
     )
-
-    parser.add_argument(
-        "--base-version",
-        default="v1",
-    )
-
+    
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -34,7 +29,6 @@ def main():
 
     result = build_project(
         project_id=args.project_id,
-        base_image_version=args.base_version,
     )
 
     print(f"success: {result.success}")

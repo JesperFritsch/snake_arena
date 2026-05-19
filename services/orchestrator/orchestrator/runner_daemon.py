@@ -44,7 +44,7 @@ from orchestrator.agents import SetupError, resolve_agents
 log = logging.getLogger(__name__)
 
 
-class OrchestratorConfig:
+class RunnerDaemonConfig:
     """Static config for one daemon process."""
     def __init__(
         self,
@@ -57,7 +57,7 @@ class OrchestratorConfig:
         self.poll_interval_s = poll_interval_s
 
 
-def run_one_iteration(conn: psycopg.Connection, config: OrchestratorConfig) -> bool:
+def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> bool:
     """Run one claim-and-execute cycle. Returns True if work was done.
 
     Callers should sleep when this returns False, then loop again.
@@ -124,7 +124,7 @@ def run_one_iteration(conn: psycopg.Connection, config: OrchestratorConfig) -> b
     return True
 
 
-def run_forever(config: OrchestratorConfig, shutdown: Event) -> None:
+def run_forever(config: RunnerDaemonConfig, shutdown: Event) -> None:
     """Main daemon loop. `shutdown` is a threading.Event; set it to stop."""
     log.info("orchestrator starting, polling every %.2fs", config.poll_interval_s)
     with get_conn(autocommit=True) as conn:

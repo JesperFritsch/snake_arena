@@ -113,9 +113,26 @@ CREATE TABLE match_jobs (
     error         TEXT
 );
 
+CREATE TABLE build_jobs (
+    id           BIGSERIAL PRIMARY KEY,
+    project_id   BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status       job_status NOT NULL DEFAULT 'queued',
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at   TIMESTAMPTZ,
+    finished_at  TIMESTAMPTZ,
+    error        TEXT
+);
+
 -- Indexes
+
 CREATE INDEX idx_match_jobs_queued
     ON match_jobs(requested_at) WHERE status = 'queued';
+
+CREATE INDEX idx_build_jobs_queued
+    ON build_jobs(requested_at) WHERE status = 'queued';
+    
+CREATE INDEX idx_build_jobs_project
+    ON build_jobs(project_id);
 
 CREATE INDEX idx_match_participants_project
     ON match_participants(project_id);

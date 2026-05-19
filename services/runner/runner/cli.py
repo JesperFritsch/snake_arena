@@ -54,7 +54,6 @@ def main():
         (artifact_dir / f"{name}.log").write_text(logs)
 
     print(f"success: {result.success}")
-    print(f"sim exit: {result.sim_exit_code}")
     print(f"artifacts: {result.replay_path}")
     if result.error:
         print(f"error: {result.error}")

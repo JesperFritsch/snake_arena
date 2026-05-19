@@ -10,9 +10,9 @@ from snake_sim.analyze.scripts.run_analyzer import RunAnalysis
 @dataclass
 class MatchResult:
     success: bool
-    sim_exit_code: int
-    sim_logs: str
-    agent_logs: dict[str, str]
+    sim_logs: str | None = None
+    agent_logs: dict[str, str] | None = Field(default_factory={})
+    tags_to_names: dict[str, str] | None = Field(default_factory={})
     replay_path: Path | None = None
     run_analysis: RunAnalysis | None = None 
     error: str | None = None
@@ -21,9 +21,9 @@ class MatchResult:
 @dataclass
 class BuildResult:
     success: bool
-    image_tag: str | None
-    build_logs: str
     duration_s: float
+    image_tag: str | None = None
+    build_logs: str | None = None
     error: str | None = None
 
 
