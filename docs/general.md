@@ -5,3 +5,6 @@ sudo ufw allow from 172.16.0.0/12 to any port 6000 proto tcp comment "snake_aren
 
 
 uv pip install --force-reinstall 'snake_sim @ git+https://github.com/JesperFritsch/snake_sim.git@master'
+
+# from root
+docker compose up --scale runner=4 --scale builder=2

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import docker
+from docker import DockerClient
 from docker.errors import APIError, ImageNotFound, NotFound
 from docker.models.containers import Container
 from docker.models.networks import Network
@@ -25,6 +26,7 @@ from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from runner.cpu_budget_observer import CpuBudgetObserver
 from sa_common.types import MatchResult, SimArgs
+from runner.router import router_from_env, Router
 
 
 log = logging.getLogger(__name__)
@@ -34,15 +36,7 @@ log = logging.getLogger(__name__)
 class AgentSpec:
     image: str
     name: str           # used as DNS name on the agent's private network
-
-
-def get_docker_host_ip() -> str:
-    """The host IP reachable from inside a Docker container on a default bridge."""
-    try:
-        return socket.gethostbyname("host.docker.internal")
-    except socket.gaierror:
-        return "172.17.0.1"
-
+    
 
 def run_match(
     sim_image: str,
@@ -50,28 +44,24 @@ def run_match(
     sim_args: SimArgs,
     artifacts_host_dir: Path,
     *,
+    router: Router,
+    d_client: DockerClient,
     match_id: str | None = None,
     agent_mem_limit: str = "512m",
     agent_cpus: float = 1.0,
     agent_pids_limit: int = 128,
     grpc_ready_timeout_s: int = 15,
 ) -> MatchResult:
-    client = docker.from_env()
     match_id = match_id or f"match-{uuid.uuid4().hex[:8]}"
     artifacts_host_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(artifacts_host_dir, 0o777)
 
     replay_filename = f"{match_id}.run_proto"
 
-    observable_host = get_docker_host_ip()
-    observable_port = 6000
-    observable_addr = f"{observable_host}:{observable_port}"
-
     networks: list[Network] = []
     agent_containers: list[Container] = []
     sim_container: Container | None = None
 
-    loop_observable = SocketObservable(bind_port=observable_port)
 
     try:
         # one private network per agent — agents can't see each other
@@ -79,7 +69,7 @@ def run_match(
             net_name = f"{match_id}-{agent.name}"
             log.info("creating network %s", net_name)
             networks.append(
-                client.networks.create(net_name, driver="bridge", internal=True)
+                d_client.networks.create(net_name, driver="bridge", internal=True)
             )
 
         target_to_container: dict[str, Container] = {}
@@ -90,7 +80,7 @@ def run_match(
             targets.append(target)
             log.info("starting agent %s (%s) on %s", agent.name, agent.image, net.name)
             try:
-                container = client.containers.run(
+                container = d_client.containers.run(
                     agent.image,
                     name=f"{match_id}-{agent.name}",
                     network=net.name,
@@ -125,6 +115,12 @@ def run_match(
                 error="agents not ready within timeout",
             )
 
+        sim_net = d_client.networks.create(f"{match_id}-sim", driver="bridge", internal=False)
+        networks.append(sim_net)
+        router.attach(sim_net)
+        loop_observable = SocketObservable()
+        observable_addr = router.address_for(sim_net, loop_observable.port)
+
         full_sim_args = [
             "compute",
             "--external-snake-targets", *targets,
@@ -137,9 +133,6 @@ def run_match(
             *sim_args.to_args(),
         ]
 
-        sim_net = client.networks.create(f"{match_id}-sim", driver="bridge", internal=False)
-        networks.append(sim_net)
-
         cpu_observer = CpuBudgetObserver(
             snake_name_to_container=target_to_container,
             per_step_budget_seconds=0.2,
@@ -150,7 +143,7 @@ def run_match(
         loop_observable.start()
 
         log.info("starting sim with args: %s", full_sim_args)
-        sim_container = client.containers.run(
+        sim_container = d_client.containers.run(
             sim_image,
             command=full_sim_args,
             network=sim_net.name,
@@ -198,7 +191,13 @@ def run_match(
         )
 
     finally:
-        _cleanup(sim_container, agent_containers, networks, loop_observable)
+        _cleanup(
+            sim_container, 
+            agent_containers, 
+            networks, 
+            router, 
+            loop_observable
+        )
 
 
 def _wait_for_agents_ready(containers: list[Container], timeout: int) -> bool:
@@ -260,6 +259,7 @@ def _cleanup(
     sim: Container | None,
     agents: list[Container],
     networks: list[Network],
+    router: Router,
     loop_observable: ILoopObservable | None,
 ) -> None:
     # CONTAINERS FIRST — these are the resources that matter most.
@@ -271,8 +271,10 @@ def _cleanup(
 
     # Networks next — quick, but only useful once their containers are gone.
     for net in networks:
+        _safe(router.detach, net, _label=f"Router detach {net.name}")
         _safe(net.remove, _label=f"network {net.name}")
 
     # Observable last — may block on thread join, but no resources leak if it does.
     if loop_observable is not None:
         _safe(loop_observable.stop, _label="loop observable")
+    

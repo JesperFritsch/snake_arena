@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+import docker
 
 from threading import Event
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from pathlib import Path
 import psycopg
 
 from runner.match import run_match
+from runner.router import router_from_env, Router
 from runner.match_results import build_participants
 from sa_common.db.match_jobs import (
     claim_one_queued_job,
@@ -42,7 +44,8 @@ from sa_common.types import SimArgs
 from orchestrator.agents import SetupError, resolve_agents
 
 log = logging.getLogger(__name__)
-
+d_client = docker.from_env()
+router = router_from_env(d_client)
 
 class RunnerDaemonConfig:
     """Static config for one daemon process."""
@@ -75,7 +78,6 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
         setup = resolve_agents(conn, job.project_ids)
-
         # --- The match itself: no transaction, no row locks held ---
         result = run_match(
             sim_image=config.sim_image,
@@ -83,6 +85,8 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             sim_args=sim_args,
             artifacts_host_dir=config.artifacts_dir,
             match_id=match_uuid,
+            router=router,
+            d_client=d_client
         )
 
         participants = build_participants(

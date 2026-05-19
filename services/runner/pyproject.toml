@@ -12,9 +12,6 @@ dependencies = [
 [tool.hatch.metadata]
 allow-direct-references = true
 
-[project.scripts]
-runner = "runner.cli:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

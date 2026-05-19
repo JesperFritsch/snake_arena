@@ -6,7 +6,13 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "snake-arena-common",
     "snake-arena-runner",
+    "snake-arena-builder",
 ]
+
+[tool.uv.sources]
+snake-arena-common  = { workspace = true }
+snake-arena-runner  = { workspace = true }
+snake-arena-builder = { workspace = true }
 
 [project.scripts]
 orchestrator = "orchestrator.cli:main"

@@ -1,9 +1,40 @@
 .git/
+.gitignore
+
+# Python
 .venv/
 venv/
-__pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
+**/*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv
+# (keep uv.lock! it needs to be in the image for `uv sync --frozen`)
+
+
+# Postgres
+pg-data/
+
+# Node / frontend (if applicable)
 node_modules/
-target/
-runs/
+dist/
+build/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs and local artifacts
 *.log
+sim-artifacts/
+*.run_proto
+
+# Docker itself
+Dockerfile
+.dockerignore

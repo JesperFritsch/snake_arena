@@ -1289,6 +1289,7 @@ version = "0.1.0"
 source = { editable = "services/orchestrator" }
 dependencies = [
     { name = "psycopg", extra = ["binary"] },
+    { name = "snake-arena-builder" },
     { name = "snake-arena-common" },
     { name = "snake-arena-runner" },
 ]
@@ -1296,6 +1297,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "snake-arena-builder", editable = "services/builder" },
     { name = "snake-arena-common", editable = "services/sa_common" },
     { name = "snake-arena-runner", editable = "services/runner" },
 ]

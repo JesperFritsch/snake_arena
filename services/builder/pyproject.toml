@@ -7,9 +7,6 @@ dependencies = [
     "snake-arena-common",
 ]
 
-[project.scripts]
-builder = "builder.cli:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
