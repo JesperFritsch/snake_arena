@@ -6,15 +6,17 @@ A project carries two parallel sets of build state on a single row:
                 test-builds update dev_image_tag. No version counter.
 
   submitted_* — the deliberate "I want this to compete" act. Submit
-                promotes dev → submitted (copying the archive, re-tagging
-                the image) and bumps submitted_version.
+                promotes dev → submitted (copying the archive and the dev
+                image tag) and bumps submitted_version.
 
-The dev side is transient: code is overwritten on every save, the image is
-overwritten on every test-build. The submitted side is durable enough that
-matches always reference a meaningful version number, but the code archive
-itself is overwritten on each submit. `match_participants.project_version`
-preserves which version played in any past match, even after the code is
-gone.
+The dev side is transient: code is overwritten on every save. The dev image,
+however, is expected to be tagged immutably per build by the builder (e.g.
+snake-dev-{project_id}:{build_job_id}) rather than overwritten under one
+reused tag. That immutability is what lets submit simply *copy* dev_image_tag
+onto the submitted side: a later test build produces a new, differently-named
+image, so a previously-submitted version keeps pointing at the exact image it
+was promoted from. `match_participants.project_version` preserves which
+version played in any past match, even after the dev code archive is gone.
 
 For listings, prefer ProjectMeta queries to avoid pulling code bytes you
 don't need.
@@ -22,9 +24,11 @@ don't need.
 from __future__ import annotations
 
 import argparse
+import gzip
 import io
 import sys
 import tarfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -171,31 +175,6 @@ def save_dev_code(
         )
 
 
-def submit_project(project_id: int) -> int | None:
-    with get_conn() as conn:
-        project = get_project_meta(conn, project_id)
-        if project is None or project.dev_image_tag is None:
-            raise ValueError("project has no dev build to submit")
-
-        new_version = project.submitted_version + 1
-        safe_name = "".join(c if c.isalnum() or c in "-_." else "-"
-                            for c in project.name.lower())
-        new_tag = f"snake-{project.user_id}-{safe_name}:v{new_version}"
-
-        # Re-tag the existing dev image. Fast — just a pointer.
-        docker_client = docker.from_env()
-        docker_client.images.get(project.dev_image_tag).tag(new_tag)
-
-        # Now the DB. If preconditions fail (dev not ready, code changed),
-        # returns None and we should untag.
-        result = promote_to_submitted(conn, project_id, new_tag)
-        if result is None:
-            docker_client.images.get(new_tag).reload()  # untag would be cleaner
-            return None
-
-        return result
-
-
 # --------------------------------------------------------------------------
 # TEST BUILD — used by the builder service. Each test-run triggers a build
 # that walks: start -> success | failure.
@@ -213,7 +192,13 @@ def record_dev_build_start(conn: Connection, project_id: int) -> None:
 def record_dev_build_success(
     conn: Connection, project_id: int, dev_image_tag: str
 ) -> None:
-    """Record a successful dev build. Overwrites dev_image_tag."""
+    """Record a successful dev build. Overwrites dev_image_tag.
+
+    `dev_image_tag` should be unique per build (e.g. carry the build job id),
+    not a reused name. Submit copies this value onto the submitted side, and a
+    submitted version must keep pointing at the exact image it was promoted
+    from even after later test builds.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -239,20 +224,18 @@ def record_dev_build_failure(conn: Connection, project_id: int) -> None:
 
 # --------------------------------------------------------------------------
 # SUBMIT — promote dev to submitted, bump version. Deliberate user action.
+#
+# This is a pure DB operation: no Docker, no retag. It copies the current dev
+# image tag onto the submitted side. The API (and any other caller) can run
+# this without container-runtime access — it only ever touches DB rows.
 # --------------------------------------------------------------------------
 
-def promote_to_submitted(
-    conn: Connection,
-    project_id: int,
-    submitted_image_tag: str,
-) -> int | None:
+def promote_to_submitted(conn: Connection, project_id: int) -> int | None:
     """Promote the current dev build to submitted and bump version.
 
-    The caller is responsible for retagging the docker image to
-    `submitted_image_tag` BEFORE calling this — the DB is the last step so
-    that a failed docker retag never leaves a row pointing at a missing
-    image. The conventional tag is f"snake-{user_id}-{name}:v{new_version}",
-    so the caller needs to peek the current submitted_version first.
+    Copies dev_code_archive and dev_image_tag onto the submitted columns. No
+    image retag happens here; correctness depends on dev_image_tag being
+    immutable per build (see record_dev_build_success).
 
     Returns the new submitted_version on success.
 
@@ -269,7 +252,7 @@ def promote_to_submitted(
             """
             UPDATE projects
             SET submitted_code_archive = dev_code_archive,
-                submitted_image_tag    = %s,
+                submitted_image_tag    = dev_image_tag,
                 submitted_version      = submitted_version + 1,
                 submitted_at           = NOW()
             WHERE id = %s
@@ -277,15 +260,82 @@ def promote_to_submitted(
               AND dev_built_at >= updated_at
             RETURNING submitted_version
             """,
-            (submitted_image_tag, project_id),
+            (project_id,),
         )
         row = cur.fetchone()
         return row[0] if row else None
 
 
 # --------------------------------------------------------------------------
-# Archive helpers — unchanged
+# Archive helpers
 # --------------------------------------------------------------------------
+
+def _safe_arcname(path: str) -> str:
+    """Normalise a client-supplied relative path into a safe tar member name.
+
+    The browser sends whatever paths its editor holds; the builder later runs
+    extractall() on the archive we produce, so a bad path here is a write
+    outside the build dir. Reject absolute paths and any traversal, collapse
+    redundant separators, and forbid empties.
+    """
+    cleaned = path.strip().replace("\\", "/")
+    if cleaned.startswith("/"):
+        raise ValueError(f"absolute paths not allowed: {path!r}")
+    parts = [seg for seg in cleaned.split("/") if seg not in ("", ".")]
+    if not parts:
+        raise ValueError(f"empty or invalid path: {path!r}")
+    if any(seg == ".." for seg in parts):
+        raise ValueError(f"path escapes archive root: {path!r}")
+    return "/".join(parts)
+
+
+def pack_files(files: Iterable[tuple[str, bytes]]) -> bytes:
+    """Pack (relative_path, content) pairs into a deterministic .tar.gz blob.
+
+    Paths are sanitised (see _safe_arcname) and de-duplicated. Members are
+    sorted and timestamps zeroed so the same file set always produces the same
+    bytes — useful for hashing / change detection.
+    """
+    seen: set[str] = set()
+    entries: list[tuple[str, bytes]] = []
+    for path, data in files:
+        arcname = _safe_arcname(path)
+        if arcname in seen:
+            raise ValueError(f"duplicate path: {arcname!r}")
+        seen.add(arcname)
+        entries.append((arcname, data))
+    entries.sort(key=lambda e: e[0])
+
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+        for arcname, data in entries:
+            info = tarfile.TarInfo(name=arcname)
+            info.size = len(data)
+            info.mtime = 0
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(data))
+
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as gz:
+        gz.write(tar_buf.getvalue())
+    return out.getvalue()
+
+
+def unpack_files(data: bytes) -> list[tuple[str, bytes]]:
+    """Inverse of pack_files: a .tar.gz blob -> sorted (path, content) pairs.
+
+    Only regular files are returned (directory entries are implied by paths).
+    """
+    files: list[tuple[str, bytes]] = []
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            extracted = tar.extractfile(member)
+            files.append((member.name, extracted.read() if extracted else b""))
+    files.sort(key=lambda e: e[0])
+    return files
+
 
 def pack_directory(path: str | Path) -> bytes:
     path = Path(path)
@@ -343,10 +393,6 @@ def cli(argv) -> argparse.Namespace:
 
     submit_parser = subparsers.add_parser("submit")
     submit_parser.add_argument("project_id", type=int)
-    submit_parser.add_argument(
-        "submitted_image_tag",
-        help="The new submitted image tag (caller has already retagged docker)",
-    )
 
     return parser.parse_args(argv)
 
@@ -403,9 +449,7 @@ def main():
                 )
 
             elif args.command == "submit":
-                new_version = promote_to_submitted(
-                    conn, args.project_id, args.submitted_image_tag
-                )
+                new_version = promote_to_submitted(conn, args.project_id)
                 if new_version is None:
                     raise SystemExit(
                         "submit refused: dev not ready or code changed since "

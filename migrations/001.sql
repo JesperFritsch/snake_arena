@@ -7,10 +7,11 @@ CREATE TYPE project_source  AS ENUM ('browser', 'external_image');
 
 -- Identity
 CREATE TABLE users (
-    id           BIGSERIAL PRIMARY KEY,
-    email        TEXT UNIQUE NOT NULL,
-    display_name TEXT NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id            BIGSERIAL PRIMARY KEY,
+    clerk_user_id TEXT UNIQUE NOT NULL,
+    email         TEXT UNIQUE NOT NULL,
+    display_name  TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Projects: one row per agent. Carries both the "dev" (iterative test) and
@@ -130,7 +131,7 @@ CREATE INDEX idx_match_jobs_queued
 
 CREATE INDEX idx_build_jobs_queued
     ON build_jobs(requested_at) WHERE status = 'queued';
-    
+
 CREATE INDEX idx_build_jobs_project
     ON build_jobs(project_id);
 
