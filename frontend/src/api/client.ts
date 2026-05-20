@@ -63,6 +63,7 @@ async function request<T>(
 }
 
 export interface ApiClient {
+  getLanguages(): Promise<string[]>;
   me(): Promise<UserOut>;
   listProjects(): Promise<ProjectMeta[]>;
   createProject(body: ProjectCreate): Promise<ProjectMeta>;
@@ -72,6 +73,7 @@ export interface ApiClient {
   build(id: number): Promise<BuildEnqueueResult>;
   getBuildJob(id: number): Promise<BuildJob>;
   submit(id: number): Promise<SubmitResult>;
+  deleteProject(id: number): Promise<void>;
 }
 
 /** React hook returning an API client bound to the current Clerk session. */
@@ -81,6 +83,7 @@ export function useApi(): ApiClient {
   return useMemo<ApiClient>(() => {
     const g: TokenGetter = () => getToken();
     return {
+      getLanguages: () => request(g, "GET", "/languages"),
       me: () => request(g, "GET", "/me"),
       listProjects: () => request(g, "GET", "/projects"),
       createProject: (body) => request(g, "POST", "/projects", body),
@@ -90,6 +93,7 @@ export function useApi(): ApiClient {
       build: (id) => request(g, "POST", `/projects/${id}/build`),
       getBuildJob: (id) => request(g, "GET", `/build-jobs/${id}`),
       submit: (id) => request(g, "POST", `/projects/${id}/submit`),
+      deleteProject: (id) => request(g, "DELETE", `/projects/${id}`),
     };
   }, [getToken]);
 }

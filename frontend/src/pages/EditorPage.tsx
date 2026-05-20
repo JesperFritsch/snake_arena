@@ -9,13 +9,6 @@ import { useToast } from "../components/Toast";
 
 const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "cancelled"]);
 
-const STARTERS: Record<string, { path: string; content: string }> = {
-  python: { path: "main.py", content: "# your snake agent\n\ndef move(state):\n    pass\n" },
-  javascript: { path: "main.js", content: "// your snake agent\n\nfunction move(state) {}\n" },
-  cpp: { path: "main.cpp", content: "// your snake agent\n\nint main() { return 0; }\n" },
-  rust: { path: "main.rs", content: "// your snake agent\n\nfn main() {}\n" },
-};
-
 function serialize(files: ProjectFile[]): string {
   return JSON.stringify(
     [...files].sort((a, b) => a.path.localeCompare(b.path)).map((f) => [f.path, f.content]),
@@ -28,6 +21,7 @@ export function EditorPage() {
   const api = useApi();
   const { push } = useToast();
 
+  const [languages, setLanguages] = useState<string[]>([]);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
   const [meta, setMeta] = useState<ProjectMeta | null>(null);
   const [files, setFiles] = useState<ProjectFile[]>([]);
@@ -35,7 +29,7 @@ export function EditorPage() {
   const [activePath, setActivePath] = useState<string | null>(null);
 
   const [buildJob, setBuildJob] = useState<BuildJob | null>(null);
-  const [busy, setBusy] = useState<"" | "save" | "build" | "submit">("");
+  const [busy, setBusy] = useState<"" | "save" | "build" | "submit" | "delete">("");
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
 
@@ -52,8 +46,9 @@ export function EditorPage() {
       .map((f) => f.path),
   );
 
-  // ---- load projects on mount --------------------------------------------
+  // ---- load projects and languages on mount ------------------------------
   useEffect(() => {
+    api.getLanguages().then(setLanguages).catch(() => {});
     api
       .listProjects()
       .then((ps) => {
@@ -201,17 +196,16 @@ export function EditorPage() {
   const createProject = async () => {
     const name = window.prompt("Project name")?.trim();
     if (!name) return;
-    const language = (window.prompt("Language (python / javascript / cpp / rust)", "python") ?? "")
+    const langHint = languages.length ? languages.join(" / ") : "e.g. python";
+    const language = (window.prompt(`Language (${langHint})`, languages[0] ?? "") ?? "")
       .trim()
       .toLowerCase();
     if (!language) return;
-    const starter = STARTERS[language] ?? { path: "main.txt", content: "" };
     try {
       const created = await api.createProject({
         name,
         language,
         source: "browser",
-        files: [{ path: starter.path, content: starter.content, encoding: "utf-8" }],
       });
       const next = [created, ...projects];
       setProjects(next);
@@ -219,6 +213,31 @@ export function EditorPage() {
       push(`Created “${name}”.`);
     } catch (e) {
       push(`Could not create project: ${e instanceof ApiError ? e.detail : e}`, "error");
+    }
+  };
+
+  const deleteCurrentProject = async () => {
+    if (!meta) return;
+    if (!window.confirm(`Delete "${meta.name}"? This cannot be undone.`)) return;
+    setBusy("delete");
+    try {
+      await api.deleteProject(meta.id);
+      const next = projects.filter((p) => p.id !== meta.id);
+      setProjects(next);
+      if (next.length) {
+        await selectProject(next[0].id, next);
+      } else {
+        setMeta(null);
+        setFiles([]);
+        setOriginalSig("[]");
+        setActivePath(null);
+        setBuildJob(null);
+      }
+      push(`Deleted "${meta.name}".`);
+    } catch (e) {
+      push(`Could not delete project: ${e instanceof ApiError ? e.detail : e}`, "error");
+    } finally {
+      setBusy("");
     }
   };
 
@@ -241,6 +260,13 @@ export function EditorPage() {
       </select>
       <button className="btn ghost" onClick={createProject}>
         + Project
+      </button>
+      <button
+        className="btn ghost danger"
+        disabled={!meta || busy === "delete"}
+        onClick={deleteCurrentProject}
+      >
+        {busy === "delete" ? "Deleting…" : "Delete"}
       </button>
 
       {meta && (

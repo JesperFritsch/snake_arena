@@ -42,6 +42,10 @@ class Settings:
     pool_max_size: int = 8
 
 
+def get_settings() -> Settings:
+    return load_settings()
+
+
 def load_settings() -> Settings:
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
@@ -63,7 +67,7 @@ def load_settings() -> Settings:
         clerk_audience=os.environ.get("CLERK_AUDIENCE") or None,
         cors_origins=_split_csv(os.environ.get("CORS_ORIGINS")),
         replay_dir=Path(os.environ["REPLAY_DIR"]) if os.environ.get("REPLAY_DIR") else None,
-        templates_dir=Path(os.environ.get("TEMPLATES_DIR", "templates")).resolve(),
+        templates_dir=Path(os.environ.get("TEMPLATES_DIR", "code_templates")).resolve(),
         pool_min_size=int(os.environ.get("DB_POOL_MIN_SIZE", "1")),
         pool_max_size=int(os.environ.get("DB_POOL_MAX_SIZE", "8")),
     )

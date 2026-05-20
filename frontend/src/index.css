@@ -171,6 +171,15 @@ button {
   background: transparent;
 }
 
+.btn.danger {
+  color: var(--red);
+}
+
+.btn.danger:hover:not(:disabled) {
+  border-color: var(--red);
+  background: rgba(255, 93, 93, 0.08);
+}
+
 .select,
 .input {
   background: var(--bg-input);

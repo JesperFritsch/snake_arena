@@ -157,6 +157,18 @@ def list_projects_for_user(conn: Connection, user_id: int) -> list[ProjectMeta]:
 # SAVE — editor save, browser projects only
 # --------------------------------------------------------------------------
 
+def delete_project(conn: Connection, project_id: int) -> bool:
+    """Delete a project row. Returns True if deleted, False if not found.
+
+    Raises psycopg.errors.ForeignKeyViolation if the project is referenced
+    by match_participants (i.e. it has match history). The API layer should
+    catch this and return a 409 rather than silently swallowing the error.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM projects WHERE id = %s RETURNING id", (project_id,))
+        return cur.fetchone() is not None
+
+
 def save_dev_code(
     conn: Connection, project_id: int, dev_code_archive: bytes
 ) -> None:

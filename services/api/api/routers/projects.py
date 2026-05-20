@@ -24,10 +24,13 @@ from fastapi.responses import StreamingResponse
 from psycopg import Connection
 
 from sa_common.db.build_jobs import enqueue_build_job, get_build_job
+from psycopg.errors import ForeignKeyViolation
+
 from sa_common.db.projects import (
     Project,
     ProjectMeta,
     create_project,
+    delete_project,
     get_project,
     get_project_meta,
     list_projects_for_user,
@@ -35,7 +38,7 @@ from sa_common.db.projects import (
     promote_to_submitted,
     save_dev_code,
     unpack_files,
-    read_template_files
+    read_template_files,
 )
 from sa_common.db.users import User
 
@@ -47,6 +50,7 @@ from api.schemas import (
     ProjectFiles,
     SubmitResult,
 )
+from api.settings import get_settings, Settings
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -121,14 +125,23 @@ def create(
     body: ProjectCreate,
     conn: Connection = Depends(get_db),
     user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> ProjectMeta:
-    # Mirrors the projects_dev_code_matches_source CHECK, but as a clean 400.
-    if body.source == "browser" and not body.files:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser projects require files")
     if body.source == "external_image" and body.files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "external_image projects must not include files")
 
-    archive = _pack(body.files) if body.files else None
+    if body.files:
+        archive = _pack(body.files)
+    elif body.source == "browser":
+        template = read_template_files(body.language, settings.templates_dir)
+        if not template:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"no template available for language {body.language!r}",
+            )
+        archive = pack_files(template)
+    else:
+        archive = None
     try:
         project_id = create_project(
             conn,
@@ -256,3 +269,19 @@ def submit(
             "or code changed since the last build)",
         )
     return SubmitResult(submitted_version=new_version)
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete(
+    project_id: int,
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> None:
+    _owned_meta(conn, project_id, user)  # 404 if not found or not owned
+    try:
+        delete_project(conn, project_id)
+    except ForeignKeyViolation:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "cannot delete a project that has match history",
+        )

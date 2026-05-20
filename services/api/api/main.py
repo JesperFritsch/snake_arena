@@ -12,12 +12,12 @@ import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.db import close_pool, init_pool
 from api.routers import jobs, matches, projects
-from api.settings import load_settings
+from api.settings import load_settings, get_settings, Settings
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,14 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["meta"])
     def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/languages", tags=["meta"])
+    def list_languages(settings: Settings = Depends(get_settings)) -> list[str]:
+        """Return the language keys that have starter templates available."""
+        d = settings.templates_dir
+        if not d.is_dir():
+            return []
+        return sorted(p.name for p in d.iterdir() if p.is_dir())
 
     app.include_router(jobs.router)
     app.include_router(projects.router)
