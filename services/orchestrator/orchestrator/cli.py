@@ -38,6 +38,11 @@ from orchestrator.builder_daemon import (
     run_forever as run_build_forever,
     run_one_iteration as run_build_iteration,
 )
+from orchestrator.test_runner_daemon import (
+    TestRunnerDaemonConfig,
+    run_forever as run_test_forever,
+    run_one_iteration as run_test_iteration,
+)
 
 
 def main() -> None:
@@ -59,6 +64,18 @@ def main() -> None:
         help="Host directory for match artifacts (env: ORCHESTRATOR_ARTIFACTS_DIR)",
     )
     _add_shared_args(p_match, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
+
+    p_test = subparsers.add_parser("test-match", help="poll test_match_jobs and run dev test matches")
+    p_test.add_argument(
+        "--sim-image",
+        default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
+    )
+    p_test.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        default=Path(os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts")),
+    )
+    _add_shared_args(p_test, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
 
     p_build = subparsers.add_parser("build", help="poll build_jobs and build project images")
     p_build.add_argument(
@@ -90,6 +107,17 @@ def main() -> None:
             poll_interval_s=args.poll_interval,
         )
         run_one, run_forever = run_match_iteration, run_match_forever
+
+    elif args.command == "test-match":
+        if not args.sim_image:
+            print("--sim-image or ORCHESTRATOR_SIM_IMAGE is required", file=sys.stderr)
+            sys.exit(2)
+        config = TestRunnerDaemonConfig(
+            sim_image=args.sim_image,
+            artifacts_dir=args.artifacts_dir,
+            poll_interval_s=args.poll_interval,
+        )
+        run_one, run_forever = run_test_iteration, run_test_forever
 
     elif args.command == "build":
         config = BuildDaemonConfig(

@@ -72,6 +72,35 @@ export interface UserOut {
   display_name: string;
 }
 
+export interface TestMatchJob {
+  id: number;
+  status: JobStatus | string;
+  player_project_id: number;
+  opponent_project_ids: number[];
+  sim_args: Record<string, unknown>;
+  requested_by: number | null;
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  match_id: number | null;
+  error: string | null;
+}
+
+export interface TestMatchCreate {
+  player_project_id: number;
+  opponent_project_ids: number[];
+  sim_args: { food: number; grid_width?: number; grid_height?: number };
+}
+
+export interface PublicProjectSummary {
+  id: number;
+  name: string;
+  language: string;
+  submitted_version: number;
+  submitted_at: string;
+  user_display_name: string;
+}
+
 // ---- match shapes (used by the stubbed match viewer / leaderboard) --------
 
 export interface ParticipantOut {

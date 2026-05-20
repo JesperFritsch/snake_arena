@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Literal
 
 from psycopg import Connection
-from psycopg.rows import class_row
+from psycopg.rows import class_row, dict_row
 
 from sa_common.db.connection import get_conn
 
@@ -62,6 +62,17 @@ class Project:
     submitted_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass
+class PublicProjectSummary:
+    """Lightweight public view of a submitted project, safe to expose to any user."""
+    id: int
+    name: str
+    language: str
+    submitted_version: int
+    submitted_at: datetime
+    user_display_name: str
 
 
 @dataclass
@@ -151,6 +162,32 @@ def list_projects_for_user(conn: Connection, user_id: int) -> list[ProjectMeta]:
             (user_id,),
         )
         return cur.fetchall()
+
+
+def list_all_submitted(conn: Connection) -> list[PublicProjectSummary]:
+    """All projects with a submitted version, any user — for opponent selection."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT p.id, p.name, p.language, p.submitted_version, p.submitted_at,
+                   u.display_name AS user_display_name
+            FROM projects p
+            JOIN users u ON u.id = p.user_id
+            WHERE p.submitted_version > 0
+            ORDER BY p.submitted_at DESC
+            """
+        )
+        return [
+            PublicProjectSummary(
+                id=row["id"],
+                name=row["name"],
+                language=row["language"],
+                submitted_version=row["submitted_version"],
+                submitted_at=row["submitted_at"],
+                user_display_name=row["user_display_name"],
+            )
+            for row in cur.fetchall()
+        ]
 
 
 # --------------------------------------------------------------------------

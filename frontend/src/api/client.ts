@@ -6,7 +6,10 @@ import type {
   ProjectCreate,
   ProjectFiles,
   ProjectMeta,
+  PublicProjectSummary,
   SubmitResult,
+  TestMatchCreate,
+  TestMatchJob,
   UserOut,
 } from "./types";
 
@@ -76,6 +79,9 @@ export interface ApiClient {
   deleteProject(id: number): Promise<void>;
   getSubmittedFiles(id: number): Promise<ProjectFiles>;
   restoreFromSubmitted(id: number): Promise<ProjectMeta>;
+  listOpponents(): Promise<PublicProjectSummary[]>;
+  enqueueTestMatch(body: TestMatchCreate): Promise<TestMatchJob>;
+  getTestMatchJob(id: number): Promise<TestMatchJob>;
 }
 
 /** React hook returning an API client bound to the current Clerk session. */
@@ -98,6 +104,9 @@ export function useApi(): ApiClient {
       deleteProject: (id) => request(g, "DELETE", `/projects/${id}`),
       getSubmittedFiles: (id) => request(g, "GET", `/projects/${id}/files/submitted`),
       restoreFromSubmitted: (id) => request(g, "POST", `/projects/${id}/restore`),
+      listOpponents: () => request(g, "GET", "/test-matches/opponents"),
+      enqueueTestMatch: (body) => request(g, "POST", "/test-matches", body),
+      getTestMatchJob: (id) => request(g, "GET", `/test-matches/${id}`),
     };
   }, [getToken]);
 }

@@ -55,6 +55,12 @@ class MatchJobCreate(BaseModel):
     sim_args: SimArgs
 
 
+class TestMatchCreate(BaseModel):
+    player_project_id: int
+    opponent_project_ids: list[int] = Field(default_factory=list, max_length=4)
+    sim_args: SimArgs
+
+
 # ---- responses ------------------------------------------------------------
 
 class UserOut(BaseModel):
@@ -65,6 +71,15 @@ class UserOut(BaseModel):
 
 class SubmitResult(BaseModel):
     submitted_version: int
+
+
+class PublicProjectSummary(BaseModel):
+    id: int
+    name: str
+    language: str
+    submitted_version: int
+    submitted_at: Any
+    user_display_name: str
 
 
 class ParticipantOut(BaseModel):

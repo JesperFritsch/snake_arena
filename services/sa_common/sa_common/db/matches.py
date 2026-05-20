@@ -41,6 +41,7 @@ class Match:
     finished_at: datetime | None
     replay_r2_key: str | None
     error: str | None
+    is_test: bool = False
 
 
 def _row_to_match(row: dict[str, Any]) -> Match:
@@ -54,13 +55,14 @@ def _row_to_match(row: dict[str, Any]) -> Match:
         finished_at=row["finished_at"],
         replay_r2_key=row["replay_r2_key"],
         error=row["error"],
+        is_test=row["is_test"],
     )
 
 
 _MATCH_COLUMNS = """
     id, match_uuid, status, mode, sim_args,
     started_at, finished_at,
-    replay_r2_key, error
+    replay_r2_key, error, is_test
 """
 
 
@@ -86,6 +88,7 @@ def record_match_result(
     replay_r2_key: str | None,
     error: str | None,
     participants: list[ParticipantRow],
+    is_test: bool = False,
 ) -> int:
     """Persist a match and its participants.
 
@@ -106,9 +109,9 @@ def record_match_result(
             INSERT INTO matches (
                 match_uuid, status, mode, sim_args,
                 started_at, finished_at,
-                replay_r2_key, error
+                replay_r2_key, error, is_test
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -120,6 +123,7 @@ def record_match_result(
                 finished_at,
                 replay_r2_key,
                 error,
+                is_test,
             ),
         )
         row = cur.fetchone()
@@ -188,9 +192,10 @@ def list_matches(
     conn: psycopg.Connection,
     status: str | None = None,
     mode: str | None = None,
+    is_test: bool | None = None,
     limit: int = 20,
 ) -> list[Match]:
-    """List matches, newest first. Optionally filter by status and/or mode."""
+    """List matches, newest first. Optionally filter by status, mode, and/or is_test."""
     where_clauses: list[str] = []
     params: list[Any] = []
     if status is not None:
@@ -199,6 +204,9 @@ def list_matches(
     if mode is not None:
         where_clauses.append("mode = %s")
         params.append(mode)
+    if is_test is not None:
+        where_clauses.append("is_test = %s")
+        params.append(is_test)
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     params.append(limit)
 

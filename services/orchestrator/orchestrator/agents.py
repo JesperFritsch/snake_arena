@@ -56,3 +56,49 @@ def resolve_agents(conn, project_ids: list[int]) -> AgentSetup:
         version_by_name=version_by_name,
         seat_by_name=seat_by_name,
     )
+
+
+def resolve_test_agents(
+    conn,
+    player_project_id: int,
+    opponent_project_ids: list[int],
+) -> AgentSetup:
+    """Resolve a test match: player uses dev_image_tag, opponents use submitted_image_tag.
+
+    The player is always seat 0. project_version=0 in match_participants marks
+    the dev slot (0 is never a valid submitted_version).
+    """
+    specs, project_by_name, version_by_name, seat_by_name = [], {}, {}, {}
+
+    player = get_project_meta(conn, player_project_id)
+    if player is None:
+        raise SetupError(f"player project {player_project_id} not found")
+    if player.dev_build_status != "ready" or player.dev_image_tag is None:
+        raise SetupError(
+            f"player project {player_project_id} has no ready dev build"
+        )
+
+    name = "agent_0"
+    specs.append(AgentSpec(image=player.dev_image_tag, name=name))
+    project_by_name[name] = player.id
+    version_by_name[name] = 0  # 0 = dev (not a submitted version)
+    seat_by_name[name] = 0
+
+    for i, project_id in enumerate(opponent_project_ids, start=1):
+        meta = get_project_meta(conn, project_id)
+        if meta is None:
+            raise SetupError(f"opponent project {project_id} not found")
+        if meta.submitted_version == 0 or meta.submitted_image_tag is None:
+            raise SetupError(f"opponent project {project_id} has no submitted version")
+        name = f"agent_{i}"
+        specs.append(AgentSpec(image=meta.submitted_image_tag, name=name))
+        project_by_name[name] = meta.id
+        version_by_name[name] = meta.submitted_version
+        seat_by_name[name] = i
+
+    return AgentSetup(
+        specs=specs,
+        project_by_name=project_by_name,
+        version_by_name=version_by_name,
+        seat_by_name=seat_by_name,
+    )

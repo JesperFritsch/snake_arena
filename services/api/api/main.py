@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.db import close_pool, init_pool
-from api.routers import jobs, matches, projects
+from api.routers import jobs, matches, projects, test_matches
 from api.settings import load_settings, get_settings, Settings
 
 log = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(projects.router)
     app.include_router(matches.router)
+    app.include_router(test_matches.router)
     return app
 
 

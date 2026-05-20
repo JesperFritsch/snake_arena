@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useApi, ApiError } from "../api/client";
-import type { BuildJob, ProjectFile, ProjectMeta } from "../api/types";
+import type { BuildJob, ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
 import { MatchViewer } from "../components/MatchViewer";
+import { TestDialog } from "../components/TestDialog";
 import { useToast } from "../components/Toast";
 
 const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "cancelled"]);
@@ -33,11 +34,14 @@ export function EditorPage() {
   const [submittedActivePath, setSubmittedActivePath] = useState<string | null>(null);
 
   const [buildJob, setBuildJob] = useState<BuildJob | null>(null);
+  const [testMatchJob, setTestMatchJob] = useState<TestMatchJob | null>(null);
+  const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [busy, setBusy] = useState<"" | "save" | "build" | "submit" | "delete" | "restore">("");
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
 
   const pollRef = useRef<number | null>(null);
+  const testPollRef = useRef<number | null>(null);
 
   const dirty = serialize(files) !== originalSig;
   const dirtyPaths = new Set(
@@ -62,6 +66,7 @@ export function EditorPage() {
       .catch((e) => push(`Failed to load projects: ${e.message}`, "error"));
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
+      if (testPollRef.current) window.clearInterval(testPollRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -72,6 +77,8 @@ export function EditorPage() {
       const m = list.find((p) => p.id === id) ?? (await api.getProject(id));
       setMeta(m);
       setBuildJob(null);
+      setTestMatchJob(null);
+      if (testPollRef.current) { window.clearInterval(testPollRef.current); testPollRef.current = null; }
       setViewMode("dev");
       setSubmittedFiles([]);
       setSubmittedActivePath(null);
@@ -167,6 +174,38 @@ export function EditorPage() {
     },
     [api, meta, push],
   );
+
+  const pollTestMatch = useCallback(
+    (jobId: number) => {
+      if (testPollRef.current) window.clearInterval(testPollRef.current);
+      testPollRef.current = window.setInterval(async () => {
+        try {
+          const job = await api.getTestMatchJob(jobId);
+          setTestMatchJob(job);
+          if (TERMINAL.has(job.status)) {
+            if (testPollRef.current) window.clearInterval(testPollRef.current);
+            testPollRef.current = null;
+            push(
+              job.status === "success" ? "Test match finished." : `Test match ${job.status}.`,
+              job.status === "success" ? "info" : "error",
+            );
+          }
+        } catch (e) {
+          if (testPollRef.current) window.clearInterval(testPollRef.current);
+          testPollRef.current = null;
+          push(`Test match polling failed: ${e instanceof ApiError ? e.detail : e}`, "error");
+        }
+      }, 1500);
+    },
+    [api, push],
+  );
+
+  const onTestMatchEnqueued = (job: TestMatchJob) => {
+    setTestMatchJob(job);
+    setMobileTab("viewer");
+    pollTestMatch(job.id);
+    push(`Test match #${job.id} queued.`);
+  };
 
   const build = async () => {
     if (!meta) return;
@@ -315,6 +354,12 @@ export function EditorPage() {
           {meta.dev_build_status ?? "no build"}
         </span>
       )}
+      {meta && meta.dev_build_status === "ready" && viewMode === "dev" && (
+        <button className="btn ghost" onClick={() => setTestDialogOpen(true)}>
+          Test
+        </button>
+      )}
+
       {meta && meta.submitted_version > 0 && viewMode === "dev" && (
         <button className="btn ghost" disabled={loadingFiles} onClick={viewSubmitted}>
           v{meta.submitted_version} view submitted
@@ -410,6 +455,13 @@ export function EditorPage() {
 
   return (
     <div className="panel">
+      {testDialogOpen && meta && (
+        <TestDialog
+          project={meta}
+          onClose={() => setTestDialogOpen(false)}
+          onEnqueued={onTestMatchEnqueued}
+        />
+      )}
       {toolbar}
 
       {/* mobile tab switcher */}
@@ -437,7 +489,7 @@ export function EditorPage() {
           </Panel>
           <PanelResizeHandle className="resize-handle" />
           <Panel defaultSize={45} minSize={20}>
-            <MatchViewer buildJob={buildJob} />
+            <MatchViewer buildJob={buildJob} testMatchJob={testMatchJob} />
           </Panel>
         </PanelGroup>
       </div>
@@ -446,7 +498,7 @@ export function EditorPage() {
       <div className="panel-body mtabs-body" style={{ overflow: "hidden" }}>
         {mobileTab === "files" && treePane}
         {mobileTab === "editor" && editorPane}
-        {mobileTab === "viewer" && <MatchViewer buildJob={buildJob} />}
+        {mobileTab === "viewer" && <MatchViewer buildJob={buildJob} testMatchJob={testMatchJob} />}
       </div>
     </div>
   );

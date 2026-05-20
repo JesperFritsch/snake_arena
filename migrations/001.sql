@@ -79,7 +79,8 @@ CREATE TABLE matches (
     started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     finished_at   TIMESTAMPTZ,
     replay_r2_key TEXT,
-    error         TEXT
+    error         TEXT,
+    is_test       BOOLEAN NOT NULL DEFAULT FALSE              -- TRUE for user-initiated dev test runs
 );
 
 -- Participants: who played in a match, and which submitted version of them.
@@ -124,6 +125,23 @@ CREATE TABLE build_jobs (
     error        TEXT
 );
 
+-- Test match jobs: user-initiated dev-build matches.
+-- player_project_id uses dev_image_tag; opponents use their submitted_image_tag.
+-- project_version=0 in match_participants marks the player's dev slot.
+CREATE TABLE test_match_jobs (
+    id                   BIGSERIAL PRIMARY KEY,
+    status               job_status NOT NULL DEFAULT 'queued',
+    player_project_id    BIGINT NOT NULL REFERENCES projects(id),
+    opponent_project_ids BIGINT[] NOT NULL DEFAULT '{}',
+    sim_args             JSONB NOT NULL,
+    requested_by         BIGINT REFERENCES users(id),
+    requested_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at           TIMESTAMPTZ,
+    finished_at          TIMESTAMPTZ,
+    match_id             BIGINT REFERENCES matches(id),
+    error                TEXT
+);
+
 -- Indexes
 
 CREATE INDEX idx_match_jobs_queued
@@ -140,3 +158,6 @@ CREATE INDEX idx_match_participants_project
 
 CREATE INDEX idx_match_participants_project_version
     ON match_participants(project_id, project_version);
+
+CREATE INDEX idx_test_match_jobs_queued
+    ON test_match_jobs(requested_at) WHERE status = 'queued';
