@@ -35,6 +35,7 @@ from sa_common.db.projects import (
     promote_to_submitted,
     save_dev_code,
     unpack_files,
+    read_template_files
 )
 from sa_common.db.users import User
 

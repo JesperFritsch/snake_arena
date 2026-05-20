@@ -43,6 +43,7 @@ def _jwks_client() -> PyJWKClient:
     return PyJWKClient(f"{issuer}/.well-known/jwks.json")
 
 
+
 def _decode(token: str) -> dict:
     settings = _settings()
     try:

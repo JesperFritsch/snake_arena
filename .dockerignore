@@ -1,40 +1,44 @@
+# ── version control ──────────────────────────────────────────
 .git/
 .gitignore
 
-# Python
-.venv/
+# ── Python ───────────────────────────────────────────────────
+**/.venv/
 venv/
 **/__pycache__/
-*.pyc
-*.pyo
+**/*.pyc
+**/*.pyo
 **/*.egg-info/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
 
-# uv
-# (keep uv.lock! it needs to be in the image for `uv sync --frozen`)
+# ── uv ───────────────────────────────────────────────────────
+# Keep uv.lock! It must be in the context for `uv sync --frozen`.
 
-
-# Postgres
+# ── Postgres ─────────────────────────────────────────────────
 pg-data/
 
-# Node / frontend (if applicable)
-node_modules/
-dist/
-build/
+# ── Node / frontend ──────────────────────────────────────────
+# Do NOT ignore all of frontend/ — the API image's stage-1 build
+# needs frontend/src to produce dist/. Only the heavy/regenerable
+# parts. **/-prefixed so frontend/node_modules is caught (a bare
+# `node_modules/` matches ONLY the repo root, not nested ones).
+**/node_modules/
+**/dist/
+**/build/
 
-# Editor / OS
+# ── Editor / OS ──────────────────────────────────────────────
 .vscode/
 .idea/
 .DS_Store
 *.swp
 
-# Logs and local artifacts
-*.log
+# ── Logs and local artifacts ─────────────────────────────────
+**/*.log
 sim-artifacts/
-*.run_proto
+**/*.run_proto
 
-# Docker itself
-Dockerfile
-.dockerignore
+# ── Docker ───────────────────────────────────────────────────
+Dockerfile*
+*.dockerignore

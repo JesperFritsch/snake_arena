@@ -356,6 +356,24 @@ def unpack_archive(data: bytes, output_dir: str | Path) -> None:
         tar.extractall(output_dir)
 
 
+def read_template_files(
+    language: str, templates_dir: str | Path
+) -> list[tuple[str, bytes]]:
+    """Read a language's starter template from {templates_dir}/{language}/ as
+    (relative_path, bytes). Paths are relative to the language dir and
+    forward-slashed. Returns [] if the directory is missing.
+    """
+    base = Path(templates_dir) / language
+    if not base.is_dir():
+        return []
+    files: list[tuple[str, bytes]] = []
+    for p in sorted(base.rglob("*")):
+        if not p.is_file():
+            continue
+        files.append((p.relative_to(base).as_posix(), p.read_bytes()))
+    return files
+
+
 # --------------------------------------------------------------------------
 # CLI — for ops and manual testing
 # --------------------------------------------------------------------------

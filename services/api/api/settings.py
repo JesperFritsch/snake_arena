@@ -37,7 +37,7 @@ class Settings:
     # R2, this goes unused and the replay endpoint redirects to a presigned URL
     # instead of reading disk — the key column stays the same.
     replay_dir: Path | None = None
-
+    templates_dir: Path = Path("templates")
     pool_min_size: int = 1
     pool_max_size: int = 8
 
@@ -63,6 +63,7 @@ def load_settings() -> Settings:
         clerk_audience=os.environ.get("CLERK_AUDIENCE") or None,
         cors_origins=_split_csv(os.environ.get("CORS_ORIGINS")),
         replay_dir=Path(os.environ["REPLAY_DIR"]) if os.environ.get("REPLAY_DIR") else None,
+        templates_dir=Path(os.environ.get("TEMPLATES_DIR", "templates")).resolve(),
         pool_min_size=int(os.environ.get("DB_POOL_MIN_SIZE", "1")),
         pool_max_size=int(os.environ.get("DB_POOL_MAX_SIZE", "8")),
     )
