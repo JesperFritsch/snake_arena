@@ -74,6 +74,8 @@ export interface ApiClient {
   getBuildJob(id: number): Promise<BuildJob>;
   submit(id: number): Promise<SubmitResult>;
   deleteProject(id: number): Promise<void>;
+  getSubmittedFiles(id: number): Promise<ProjectFiles>;
+  restoreFromSubmitted(id: number): Promise<ProjectMeta>;
 }
 
 /** React hook returning an API client bound to the current Clerk session. */
@@ -94,6 +96,8 @@ export function useApi(): ApiClient {
       getBuildJob: (id) => request(g, "GET", `/build-jobs/${id}`),
       submit: (id) => request(g, "POST", `/projects/${id}/submit`),
       deleteProject: (id) => request(g, "DELETE", `/projects/${id}`),
+      getSubmittedFiles: (id) => request(g, "GET", `/projects/${id}/files/submitted`),
+      restoreFromSubmitted: (id) => request(g, "POST", `/projects/${id}/restore`),
     };
   }, [getToken]);
 }

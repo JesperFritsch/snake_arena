@@ -36,6 +36,7 @@ from sa_common.db.projects import (
     list_projects_for_user,
     pack_files,
     promote_to_submitted,
+    restore_dev_from_submitted,
     save_dev_code,
     unpack_files,
     read_template_files,
@@ -217,6 +218,50 @@ def get_files(
                 )
             )
     return ProjectFiles(files=files)
+
+
+@router.get("/{project_id}/files/submitted", response_model=ProjectFiles)
+def get_submitted_files(
+    project_id: int,
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProjectFiles:
+    """Return the project's latest submitted code as a file structure (read-only view)."""
+    _owned_meta(conn, project_id, user)
+    project: Project | None = get_project(conn, project_id)
+    if project is None or project.submitted_code_archive is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project has no submitted version")
+
+    files: list[ProjectFile] = []
+    for path, data in unpack_files(project.submitted_code_archive):
+        try:
+            files.append(ProjectFile(path=path, content=data.decode("utf-8"), encoding="utf-8"))
+        except UnicodeDecodeError:
+            files.append(
+                ProjectFile(
+                    path=path,
+                    content=base64.b64encode(data).decode("ascii"),
+                    encoding="base64",
+                )
+            )
+    return ProjectFiles(files=files)
+
+
+@router.post("/{project_id}/restore", response_model=ProjectMeta)
+def restore(
+    project_id: int,
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProjectMeta:
+    """Overwrite dev code with the latest submitted version."""
+    meta = _owned_meta(conn, project_id, user)
+    if meta.source != "browser":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "only browser projects have editable code")
+    if not restore_dev_from_submitted(conn, project_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "project has no submitted version to restore from")
+    refreshed = get_project_meta(conn, project_id)
+    assert refreshed is not None
+    return refreshed
 
 
 @router.get("/{project_id}/archive")

@@ -157,6 +157,29 @@ def list_projects_for_user(conn: Connection, user_id: int) -> list[ProjectMeta]:
 # SAVE — editor save, browser projects only
 # --------------------------------------------------------------------------
 
+def restore_dev_from_submitted(conn: Connection, project_id: int) -> bool:
+    """Copy submitted_code_archive back to dev_code_archive.
+
+    Resets dev_build_status to NULL — the dev code has changed so any
+    previous build is stale. Returns True if updated, False if the project
+    has never been submitted (nothing to restore from).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE projects
+            SET dev_code_archive = submitted_code_archive,
+                dev_build_status = NULL,
+                updated_at       = NOW()
+            WHERE id = %s
+              AND submitted_version > 0
+            RETURNING id
+            """,
+            (project_id,),
+        )
+        return cur.fetchone() is not None
+
+
 def delete_project(conn: Connection, project_id: int) -> bool:
     """Delete a project row. Returns True if deleted, False if not found.
 

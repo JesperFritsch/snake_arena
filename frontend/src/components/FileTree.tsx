@@ -7,8 +7,8 @@ interface Props {
   activePath: string | null;
   dirtyPaths: Set<string>;
   onOpen: (path: string) => void;
-  onAddFile: () => void;
-  onDeleteFile: (path: string) => void;
+  onAddFile?: () => void;
+  onDeleteFile?: (path: string) => void;
 }
 
 export function FileTree({
@@ -56,16 +56,18 @@ export function FileTree({
           <span className={`fname ${dirtyPaths.has(node.path) ? "dirty" : ""}`}>
             {node.name}
           </span>
-          <span
-            className="del"
-            title="Delete file"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDeleteFile(node.path);
-            }}
-          >
-            ✕
-          </span>
+          {onDeleteFile && (
+            <span
+              className="del"
+              title="Delete file"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteFile(node.path);
+              }}
+            >
+              ✕
+            </span>
+          )}
         </div>
       );
     });
@@ -75,9 +77,11 @@ export function FileTree({
       <div className="panel-head">
         <span className="title">Files</span>
         <span className="spacer" />
-        <button className="btn ghost" style={{ padding: "3px 8px" }} onClick={onAddFile}>
-          + New
-        </button>
+        {onAddFile && (
+          <button className="btn ghost" style={{ padding: "3px 8px" }} onClick={onAddFile}>
+            + New
+          </button>
+        )}
       </div>
       <div className="panel-body">
         {files.length === 0 ? (

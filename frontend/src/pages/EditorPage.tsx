@@ -28,8 +28,12 @@ export function EditorPage() {
   const [originalSig, setOriginalSig] = useState<string>("[]");
   const [activePath, setActivePath] = useState<string | null>(null);
 
+  const [viewMode, setViewMode] = useState<"dev" | "submitted">("dev");
+  const [submittedFiles, setSubmittedFiles] = useState<ProjectFile[]>([]);
+  const [submittedActivePath, setSubmittedActivePath] = useState<string | null>(null);
+
   const [buildJob, setBuildJob] = useState<BuildJob | null>(null);
-  const [busy, setBusy] = useState<"" | "save" | "build" | "submit" | "delete">("");
+  const [busy, setBusy] = useState<"" | "save" | "build" | "submit" | "delete" | "restore">("");
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
 
@@ -68,6 +72,9 @@ export function EditorPage() {
       const m = list.find((p) => p.id === id) ?? (await api.getProject(id));
       setMeta(m);
       setBuildJob(null);
+      setViewMode("dev");
+      setSubmittedFiles([]);
+      setSubmittedActivePath(null);
       setLoadingFiles(true);
       try {
         const { files: fetched } = await api.getFiles(id);
@@ -241,7 +248,40 @@ export function EditorPage() {
     }
   };
 
-  const activeFile = files.find((f) => f.path === activePath) ?? null;
+  const viewSubmitted = async () => {
+    if (!meta) return;
+    setLoadingFiles(true);
+    try {
+      const { files: fetched } = await api.getSubmittedFiles(meta.id);
+      setSubmittedFiles(fetched);
+      setSubmittedActivePath(fetched[0]?.path ?? null);
+      setViewMode("submitted");
+    } catch (e) {
+      push(`Could not load submitted version: ${e instanceof ApiError ? e.detail : e}`, "error");
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
+  const restoreCurrentProject = async () => {
+    if (!meta) return;
+    if (!window.confirm(`Restore dev code to submitted version v${meta.submitted_version}? Unsaved dev changes will be overwritten.`)) return;
+    setBusy("restore");
+    try {
+      const refreshed = await api.restoreFromSubmitted(meta.id);
+      setMeta(refreshed);
+      const { files: fetched } = await api.getFiles(meta.id);
+      setFiles(fetched);
+      setOriginalSig(serialize(fetched));
+      setActivePath(fetched[0]?.path ?? null);
+      setViewMode("dev");
+      push("Dev code restored to submitted version.");
+    } catch (e) {
+      push(`Restore failed: ${e instanceof ApiError ? e.detail : e}`, "error");
+    } finally {
+      setBusy("");
+    }
+  };
 
   // ---- toolbar ------------------------------------------------------------
   const toolbar = (
@@ -275,27 +315,44 @@ export function EditorPage() {
           {meta.dev_build_status ?? "no build"}
         </span>
       )}
-      {meta && meta.submitted_version > 0 && (
-        <span className="pill" title="latest submitted version">
-          v{meta.submitted_version}
-        </span>
+      {meta && meta.submitted_version > 0 && viewMode === "dev" && (
+        <button className="btn ghost" disabled={loadingFiles} onClick={viewSubmitted}>
+          v{meta.submitted_version} view submitted
+        </button>
+      )}
+      {viewMode === "submitted" && (
+        <button className="btn ghost" onClick={() => setViewMode("dev")}>
+          ◂ back to dev
+        </button>
       )}
 
       <span className="spacer" />
 
-      <button className="btn" disabled={!meta || !dirty || busy === "save"} onClick={save}>
-        {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
-      </button>
-      <button
-        className="btn"
-        disabled={!meta || busy === "build" || buildJob?.status === "running"}
-        onClick={build}
-      >
-        {busy === "build" || buildJob?.status === "running" ? "Building…" : "Build"}
-      </button>
-      <button className="btn primary" disabled={!meta || busy === "submit"} onClick={submit}>
-        {busy === "submit" ? "Submitting…" : "Submit"}
-      </button>
+      {viewMode === "submitted" ? (
+        <button
+          className="btn"
+          disabled={busy === "restore"}
+          onClick={restoreCurrentProject}
+        >
+          {busy === "restore" ? "Restoring…" : "Restore to dev"}
+        </button>
+      ) : (
+        <>
+          <button className="btn" disabled={!meta || !dirty || busy === "save"} onClick={save}>
+            {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
+          </button>
+          <button
+            className="btn"
+            disabled={!meta || busy === "build" || buildJob?.status === "running"}
+            onClick={build}
+          >
+            {busy === "build" || buildJob?.status === "running" ? "Building…" : "Build"}
+          </button>
+          <button className="btn primary" disabled={!meta || busy === "submit"} onClick={submit}>
+            {busy === "submit" ? "Submitting…" : "Submit"}
+          </button>
+        </>
+      )}
     </header>
   );
 
@@ -314,31 +371,37 @@ export function EditorPage() {
     );
   }
 
+  const displayedFiles = viewMode === "submitted" ? submittedFiles : files;
+  const displayedActivePath = viewMode === "submitted" ? submittedActivePath : activePath;
+  const displayedActiveFile = displayedFiles.find((f) => f.path === displayedActivePath) ?? null;
+
   const treePane = (
     <FileTree
-      files={files}
-      activePath={activePath}
-      dirtyPaths={dirtyPaths}
+      files={displayedFiles}
+      activePath={displayedActivePath}
+      dirtyPaths={viewMode === "submitted" ? new Set() : dirtyPaths}
       onOpen={(p) => {
-        setActivePath(p);
+        if (viewMode === "submitted") setSubmittedActivePath(p);
+        else setActivePath(p);
         setMobileTab("editor");
       }}
-      onAddFile={addFile}
-      onDeleteFile={deleteFile}
+      onAddFile={viewMode === "dev" ? addFile : undefined}
+      onDeleteFile={viewMode === "dev" ? deleteFile : undefined}
     />
   );
 
   const editorPane = (
     <div className="panel">
       <div className="panel-head">
-        <span className="title">{activePath ?? "—"}</span>
+        <span className="title">{displayedActivePath ?? "—"}</span>
         {loadingFiles && <span className="muted">loading…</span>}
+        {viewMode === "submitted" && <span className="muted">submitted · read-only</span>}
       </div>
       <div className="panel-body" style={{ overflow: "hidden" }}>
         <CodeEditor
-          path={activePath}
-          value={activeFile?.content ?? ""}
-          readOnly={meta?.source !== "browser"}
+          path={displayedActivePath}
+          value={displayedActiveFile?.content ?? ""}
+          readOnly={viewMode === "submitted" || meta?.source !== "browser"}
           onChange={updateActive}
         />
       </div>
