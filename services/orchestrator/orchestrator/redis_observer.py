@@ -3,13 +3,17 @@
 
 Called from the SocketObservable background thread during a test match, so
 the Redis client must be the sync variant. We also accumulate messages to
-write a .json.gz replay file when the match stops.
+write a bundle.zip at the end containing:
+  replay.json   – JSON array of all sim messages
+  analysis.json – TODO: run_analyzer output (empty for now)
+  run.log       – TODO: build/run log output (empty for now)
 """
 from __future__ import annotations
 
-import gzip
+import io
 import json
 import logging
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -26,11 +30,11 @@ class RedisStreamObserver(ILoopObserver):
         self,
         redis_client: redis.Redis,
         channel: str,
-        replay_path: Path | None = None,
+        bundle_path: Path | None = None,
     ) -> None:
         self._redis = redis_client
         self._channel = channel
-        self._replay_path = replay_path
+        self._bundle_path = bundle_path
         self._messages: list[str] = []
 
     # ------------------------------------------------------------------ notify
@@ -43,8 +47,8 @@ class RedisStreamObserver(ILoopObserver):
 
     def notify_stop(self, stop_data: LoopStopData) -> None:
         self._publish({"type": "stop", "data": {"final_step": stop_data.final_step}})
-        if self._replay_path:
-            self._save_replay()
+        if self._bundle_path:
+            self._save_bundle()
 
     # ------------------------------------------------------------------ helpers
 
@@ -56,15 +60,30 @@ class RedisStreamObserver(ILoopObserver):
         except Exception:
             log.warning("Redis publish failed on channel %s", self._channel, exc_info=True)
 
-    def _save_replay(self) -> None:
+    def _save_bundle(self) -> None:
         try:
-            self._replay_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = ("[" + ",".join(self._messages) + "]").encode()
-            with gzip.open(self._replay_path, "wb") as f:
-                f.write(payload)
-            log.info("saved replay to %s (%d bytes compressed)", self._replay_path, self._replay_path.stat().st_size)
+            self._bundle_path.parent.mkdir(parents=True, exist_ok=True)
+            replay_bytes = ("[" + ",".join(self._messages) + "]").encode()
+
+            # TODO: populate analysis.json with run_analyzer output
+            analysis_bytes = b"{}"
+
+            # TODO: populate run.log with build/run logs captured during the match
+            run_log_bytes = b""
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("replay.json",   replay_bytes)
+                zf.writestr("analysis.json", analysis_bytes)
+                zf.writestr("run.log",       run_log_bytes)
+            self._bundle_path.write_bytes(buf.getvalue())
+            log.info(
+                "saved bundle to %s (%d bytes)",
+                self._bundle_path,
+                self._bundle_path.stat().st_size,
+            )
         except Exception:
-            log.warning("failed to save replay to %s", self._replay_path, exc_info=True)
+            log.warning("failed to save bundle to %s", self._bundle_path, exc_info=True)
 
 
 # ------------------------------------------------------------------ serializers

@@ -217,6 +217,15 @@ def restore_dev_from_submitted(conn: Connection, project_id: int) -> bool:
         return cur.fetchone() is not None
 
 
+def get_project_names(conn: Connection, project_ids: list[int]) -> dict[int, str]:
+    """Return {project_id: name} for the given IDs. Missing IDs are omitted."""
+    if not project_ids:
+        return {}
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT id, name FROM projects WHERE id = ANY(%s)", (project_ids,))
+        return {row["id"]: row["name"] for row in cur.fetchall()}
+
+
 def delete_project(conn: Connection, project_id: int) -> bool:
     """Delete a project row. Returns True if deleted, False if not found.
 

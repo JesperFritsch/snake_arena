@@ -82,6 +82,8 @@ export interface ApiClient {
   listOpponents(): Promise<PublicProjectSummary[]>;
   enqueueTestMatch(body: TestMatchCreate): Promise<TestMatchJob>;
   getTestMatchJob(id: number): Promise<TestMatchJob>;
+  listTestMatchJobs(projectId: number, limit?: number): Promise<TestMatchJob[]>;
+  getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
 }
 
 /** React hook returning an API client bound to the current Clerk session. */
@@ -107,6 +109,10 @@ export function useApi(): ApiClient {
       listOpponents: () => request(g, "GET", "/test-matches/opponents"),
       enqueueTestMatch: (body) => request(g, "POST", "/test-matches", body),
       getTestMatchJob: (id) => request(g, "GET", `/test-matches/${id}`),
+      listTestMatchJobs: (projectId, limit = 10) =>
+        request(g, "GET", `/test-matches?player_project_id=${projectId}&limit=${limit}`),
+      getTestMatchBundleUrl: (jobId) =>
+        request(g, "GET", `/test-matches/${jobId}/bundle-url`),
     };
   }, [getToken]);
 }

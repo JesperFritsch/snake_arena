@@ -32,11 +32,11 @@ class Settings:
     # when FastAPI serves the bundle from the same origin, this can be empty.
     cors_origins: list[str] = field(default_factory=list)
 
-    # Root directory the replay keys (matches.replay_r2_key) are relative to.
-    # The runner writes replays here on a shared volume. When replays move to
-    # R2, this goes unused and the replay endpoint redirects to a presigned URL
-    # instead of reading disk — the key column stays the same.
-    replay_dir: Path | None = None
+    # Base URL where match bundles are served. In dev this points at the nginx
+    # file-server container (e.g. http://localhost:8081). In prod set it to the
+    # R2 public URL or a presigned-URL base — the bundle endpoint returns
+    # {replay_host}/{bundle_path} and the browser fetches directly.
+    replay_host: str | None = None
     templates_dir: Path = Path("templates")
     redis_url: str = "redis://localhost:6379"
     pool_min_size: int = 1
@@ -67,7 +67,7 @@ def load_settings() -> Settings:
         clerk_issuer=clerk_issuer.rstrip("/"),
         clerk_audience=os.environ.get("CLERK_AUDIENCE") or None,
         cors_origins=_split_csv(os.environ.get("CORS_ORIGINS")),
-        replay_dir=Path(os.environ["REPLAY_DIR"]) if os.environ.get("REPLAY_DIR") else None,
+        replay_host=os.environ.get("REPLAY_HOST") or None,
         templates_dir=Path(os.environ.get("TEMPLATES_DIR", "code_templates")).resolve(),
         redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379"),
         pool_min_size=int(os.environ.get("DB_POOL_MIN_SIZE", "1")),

@@ -6,26 +6,30 @@ The player slot uses dev_image_tag; opponents use submitted_image_tag.
 Results are recorded with is_test=True and excluded from the leaderboard.
 
 Live streaming: GET /test-matches/{id}/ws  (WebSocket, token query param)
-  - While the match runs: streams JSON frames from the Redis pub/sub channel.
-  - After the match ends: serves the stored .json.gz replay via the same socket.
+  - Only used while the match is queued or running.
+  - Streams JSON frames from the Redis pub/sub channel until a "stop" frame.
 
-Replay file: GET /test-matches/{id}/replay
-  - Serves the gzip-compressed JSON replay with Content-Encoding: gzip so the
-    browser's fetch decompresses it transparently.
+Bundle URL: GET /test-matches/{id}/bundle-url
+  - Returns { url } pointing at the match bundle on the file host.
+  - The bundle is a ZIP containing replay.json, analysis.json, run.log.
+  - In dev the host is the nginx file-server; in prod swap REPLAY_HOST for R2.
 """
 from __future__ import annotations
 
 import asyncio
-import gzip
 import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse, Response
 from psycopg import Connection
 
-from sa_common.db.projects import get_project_meta, list_all_submitted
-from sa_common.db.test_match_jobs import enqueue_test_match_job, get_test_job, TestMatchJob
+from sa_common.db.projects import get_project_meta, get_project_names, list_all_submitted
+from sa_common.db.test_match_jobs import (
+    enqueue_test_match_job,
+    get_test_job,
+    list_test_jobs_for_project,
+    TestMatchJob,
+)
 from sa_common.db.users import User, get_or_create_user_by_clerk_id
 
 from api.auth import decode_token, get_current_user
@@ -38,6 +42,14 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/test-matches", tags=["test-matches"])
 
 
+def _add_names(conn: Connection, job: TestMatchJob) -> TestMatchJob:
+    """Populate participant_names: [player, opp1, opp2, ...] ordered by seat."""
+    all_ids = [job.player_project_id] + list(job.opponent_project_ids)
+    names = get_project_names(conn, all_ids)
+    job.participant_names = [names.get(pid, "?") for pid in all_ids]
+    return job
+
+
 @router.get("/opponents", response_model=list[PublicProjectSummary])
 def list_opponents(
     conn: Connection = Depends(get_db),
@@ -45,6 +57,21 @@ def list_opponents(
 ) -> list[PublicProjectSummary]:
     """All submitted projects across all users, for opponent selection."""
     return list_all_submitted(conn)
+
+
+@router.get("", response_model=list[TestMatchJob])
+def list_jobs_for_project(
+    player_project_id: int = Query(..., description="Filter by player project"),
+    limit: int = Query(10, ge=1, le=50),
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[TestMatchJob]:
+    """Last N test match jobs for the given project (newest first)."""
+    player = get_project_meta(conn, player_project_id)
+    if player is None or player.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    jobs = list_test_jobs_for_project(conn, player_project_id, limit=limit)
+    return [_add_names(conn, j) for j in jobs]
 
 
 @router.post("", response_model=TestMatchJob, status_code=status.HTTP_202_ACCEPTED)
@@ -79,7 +106,7 @@ def enqueue(
     )
     job = get_test_job(conn, job_id)
     assert job is not None
-    return job
+    return _add_names(conn, job)
 
 
 @router.get("/{job_id}", response_model=TestMatchJob)
@@ -91,34 +118,26 @@ def get_job(
     job = get_test_job(conn, job_id)
     if job is None or job.requested_by != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
-    return job
+    return _add_names(conn, job)
 
 
-@router.get("/{job_id}/replay")
-def get_replay(
+@router.get("/{job_id}/bundle-url")
+def get_bundle_url(
     job_id: int,
     conn: Connection = Depends(get_db),
     user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
-) -> Response:
-    """Serve the gzip-compressed JSON replay file."""
+) -> dict:
+    """Return the URL the browser should fetch to download the match bundle."""
     job = get_test_job(conn, job_id)
     if job is None or job.requested_by != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
-    if job.status != "success" or not job.replay_json_path:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "replay not available yet")
-    if not settings.replay_dir:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "replay storage not configured")
-
-    replay_path = settings.replay_dir / job.replay_json_path
-    if not replay_path.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "replay file not found on disk")
-
-    return Response(
-        content=replay_path.read_bytes(),
-        media_type="application/json",
-        headers={"Content-Encoding": "gzip"},
-    )
+    if job.status != "success" or not job.bundle_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "bundle not available yet")
+    if not settings.replay_host:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "replay host not configured")
+    url = f"{settings.replay_host.rstrip('/')}/{job.bundle_path}"
+    return {"url": url}
 
 
 @router.websocket("/{job_id}/ws")
@@ -128,15 +147,13 @@ async def stream_test_match(
     token: str = Query(..., description="Clerk JWT for authentication"),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Stream sim events to the browser.
+    """Stream live sim events while a match is running.
 
-    Accepts a Clerk JWT via ?token= (WebSocket doesn't support Auth headers).
-    If the match is still running: forwards frames from the Redis pub/sub channel.
-    If the match is already done: replays from the .json.gz file.
+    Only handles queued/running matches. Completed matches should be fetched
+    as a bundle via GET /{job_id}/bundle-url instead.
     """
     await websocket.accept()
 
-    # Auth + job ownership check (sync, run in thread to avoid blocking event loop)
     try:
         user, job = await asyncio.to_thread(_auth_and_get_job, token, job_id)
     except HTTPException as exc:
@@ -148,15 +165,19 @@ async def stream_test_match(
         return
 
     try:
-        if job.status == "success":
-            await _serve_replay(websocket, job, settings)
+        if job.status in ("queued", "running"):
+            await _stream_live(websocket, job_id, settings)
         elif job.status == "failure":
             await websocket.send_text(json.dumps({
                 "type": "error",
                 "data": {"message": job.error or "match failed"},
             }))
         else:
-            await _stream_live(websocket, job_id, settings)
+            # success or unknown — client should use /bundle-url instead
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "data": {"message": "match already completed — fetch bundle instead"},
+            }))
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -172,7 +193,7 @@ async def stream_test_match(
 
 def _auth_and_get_job(token: str, job_id: int) -> tuple[User, TestMatchJob]:
     """Sync helper: verify token and load job from DB. Runs in a thread pool."""
-    claims = decode_token(token)  # raises HTTPException on invalid token
+    claims = decode_token(token)
     clerk_user_id = claims.get("sub")
     email = claims.get("email")
     if not clerk_user_id:
@@ -193,34 +214,13 @@ def _auth_and_get_job(token: str, job_id: int) -> tuple[User, TestMatchJob]:
         return user, job
 
 
-async def _serve_replay(
-    websocket: WebSocket,
-    job: TestMatchJob,
-    settings: Settings,
-) -> None:
-    """Send all stored replay messages over the WebSocket."""
-    if not job.replay_json_path or not settings.replay_dir:
-        await websocket.send_text(json.dumps({"type": "error", "data": {"message": "replay not available"}}))
-        return
-
-    replay_path = settings.replay_dir / job.replay_json_path
-    if not replay_path.exists():
-        await websocket.send_text(json.dumps({"type": "error", "data": {"message": "replay file missing"}}))
-        return
-
-    raw = await asyncio.to_thread(lambda: gzip.open(replay_path, "rb").read())
-    messages: list[dict] = json.loads(raw)
-    for msg in messages:
-        await websocket.send_text(json.dumps(msg, separators=(",", ":")))
-
-
 async def _stream_live(websocket: WebSocket, job_id: int, settings: Settings) -> None:
     """Subscribe to Redis and forward frames until STOP or disconnect."""
     redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe(f"test-match:{job_id}")
     try:
-        async with asyncio.timeout(600):  # 10-minute safety cap
+        async with asyncio.timeout(600):
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue

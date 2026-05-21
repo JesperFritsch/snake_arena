@@ -630,6 +630,94 @@ button {
   overflow: auto;
 }
 
+/* ---- match viewer tabs -------------------------------------------------- */
+
+.mv-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.mv-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.1s;
+}
+
+.mv-tab:hover { color: var(--fg); }
+
+.mv-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.mv-tab-close {
+  margin-left: 2px;
+  opacity: 0.4;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mv-tab-close:hover { opacity: 1; }
+
+/* ---- match viewer history panel ----------------------------------------- */
+
+.mv-history-panel {
+  flex-shrink: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  padding: 4px 0;
+}
+
+.mv-history-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  padding: 4px 12px 8px;
+}
+
+.mv-history-empty {
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 8px 12px;
+}
+
+.mv-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+}
+
+.mv-history-row:hover { background: var(--bg-elev); }
+
+.mv-history-id { font-family: monospace; min-width: 40px; }
+
+.mv-history-time { flex: 1; font-size: 12px; }
+
+.mv-history-btn {
+  padding: 2px 7px;
+  font-size: 12px;
+}
+
 /* ---- sim player --------------------------------------------------------- */
 
 .sim-player {
@@ -643,7 +731,7 @@ button {
   flex: 1;
   min-height: 0;
   position: relative;
-  background: var(--bg);
+  background: var(--bg-panel);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -651,8 +739,7 @@ button {
 
 .sim-canvas {
   display: block;
-  width: 100%;
-  height: 100%;
+  /* width/height set imperatively by SimPlayer based on grid dimensions */
 }
 
 .sim-overlay {

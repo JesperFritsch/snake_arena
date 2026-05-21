@@ -68,14 +68,14 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     match_uuid = f"test-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(timezone.utc)
 
-    replay_relative = f"runs/{match_uuid}.json.gz"
-    replay_abs = config.artifacts_dir / replay_relative
+    bundle_relative = f"test-matches/{job.id}/bundle.zip"
+    bundle_abs = config.artifacts_dir / bundle_relative
 
     redis_client = redis.Redis.from_url(config.redis_url, socket_connect_timeout=5)
     observer = RedisStreamObserver(
         redis_client=redis_client,
         channel=f"test-match:{job.id}",
-        replay_path=replay_abs,
+        bundle_path=bundle_abs,
     )
 
     try:
@@ -100,7 +100,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             seat_by_agent_name=setup.seat_by_name,
         )
 
-        saved_replay = replay_abs.exists()
+        saved_bundle = bundle_abs.exists()
 
         with conn.transaction():
             match_id = record_match_result(
@@ -119,7 +119,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 conn,
                 job.id,
                 match_id,
-                replay_json_path=replay_relative if saved_replay else None,
+                bundle_path=bundle_relative if saved_bundle else None,
             )
 
         log.info("test job id=%d done (match_id=%d)", job.id, match_id)

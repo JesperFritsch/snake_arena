@@ -10,4 +10,4 @@ WORKDIR /app
 COPY . .
 RUN uv sync --frozen --package snake-arena-api
 
-ENTRYPOINT ["uv", "run", "--package", "snake-arena-api", "api"]
+ENTRYPOINT ["uv", "run", "--frozen", "--no-sync", "--package", "snake-arena-api", "api"]

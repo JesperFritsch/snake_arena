@@ -39,7 +39,7 @@ CREATE TABLE projects (
     created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    UNIQUE (user_id, name),
+    UNIQUE (name),
 
     -- Browser projects must have dev code; external-image projects must not.
     CONSTRAINT projects_dev_code_matches_source CHECK (
@@ -140,7 +140,7 @@ CREATE TABLE test_match_jobs (
     finished_at          TIMESTAMPTZ,
     match_id             BIGINT REFERENCES matches(id),
     error                TEXT,
-    replay_json_path     TEXT                                   -- relative path within ARTIFACTS_DIR, e.g. runs/{uuid}.json.gz
+    bundle_path          TEXT                                   -- relative path within ARTIFACTS_DIR, e.g. test-matches/{id}/bundle.zip
 );
 
 -- Indexes

@@ -34,7 +34,8 @@ export function EditorPage() {
   const [submittedActivePath, setSubmittedActivePath] = useState<string | null>(null);
 
   const [buildJob, setBuildJob] = useState<BuildJob | null>(null);
-  const [testMatchJob, setTestMatchJob] = useState<TestMatchJob | null>(null);
+  const [matchTabs, setMatchTabs] = useState<TestMatchJob[]>([]);
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [busy, setBusy] = useState<"" | "save" | "build" | "submit" | "delete" | "restore">("");
   const [loadingFiles, setLoadingFiles] = useState(false);
@@ -78,7 +79,8 @@ export function EditorPage() {
       const m = list.find((p) => p.id === id) ?? (await api.getProject(id));
       setMeta(m);
       setBuildJob(null);
-      setTestMatchJob(null);
+      setMatchTabs([]);
+      setActiveTabId(null);
       if (testPollRef.current) { window.clearInterval(testPollRef.current); testPollRef.current = null; }
       setViewMode("dev");
       setSubmittedFiles([]);
@@ -182,7 +184,7 @@ export function EditorPage() {
       testPollRef.current = window.setInterval(async () => {
         try {
           const job = await api.getTestMatchJob(jobId);
-          setTestMatchJob(job);
+          setMatchTabs((prev) => prev.map((t) => (t.id === jobId ? job : t)));
           if (TERMINAL.has(job.status)) {
             if (testPollRef.current) window.clearInterval(testPollRef.current);
             testPollRef.current = null;
@@ -202,13 +204,39 @@ export function EditorPage() {
   );
 
   const onTestMatchEnqueued = (job: TestMatchJob) => {
-    setTestMatchJob(job);
+    setMatchTabs((prev) =>
+      prev.some((t) => t.id === job.id) ? prev : [...prev, job],
+    );
+    setActiveTabId(job.id);
     setMobileTab("viewer");
     pollTestMatch(job.id);
     push(`Test match #${job.id} queued.`);
-    // Expand the viewer panel past the WIDE_THRESHOLD so the layout snaps to
-    // side-by-side (player left, console right) automatically.
     viewerPanelRef.current?.resize(52);
+  };
+
+  const onTabSelect = (id: number) => setActiveTabId(id);
+
+  const onTabClose = (id: number) => {
+    const next = matchTabs.filter((t) => t.id !== id);
+    setMatchTabs(next);
+    if (activeTabId === id) {
+      setActiveTabId(next.length > 0 ? next[next.length - 1].id : null);
+    }
+  };
+
+  const onOpenMatch = (job: TestMatchJob, newTab: boolean) => {
+    if (!newTab && activeTabId !== null) {
+      setMatchTabs((prev) =>
+        prev.some((t) => t.id === job.id)
+          ? prev
+          : prev.map((t) => (t.id === activeTabId ? job : t)),
+      );
+    } else {
+      setMatchTabs((prev) =>
+        prev.some((t) => t.id === job.id) ? prev : [...prev, job],
+      );
+    }
+    setActiveTabId(job.id);
   };
 
   const build = async () => {
@@ -493,7 +521,15 @@ export function EditorPage() {
           </Panel>
           <PanelResizeHandle className="resize-handle" />
           <Panel ref={viewerPanelRef} defaultSize={45} minSize={20}>
-            <MatchViewer buildJob={buildJob} testMatchJob={testMatchJob} />
+            <MatchViewer
+                buildJob={buildJob}
+                matchTabs={matchTabs}
+                activeTabId={activeTabId}
+                projectId={meta?.id ?? null}
+                onTabSelect={onTabSelect}
+                onTabClose={onTabClose}
+                onOpenMatch={onOpenMatch}
+              />
           </Panel>
         </PanelGroup>
       </div>
@@ -502,7 +538,15 @@ export function EditorPage() {
       <div className="panel-body mtabs-body" style={{ overflow: "hidden" }}>
         {mobileTab === "files" && treePane}
         {mobileTab === "editor" && editorPane}
-        {mobileTab === "viewer" && <MatchViewer buildJob={buildJob} testMatchJob={testMatchJob} />}
+        {mobileTab === "viewer" && <MatchViewer
+                buildJob={buildJob}
+                matchTabs={matchTabs}
+                activeTabId={activeTabId}
+                projectId={meta?.id ?? null}
+                onTabSelect={onTabSelect}
+                onTabClose={onTabClose}
+                onOpenMatch={onOpenMatch}
+              />}
       </div>
     </div>
   );
