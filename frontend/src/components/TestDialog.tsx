@@ -1,44 +1,65 @@
 import { useEffect, useState } from "react";
 import { useApi, ApiError } from "../api/client";
-import type { ProjectMeta, PublicProjectSummary, TestMatchJob } from "../api/types";
+import type { ProjectMeta, PublicProjectSummary } from "../api/types";
 import { useToast } from "./Toast";
 
 const MAX_OPPONENTS = 4;
 
-interface Props {
-  project: ProjectMeta;
-  onClose: () => void;
-  onEnqueued: (job: TestMatchJob) => void;
+export interface TestSettings {
+  food: number;
+  gridWidth: string;
+  gridHeight: string;
+  opponentIds: number[];
 }
 
-export function TestDialog({ project, onClose, onEnqueued }: Props) {
+const LS_KEY = (pid: number) => `snake-arena:test-settings:${pid}`;
+
+export function loadTestSettings(pid: number): TestSettings | null {
+  try { return JSON.parse(localStorage.getItem(LS_KEY(pid)) ?? "null"); }
+  catch { return null; }
+}
+
+export function saveTestSettings(pid: number, s: TestSettings): void {
+  localStorage.setItem(LS_KEY(pid), JSON.stringify(s));
+}
+
+const DEFAULT_SETTINGS: TestSettings = { food: 3, gridWidth: "", gridHeight: "", opponentIds: [] };
+
+interface Props {
+  project: ProjectMeta;
+  initialSettings: TestSettings | null;
+  onClose: () => void;
+  onRun: (settings: TestSettings) => Promise<void>;
+}
+
+export function TestDialog({ project, initialSettings, onClose, onRun }: Props) {
   const api = useApi();
   const { push } = useToast();
 
-  const [opponents, setOpponents] = useState<PublicProjectSummary[]>([]);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [food, setFood] = useState(3);
-  const [gridWidth, setGridWidth] = useState("");
-  const [gridHeight, setGridHeight] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const init = initialSettings ?? DEFAULT_SETTINGS;
+
+  const [opponents, setOpponents]   = useState<PublicProjectSummary[]>([]);
+  const [selected, setSelected]     = useState<Set<number>>(new Set(init.opponentIds));
+  const [food, setFood]             = useState(init.food);
+  const [gridWidth, setGridWidth]   = useState(init.gridWidth);
+  const [gridHeight, setGridHeight] = useState(init.gridHeight);
+  const [loading, setLoading]       = useState(true);
+  const [busy, setBusy]             = useState(false);
 
   useEffect(() => {
     api
       .listOpponents()
-      .then((all) => setOpponents(all.filter((p) => p.id !== project.id)))
+      .then(setOpponents)
       .catch((e) => push(`Could not load opponents: ${e instanceof ApiError ? e.detail : e}`, "error"))
       .finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggle = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else if (next.size < MAX_OPPONENTS) {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else if (next.size < MAX_OPPONENTS) next.add(id);
       return next;
     });
   };
@@ -46,25 +67,24 @@ export function TestDialog({ project, onClose, onEnqueued }: Props) {
   const run = async () => {
     const w = parseInt(gridWidth);
     const h = parseInt(gridHeight);
-    const hasW = !isNaN(w) && gridWidth !== "";
-    const hasH = !isNaN(h) && gridHeight !== "";
+    const hasW = gridWidth !== "" && !isNaN(w);
+    const hasH = gridHeight !== "" && !isNaN(h);
     if (hasW !== hasH) {
       push("Provide both grid width and height, or leave both empty.", "error");
       return;
     }
+    const settings: TestSettings = {
+      food,
+      gridWidth,
+      gridHeight,
+      opponentIds: [...selected],
+    };
     setBusy(true);
     try {
-      const sim_args: { food: number; grid_width?: number; grid_height?: number } = { food };
-      if (hasW && hasH) { sim_args.grid_width = w; sim_args.grid_height = h; }
-      const job = await api.enqueueTestMatch({
-        player_project_id: project.id,
-        opponent_project_ids: [...selected],
-        sim_args,
-      });
-      onEnqueued(job);
+      await onRun(settings);
       onClose();
-    } catch (e) {
-      push(`Could not start test match: ${e instanceof ApiError ? e.detail : e}`, "error");
+    } catch {
+      // error already toasted by onRun
     } finally {
       setBusy(false);
     }

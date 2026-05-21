@@ -277,15 +277,20 @@ export function SimPlayer({ job }: Props) {
 
       {snakeLegend && (
         <div className="sim-legend">
-          {Object.entries(snakeLegend).map(([id, name]) => (
-            <span key={id} className="sim-legend-item">
-              <span
-                className="sim-legend-dot"
-                style={{ background: SNAKE_COLORS[Number(id) % SNAKE_COLORS.length] }}
-              />
-              {name}
-            </span>
-          ))}
+          {Object.entries(snakeLegend).map(([id]) => {
+            const seat = Number(id);
+            const baseName = job.participant_names[seat] ?? id;
+            const label = seat === 0 ? `${baseName} (dev)` : baseName;
+            return (
+              <span key={id} className="sim-legend-item">
+                <span
+                  className="sim-legend-dot"
+                  style={{ background: SNAKE_COLORS[seat % SNAKE_COLORS.length] }}
+                />
+                {label}
+              </span>
+            );
+          })}
         </div>
       )}
 

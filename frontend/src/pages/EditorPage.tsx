@@ -5,7 +5,8 @@ import type { ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
 import { MatchViewer } from "../components/MatchViewer";
-import { TestDialog } from "../components/TestDialog";
+import { TestDialog, loadTestSettings, saveTestSettings } from "../components/TestDialog";
+import type { TestSettings } from "../components/TestDialog";
 import { useToast } from "../components/Toast";
 
 const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "cancelled"]);
@@ -212,7 +213,39 @@ export function EditorPage() {
     setActiveTabId(job.id);
   };
 
+  const runTestMatch = useCallback(async (settings: TestSettings) => {
+    if (!meta) return;
+    saveTestSettings(meta.id, settings);
+    const w = parseInt(settings.gridWidth);
+    const h = parseInt(settings.gridHeight);
+    const hasGrid = settings.gridWidth !== "" && settings.gridHeight !== "" && !isNaN(w) && !isNaN(h);
+    const sim_args: { food: number; grid_width?: number; grid_height?: number } = { food: settings.food };
+    if (hasGrid) { sim_args.grid_width = w; sim_args.grid_height = h; }
+    try {
+      const job = await api.enqueueTestMatch({
+        player_project_id: meta.id,
+        opponent_project_ids: settings.opponentIds,
+        sim_args,
+      });
+      onTestMatchEnqueued(job);
+    } catch (e) {
+      push(`Could not start test match: ${e instanceof ApiError ? e.detail : e}`, "error");
+      throw e;
+    }
+  }, [api, meta, onTestMatchEnqueued, push]);
+
   const handleTest = async () => {
+    if (!meta) return;
+    if (dirty && !(await save())) return;
+    const saved = loadTestSettings(meta.id);
+    if (saved) {
+      await runTestMatch(saved).catch(() => {});
+    } else {
+      setTestDialogOpen(true);
+    }
+  };
+
+  const handleTestSettings = async () => {
     if (!meta) return;
     if (dirty && !(await save())) return;
     setTestDialogOpen(true);
@@ -348,13 +381,24 @@ export function EditorPage() {
         </span>
       )}
       {meta && viewMode === "dev" && (
-        <button
-          className="btn ghost"
-          disabled={busy !== ""}
-          onClick={handleTest}
-        >
-          Test
-        </button>
+        <>
+          <button
+            className="btn ghost"
+            disabled={busy !== ""}
+            onClick={handleTest}
+          >
+            Test
+          </button>
+          <button
+            className="btn ghost"
+            disabled={busy !== ""}
+            onClick={handleTestSettings}
+            title="Test settings"
+            style={{ padding: "2px 7px" }}
+          >
+            ⚙
+          </button>
+        </>
       )}
 
       {meta && meta.submitted_version > 0 && viewMode === "dev" && (
@@ -452,8 +496,9 @@ export function EditorPage() {
       {testDialogOpen && meta && (
         <TestDialog
           project={meta}
+          initialSettings={loadTestSettings(meta.id)}
           onClose={() => setTestDialogOpen(false)}
-          onEnqueued={onTestMatchEnqueued}
+          onRun={runTestMatch}
         />
       )}
       {toolbar}
