@@ -1,4 +1,6 @@
 
+import pprint
+
 
 class Snake:
     def __init__(self):
@@ -33,4 +35,7 @@ class Snake:
         # which you can use to decide which direction to move in
         # return a tuple representing the direction you want to move in 
         # (e.g. (0, -1) for up, (0, 1) for down, (-1, 0) for left, (1, 0) for right), or return None to not move
+        print("My ID: ", self.id)
+        pprint.pprint(self.init_data)
+        pprint.pprint(env_step_data)  # Example of using the provided environment data
         return (0, 1)  # example: always move down

@@ -1,4 +1,5 @@
 import os
+import sys
 
 os.environ["GRPC_VERBOSITY"] = "ERROR"
 
@@ -53,7 +54,11 @@ class RemoteSnakeServicer(sim_interface_pb2_grpc.RemoteSnakeServicer):
 
     def Update(self, request_iterator, context):
         for env_step_data_proto in request_iterator:
+            sys.stdout.flush()
             direction = self._snake_instance.update(env_data_to_dict(env_step_data_proto, self._dims[0], self._dims[1], self._dtype))
+            sys.stdout.flush()
+            sys.stdout.write("---STEP_END---\n")
+            sys.stdout.flush()
             if direction is None:
                 yield sim_interface_pb2.UpdateResponse()
             else:

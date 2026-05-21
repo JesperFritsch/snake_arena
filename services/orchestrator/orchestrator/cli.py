@@ -57,7 +57,13 @@ def main() -> None:
         "--artifacts-dir",
         type=Path,
         default=Path(os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts")),
-        help="Host directory for match artifacts (env: ORCHESTRATOR_ARTIFACTS_DIR)",
+        help="Path to artifacts dir inside this container (env: ORCHESTRATOR_ARTIFACTS_DIR)",
+    )
+    p_match.add_argument(
+        "--artifacts-host-dir",
+        type=Path,
+        default=Path(os.environ.get("ARTIFACTS_HOST_DIR", os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts"))),
+        help="Path to artifacts dir on the Docker host, for volume-mounting into sim containers (env: ARTIFACTS_HOST_DIR)",
     )
     _add_shared_args(p_match, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
 
@@ -70,6 +76,11 @@ def main() -> None:
         "--artifacts-dir",
         type=Path,
         default=Path(os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts")),
+    )
+    p_test.add_argument(
+        "--artifacts-host-dir",
+        type=Path,
+        default=Path(os.environ.get("ARTIFACTS_HOST_DIR", os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts"))),
     )
     p_test.add_argument(
         "--redis-url",
@@ -101,6 +112,7 @@ def main() -> None:
         config = RunnerDaemonConfig(
             sim_image=args.sim_image,
             artifacts_dir=args.artifacts_dir,
+            artifacts_host_dir=args.artifacts_host_dir,
             poll_interval_s=args.poll_interval,
         )
         run_one, run_forever = run_match_iteration, run_match_forever
@@ -112,6 +124,7 @@ def main() -> None:
         config = TestRunnerDaemonConfig(
             sim_image=args.sim_image,
             artifacts_dir=args.artifacts_dir,
+            artifacts_host_dir=args.artifacts_host_dir,
             redis_url=args.redis_url,
             poll_interval_s=args.poll_interval,
             registry_prefix=args.registry_prefix,

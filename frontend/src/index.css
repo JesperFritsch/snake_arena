@@ -425,6 +425,17 @@ button {
 .console .muted {
   color: var(--text-faint);
 }
+.console-pre {
+  margin: 0;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+}
+.console-pre-err {
+  color: var(--red);
+}
 
 /* ---- toast -------------------------------------------------------------- */
 

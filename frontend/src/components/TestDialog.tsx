@@ -104,8 +104,6 @@ export function TestDialog({ project, initialSettings, onClose, onRun }: Props) 
           </div>
           {loading ? (
             <span className="muted">loading…</span>
-          ) : opponents.length === 0 ? (
-            <span className="muted">No submitted projects available yet.</span>
           ) : (
             <div className="check-list">
               {opponents.map((p) => {
@@ -124,6 +122,18 @@ export function TestDialog({ project, initialSettings, onClose, onRun }: Props) 
                   </label>
                 );
               })}
+              {[...selected]
+                .filter((id) => !opponents.some((o) => o.id === id))
+                .map((id) => (
+                  <label key={id} className="check-row">
+                    <input type="checkbox" checked onChange={() => toggle(id)} />
+                    <span className="check-name muted">project #{id}</span>
+                    <span className="muted" style={{ color: "var(--red)" }}>not found — uncheck to remove</span>
+                  </label>
+                ))}
+              {!loading && opponents.length === 0 && selected.size === 0 && (
+                <span className="muted">No submitted projects available yet.</span>
+              )}
             </div>
           )}
 

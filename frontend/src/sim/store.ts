@@ -1,4 +1,4 @@
-import type { SimMessage, SimStartData, SimStepData, SimState, SnakeState } from "./types";
+import type { SimMessage, SimStartData, SimStepData, SimState, SnakeState, SimLogsData } from "./types";
 
 /**
  * Accumulates sim messages and reconstructs game state at any step.
@@ -20,6 +20,7 @@ export class SimStore {
   private steps: SimStepData[] = [];
   private finalStep: number | null = null;
   annotations: Annotation[] = [];
+  private agentLogs: SimLogsData["agent_logs"] | null = null;
 
   get stepCount(): number {
     return this.steps.length;
@@ -42,7 +43,17 @@ export class SimStore {
       case "stop":
         this.finalStep = msg.data.final_step;
         break;
+      case "logs":
+        this.agentLogs = msg.data.agent_logs;
+        break;
     }
+  }
+
+  /** Returns seat 0's stdout chunk for the given step, or null if unavailable. */
+  getDevLogs(stepIndex: number): string | null {
+    const chunks = this.agentLogs?.["0"];
+    if (!chunks) return null;
+    return chunks[stepIndex] ?? null;
   }
 
   /** Reconstruct game state at a given step index (0-based). */
@@ -70,6 +81,7 @@ export class SimStore {
     this.steps = [];
     this.finalStep = null;
     this.annotations = [];
+    this.agentLogs = null;
   }
 }
 

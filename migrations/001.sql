@@ -91,7 +91,7 @@ CREATE TABLE matches (
 CREATE TABLE match_participants (
     match_id         BIGINT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
     seat             INT NOT NULL,                            -- runner-assigned slot; just a disambiguator
-    project_id       BIGINT NOT NULL REFERENCES projects(id),
+    project_id       BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     project_version  INT NOT NULL,                            -- snapshot of projects.submitted_version
     final_length     INT,
     fatal_step       INT,
@@ -121,7 +121,7 @@ CREATE TABLE match_jobs (
 CREATE TABLE test_match_jobs (
     id                   BIGSERIAL PRIMARY KEY,
     status               job_status NOT NULL DEFAULT 'queued',
-    player_project_id    BIGINT NOT NULL REFERENCES projects(id),
+    player_project_id    BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     opponent_project_ids BIGINT[] NOT NULL DEFAULT '{}',
     sim_args             JSONB NOT NULL,
     requested_by         BIGINT REFERENCES users(id),

@@ -25,9 +25,9 @@ from snake_sim.environment.interfaces.loop_observer_interface import ILoopObserv
 from snake_sim.loop_observables.socket_observable import SocketObservable
 from snake_sim.analyze.scripts.run_analyzer import analyze
 
-from runner.cpu_budget_observer import CpuBudgetObserver
+from runner.agent_container_manager import AgentContainerManager
 from sa_common.types import MatchResult, SimArgs
-from runner.router import router_from_env, Router
+from runner.router import Router
 
 
 log = logging.getLogger(__name__)
@@ -53,10 +53,16 @@ def run_match(
     agent_pids_limit: int = 128,
     grpc_ready_timeout_s: int = 15,
     extra_observers: list[ILoopObserver] | None = None,
+    artifacts_local_dir: Path | None = None,
 ) -> MatchResult:
     match_id = match_id or f"match-{uuid.uuid4().hex[:8]}"
-    artifacts_host_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(artifacts_host_dir, 0o777)
+    # artifacts_local_dir is the path reachable by this process (inside the
+    # runner container). artifacts_host_dir is what the Docker daemon sees when
+    # mounting into the sim container. They differ when the runner is itself
+    # containerised with a bind-mounted artifacts volume.
+    local_dir = artifacts_local_dir or artifacts_host_dir
+    local_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(local_dir, 0o777)
 
     replay_filename = f"{match_id}.run_proto"
 
@@ -117,6 +123,21 @@ def run_match(
                 error="agents not ready within timeout",
             )
 
+        # Notify all observers (cpu + extra) that containers are ready so they
+        # can start monitoring from the very first gRPC init call.
+        seat_to_container = {i: c for i, c in enumerate(agent_containers)}
+        cpu_observer = AgentContainerManager(
+            snake_name_to_container=target_to_container,
+            per_step_budget_seconds=0.05,
+            initial_budget_seconds=0.2,
+            startup_budget_seconds=0.2,
+            poll_interval_s=0.01,
+        )
+        cpu_observer.set_agent_containers(seat_to_container)
+        for obs in (extra_observers or []):
+            if hasattr(obs, "set_agent_containers"):
+                obs.set_agent_containers(seat_to_container)
+
         sim_net = d_client.networks.create(f"{match_id}-sim", driver="bridge", internal=False)
         networks.append(sim_net)
         router.attach(sim_net)
@@ -125,7 +146,10 @@ def run_match(
 
         full_sim_args = [
             "compute",
-            "--external-snake-targets", *targets,
+            "--ext-targets", *targets,
+            "--ext-conn-timeout", "0.1",   # time to ESTABLISH the gRPC channel (agent boot)
+            "--ext-init-timeout", "0.05",  # per-call deadline once connected (50ms)
+            # "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
             "--record-dir", "/tmp/runs",
             "--record-file", replay_filename,
             "--log-dir", "/tmp",
@@ -135,12 +159,6 @@ def run_match(
             *sim_args.to_args(),
         ]
 
-        cpu_observer = CpuBudgetObserver(
-            snake_name_to_container=target_to_container,
-            per_step_budget_seconds=0.2,
-            initial_budget_seconds=1.0,
-            poll_interval_s=0.01,
-        )
         loop_observable.add_observer(cpu_observer)
         for obs in (extra_observers or []):
             loop_observable.add_observer(obs)
@@ -156,6 +174,10 @@ def run_match(
             detach=True,
             remove=False,
             mem_limit="2g",
+            # Sim is trusted (only agents are sandboxed). Run as root so it can
+            # always write replay/log files to the bind-mounted artifacts dir
+            # regardless of host-side ownership.
+            user="root",
         )
 
         # attach sim to each agent network so it can reach every agent

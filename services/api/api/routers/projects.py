@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from psycopg import Connection
 
-from psycopg.errors import ForeignKeyViolation
+
 
 from sa_common.db.projects import (
     Project,
@@ -308,10 +308,4 @@ def delete(
     user: User = Depends(get_current_user),
 ) -> None:
     _owned_meta(conn, project_id, user)  # 404 if not found or not owned
-    try:
-        delete_project(conn, project_id)
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "cannot delete a project that has match history",
-        )
+    delete_project(conn, project_id)

@@ -4,9 +4,9 @@
 Called from the SocketObservable background thread during a test match, so
 the Redis client must be the sync variant. We also accumulate messages to
 write a bundle.zip at the end containing:
-  replay.json   – JSON array of all sim messages
-  analysis.json – TODO: run_analyzer output (empty for now)
-  run.log       – TODO: build/run log output (empty for now)
+  replay.json      – JSON array of all sim messages (start/step/stop)
+  agent_logs.json  – per-seat per-step stdout captured from agent containers
+  analysis.json    – TODO: run_analyzer output
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import json
 import logging
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import redis
@@ -22,7 +23,13 @@ import redis
 from snake_sim.environment.interfaces.loop_observer_interface import ILoopObserver
 from snake_sim.environment.types import LoopStartData, LoopStepData, LoopStopData
 
+if TYPE_CHECKING:
+    from docker.models.containers import Container
+
 log = logging.getLogger(__name__)
+
+_STEP_SEP = "---STEP_END---\n"
+_DEFAULT_STEP_BUDGET = 2_000  # bytes per step chunk before truncation notice
 
 
 class RedisStreamObserver(ILoopObserver):
@@ -31,11 +38,18 @@ class RedisStreamObserver(ILoopObserver):
         redis_client: redis.Redis,
         channel: str,
         bundle_path: Path | None = None,
+        step_stdout_budget_bytes: int = _DEFAULT_STEP_BUDGET,
     ) -> None:
         self._redis = redis_client
         self._channel = channel
         self._bundle_path = bundle_path
+        self._step_stdout_budget_bytes = step_stdout_budget_bytes
         self._messages: list[str] = []
+        # Populated by set_agent_containers() once containers are started.
+        self._seat_containers: dict[int, "Container"] = {}
+
+    def set_agent_containers(self, seat_to_container: dict[int, "Container"]) -> None:
+        self._seat_containers = seat_to_container
 
     # ------------------------------------------------------------------ notify
 
@@ -46,9 +60,15 @@ class RedisStreamObserver(ILoopObserver):
         self._publish({"type": "step", "data": _serialize_step(step_data)})
 
     def notify_stop(self, stop_data: LoopStopData) -> None:
+        # Collect per-step agent logs while containers are still alive, then
+        # emit a single "logs" message before "stop" so the browser receives
+        # them before it closes the WebSocket.
+        agent_logs = self._collect_agent_logs()
+        if agent_logs:
+            self._publish({"type": "logs", "data": {"agent_logs": agent_logs}})
         self._publish({"type": "stop", "data": {"final_step": stop_data.final_step}})
         if self._bundle_path:
-            self._save_bundle()
+            self._save_bundle(agent_logs)
 
     # ------------------------------------------------------------------ helpers
 
@@ -60,22 +80,51 @@ class RedisStreamObserver(ILoopObserver):
         except Exception:
             log.warning("Redis publish failed on channel %s", self._channel, exc_info=True)
 
-    def _save_bundle(self) -> None:
+    def _collect_agent_logs(self) -> dict[str, list[str]]:
+        """Read stdout from the dev agent (seat 0), split by step separator.
+
+        Only seat 0 is captured — opponents' stdout is irrelevant to the user
+        who requested the test match.  Each per-step chunk is individually
+        capped at step_stdout_budget_bytes so that a chatty early step cannot
+        silently crowd out later steps.
+
+        Returns a dict with a single key "0" whose value is a list of log
+        chunks, one per step.
+        """
+        try:
+            raw: bytes = self._seat_containers[0].logs()
+            text = raw.decode(errors="replace")
+        except Exception as e:
+            log.warning("failed to read logs for dev agent (seat 0): %s", e)
+            return {"0": []}
+
+        raw_chunks = text.split(_STEP_SEP)
+        # split() leaves a trailing empty-ish chunk after the last separator.
+        if raw_chunks and not raw_chunks[-1].strip():
+            raw_chunks = raw_chunks[:-1]
+
+        budget = self._step_stdout_budget_bytes
+        chunks: list[str] = []
+        for chunk in raw_chunks:
+            if len(chunk.encode()) > budget:
+                chunk = chunk.encode()[:budget].decode(errors="replace") + (
+                    "\n[stdout truncated — output too long for this step]\n"
+                )
+            chunks.append(chunk)
+
+        return {"0": chunks}
+
+    def _save_bundle(self, agent_logs: dict[str, list[str]] | None) -> None:
         try:
             self._bundle_path.parent.mkdir(parents=True, exist_ok=True)
             replay_bytes = ("[" + ",".join(self._messages) + "]").encode()
 
-            # TODO: populate analysis.json with run_analyzer output
-            analysis_bytes = b"{}"
-
-            # TODO: populate run.log with build/run logs captured during the match
-            run_log_bytes = b""
-
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("replay.json",   replay_bytes)
-                zf.writestr("analysis.json", analysis_bytes)
-                zf.writestr("run.log",       run_log_bytes)
+                zf.writestr("replay.json", replay_bytes)
+                zf.writestr("analysis.json", b"{}")
+                if agent_logs:
+                    zf.writestr("agent_logs.json", json.dumps(agent_logs).encode())
             self._bundle_path.write_bytes(buf.getvalue())
             log.info(
                 "saved bundle to %s (%d bytes)",

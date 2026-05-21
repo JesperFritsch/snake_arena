@@ -41,8 +41,10 @@ export function EditorPage() {
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
 
-  const testPollRef   = useRef<number | null>(null);
+  const testPollRef    = useRef<number | null>(null);
   const viewerPanelRef = useRef<ImperativePanelHandle>(null);
+  const shortcutSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  const shortcutTestRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const dirty = serialize(files) !== originalSig;
   const dirtyPaths = new Set(
@@ -215,7 +217,6 @@ export function EditorPage() {
 
   const runTestMatch = useCallback(async (settings: TestSettings) => {
     if (!meta) return;
-    saveTestSettings(meta.id, settings);
     const w = parseInt(settings.gridWidth);
     const h = parseInt(settings.gridHeight);
     const hasGrid = settings.gridWidth !== "" && settings.gridHeight !== "" && !isNaN(w) && !isNaN(h);
@@ -227,6 +228,7 @@ export function EditorPage() {
         opponent_project_ids: settings.opponentIds,
         sim_args,
       });
+      saveTestSettings(meta.id, settings);
       onTestMatchEnqueued(job);
     } catch (e) {
       push(`Could not start test match: ${e instanceof ApiError ? e.detail : e}`, "error");
@@ -239,11 +241,38 @@ export function EditorPage() {
     if (dirty && !(await save())) return;
     const saved = loadTestSettings(meta.id);
     if (saved) {
-      await runTestMatch(saved).catch(() => {});
+      try {
+        await runTestMatch(saved);
+      } catch {
+        // Toast already shown by runTestMatch. Clear saved opponent IDs so a
+        // repeated Test click doesn't hit the same error (e.g. after a DB
+        // reset where saved IDs no longer refer to submitted projects).
+        saveTestSettings(meta.id, { ...saved, opponentIds: [] });
+        setTestDialogOpen(true);
+      }
     } else {
       setTestDialogOpen(true);
     }
   };
+
+  // Keep shortcut refs current so the single-mount listener always calls the
+  // latest closures (which capture up-to-date state like `meta` and `dirty`).
+  shortcutSaveRef.current = save;
+  shortcutTestRef.current = handleTest;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key === "s") {
+        e.preventDefault();
+        void shortcutSaveRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleTestSettings = async () => {
     if (!meta) return;

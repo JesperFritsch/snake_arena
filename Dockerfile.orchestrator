@@ -8,7 +8,7 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /app
 COPY . .
-RUN apt-get update && apt-get install -y --no-install-recommends git g++ 
+RUN apt-get update && apt-get install -y --no-install-recommends git g++
 RUN uv sync --frozen --package snake-arena-orchestrator
 
 RUN apt-get purge -y git g++ \

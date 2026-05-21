@@ -16,11 +16,12 @@ const MS_PER_STEP_1X = 100;
 
 interface Props {
   job: TestMatchJob;
+  onConsoleLog?: (log: string | null) => void;
 }
 
 type Status = "connecting" | "live" | "loading" | "ended" | "failed" | "error";
 
-export function SimPlayer({ job }: Props) {
+export function SimPlayer({ job, onConsoleLog }: Props) {
   const { getToken } = useAuth();
   const api = useApi();
   const canvasRef    = useRef<HTMLCanvasElement>(null);
@@ -85,10 +86,13 @@ export function SimPlayer({ job }: Props) {
     renderStep(currentStepRef.current);
   }, [renderStep]);
 
-  // Stable ref so WS closures always call the latest resizeCanvas without
+  // Stable refs so WS closures always call the latest callbacks without
   // being included in connectWs's dependency array (which would restart the WS).
   const resizeCanvasRef = useRef(resizeCanvas);
   resizeCanvasRef.current = resizeCanvas;
+
+  const onConsoleLogRef = useRef(onConsoleLog);
+  onConsoleLogRef.current = onConsoleLog;
 
   // ── Re-size whenever the container changes dimensions ────────────────────
   useEffect(() => {
@@ -99,9 +103,10 @@ export function SimPlayer({ job }: Props) {
     return () => obs.disconnect();
   }, [resizeCanvas]);
 
-  // ── Render whenever current step changes ─────────────────────────────────
+  // ── Render and update console whenever current step changes ──────────────
   useEffect(() => {
     renderStep(currentStep);
+    onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStep));
   }, [currentStep, renderStep]);
 
   // ── Load bundle from file host (completed matches) ────────────────────────
@@ -128,12 +133,20 @@ export function SimPlayer({ job }: Props) {
           gridSizeRef.current = { width: d.width, height: d.height };
         }
       }
+      // Load agent logs from the bundle if present (separate file to keep
+      // replay.json lean — the logs aren't needed for playback itself).
+      const agentLogsFile = files["agent_logs.json"];
+      if (agentLogsFile) {
+        const agentLogs = JSON.parse(new TextDecoder().decode(agentLogsFile)) as Record<string, string[]>;
+        storeRef.current.addMessage({ type: "logs", data: { agent_logs: agentLogs } });
+      }
       const n = storeRef.current.stepCount;
       setTotalSteps(n);
       setCurrentStep(0);
       setStatus("ended");
       setPlaying(true);
       resizeCanvas(); // sizes canvas correctly + renders frame 0
+      onConsoleLogRef.current?.(storeRef.current.getDevLogs(0));
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : "failed to load bundle");
       setStatus("error");
@@ -172,6 +185,9 @@ export function SimPlayer({ job }: Props) {
           const n = storeRef.current.stepCount;
           setPlaying(true);
           setTotalSteps(n);
+        } else if (msg.type === "logs") {
+          // Logs arrived — update the console for whichever step is current.
+          onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStepRef.current));
         } else if (msg.type === "stop") {
           setStatus("ended");
           ws?.close();
@@ -202,6 +218,7 @@ export function SimPlayer({ job }: Props) {
     setCurrentStep(0);
     setPlaying(false);
     setErrorMsg("");
+    onConsoleLogRef.current?.(null);
 
     if (job.status === "failure") {
       setErrorMsg(job.error ?? "match failed");

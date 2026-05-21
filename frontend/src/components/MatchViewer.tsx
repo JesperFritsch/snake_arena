@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { TestMatchJob } from "../api/types";
 import { useApi } from "../api/client";
 import { SimPlayer } from "./SimPlayer";
@@ -46,6 +46,7 @@ export function MatchViewer({
   const [showHistory, setShowHistory]   = useState(false);
   const [historyJobs, setHistoryJobs]   = useState<TestMatchJob[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [consoleLog, setConsoleLog]     = useState<string | null>(null);
 
   const activeJob = matchTabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -118,6 +119,11 @@ export function MatchViewer({
     setHistoryJobs([]);
   }, [projectId]);
 
+  // Reset console when the active tab changes.
+  useEffect(() => {
+    setConsoleLog(null);
+  }, [activeTabId]);
+
   // ── Player content ────────────────────────────────────────────────────────
   const playerContent = (() => {
     if (!activeJob) {
@@ -141,13 +147,20 @@ export function MatchViewer({
         </div>
       );
     }
-    return <SimPlayer job={activeJob} />;
+    return <SimPlayer job={activeJob} onConsoleLog={setConsoleLog} />;
   })();
 
   // ── Console content ───────────────────────────────────────────────────────
-  const consoleContent = (
-    <span className="muted">{`# console\n# run a test match to see output here.`}</span>
-  );
+  let consoleContent: React.ReactNode;
+  if (consoleLog) {
+    consoleContent = <pre className="console-pre">{consoleLog}</pre>;
+  } else if (activeJob?.status === "failure" && activeJob.error) {
+    consoleContent = <pre className="console-pre console-pre-err">{activeJob.error}</pre>;
+  } else if (!activeJob) {
+    consoleContent = <span className="muted">run a test match to see output here</span>;
+  } else {
+    consoleContent = <span className="muted">no output for this step</span>;
+  }
 
   return (
     <div className="panel" ref={containerRef}>

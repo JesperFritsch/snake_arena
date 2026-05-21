@@ -53,10 +53,12 @@ class RunnerDaemonConfig:
         self,
         sim_image: str,
         artifacts_dir: Path,
+        artifacts_host_dir: Path,
         poll_interval_s: float = 1.0,
     ):
         self.sim_image = sim_image
-        self.artifacts_dir = artifacts_dir
+        self.artifacts_dir = artifacts_dir          # path inside this container
+        self.artifacts_host_dir = artifacts_host_dir  # path on the Docker host
         self.poll_interval_s = poll_interval_s
 
 
@@ -83,10 +85,11 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             sim_image=config.sim_image,
             agents=setup.specs,
             sim_args=sim_args,
-            artifacts_host_dir=config.artifacts_dir,
+            artifacts_host_dir=config.artifacts_host_dir,
+            artifacts_local_dir=config.artifacts_dir,
             match_id=match_uuid,
             router=router,
-            d_client=d_client
+            d_client=d_client,
         )
 
         participants = build_participants(

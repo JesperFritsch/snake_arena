@@ -51,13 +51,15 @@ class TestRunnerDaemonConfig:
         self,
         sim_image: str,
         artifacts_dir: Path,
+        artifacts_host_dir: Path,
         redis_url: str = "redis://localhost:6379",
         poll_interval_s: float = 1.0,
         registry_prefix: str = "snake",
         build_timeout_s: int = 60,
     ):
         self.sim_image = sim_image
-        self.artifacts_dir = artifacts_dir
+        self.artifacts_dir = artifacts_dir          # path inside this container
+        self.artifacts_host_dir = artifacts_host_dir  # path on the Docker host
         self.redis_url = redis_url
         self.poll_interval_s = poll_interval_s
         self.registry_prefix = registry_prefix
@@ -102,7 +104,11 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 build_timeout_s=config.build_timeout_s,
             )
             if not build_result.success:
-                raise SetupError(f"build failed: {build_result.error}")
+                detail = build_result.build_logs or build_result.error or "unknown error"
+                # Truncate to keep the DB column sane.
+                if len(detail) > 8000:
+                    detail = detail[-8000:]
+                raise SetupError(f"build failed:\n{detail}")
 
         setup = resolve_test_agents(conn, job.player_project_id, job.opponent_project_ids)
 
@@ -110,7 +116,8 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             sim_image=config.sim_image,
             agents=setup.specs,
             sim_args=sim_args,
-            artifacts_host_dir=config.artifacts_dir,
+            artifacts_host_dir=config.artifacts_host_dir,
+            artifacts_local_dir=config.artifacts_dir,
             match_id=match_uuid,
             router=router,
             d_client=d_client,
