@@ -27,7 +27,7 @@ CREATE TABLE projects (
     -- Dev side: editor draft + most recent test build, all transient
     dev_code_archive       BYTEA,                            -- editor's current draft
     dev_image_tag          TEXT,                             -- last test build, overwritten each time
-    dev_build_status       TEXT,                             -- 'building' | 'ready' | 'failed' | NULL
+    dev_build_status       TEXT,                             -- 'saved' | 'building' | 'ready' | 'failed' | NULL
     dev_built_at           TIMESTAMPTZ,
 
     -- Submitted side: pinned for ranked matches, version-counted
@@ -115,16 +115,6 @@ CREATE TABLE match_jobs (
     error         TEXT
 );
 
-CREATE TABLE build_jobs (
-    id           BIGSERIAL PRIMARY KEY,
-    project_id   BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    status       job_status NOT NULL DEFAULT 'queued',
-    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at   TIMESTAMPTZ,
-    finished_at  TIMESTAMPTZ,
-    error        TEXT
-);
-
 -- Test match jobs: user-initiated dev-build matches.
 -- player_project_id uses dev_image_tag; opponents use their submitted_image_tag.
 -- project_version=0 in match_participants marks the player's dev slot.
@@ -147,12 +137,6 @@ CREATE TABLE test_match_jobs (
 
 CREATE INDEX idx_match_jobs_queued
     ON match_jobs(requested_at) WHERE status = 'queued';
-
-CREATE INDEX idx_build_jobs_queued
-    ON build_jobs(requested_at) WHERE status = 'queued';
-
-CREATE INDEX idx_build_jobs_project
-    ON build_jobs(project_id);
 
 CREATE INDEX idx_match_participants_project
     ON match_participants(project_id);

@@ -1,9 +1,10 @@
 # services/orchestrator/orchestrator/cli.py
 """Entry point for the orchestrator.
 
-Two daemons share this CLI:
-    match    poll match_jobs, dispatch matches via the runner
-    build    poll build_jobs, build project images via the builder
+Three daemons share this CLI:
+    match        poll match_jobs, dispatch ranked matches via the runner
+    test-match   poll test_match_jobs, build + run dev test matches
+    (build daemon removed — dev builds happen inline in the test runner)
 
 Each supports:
     (default)   long-running daemon, polls the queue forever
@@ -32,11 +33,6 @@ from orchestrator.runner_daemon import (
     RunnerDaemonConfig,
     run_forever as run_match_forever,
     run_one_iteration as run_match_iteration,
-)
-from orchestrator.builder_daemon import (
-    BuildDaemonConfig,
-    run_forever as run_build_forever,
-    run_one_iteration as run_build_iteration,
 )
 from orchestrator.test_runner_daemon import (
     TestRunnerDaemonConfig,
@@ -79,19 +75,16 @@ def main() -> None:
         "--redis-url",
         default=os.environ.get("REDIS_URL", "redis://localhost:6379"),
     )
-    _add_shared_args(p_test, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
-
-    p_build = subparsers.add_parser("build", help="poll build_jobs and build project images")
-    p_build.add_argument(
+    p_test.add_argument(
         "--registry-prefix",
         default=os.environ.get("BUILDER_REGISTRY_PREFIX", "snake"),
     )
-    p_build.add_argument(
+    p_test.add_argument(
         "--build-timeout",
         type=int,
         default=int(os.environ.get("BUILDER_BUILD_TIMEOUT_S", "60")),
     )
-    _add_shared_args(p_build, default_poll=2.0, poll_env="BUILDER_POLL_INTERVAL_S")
+    _add_shared_args(p_test, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
 
     args = parser.parse_args()
 
@@ -121,16 +114,10 @@ def main() -> None:
             artifacts_dir=args.artifacts_dir,
             redis_url=args.redis_url,
             poll_interval_s=args.poll_interval,
-        )
-        run_one, run_forever = run_test_iteration, run_test_forever
-
-    elif args.command == "build":
-        config = BuildDaemonConfig(
             registry_prefix=args.registry_prefix,
             build_timeout_s=args.build_timeout,
-            poll_interval_s=args.poll_interval,
         )
-        run_one, run_forever = run_build_iteration, run_build_forever
+        run_one, run_forever = run_test_iteration, run_test_forever
 
     else:
         # argparse `required=True` should prevent this

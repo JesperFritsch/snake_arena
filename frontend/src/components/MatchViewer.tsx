@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { BuildJob, TestMatchJob } from "../api/types";
+import type { TestMatchJob } from "../api/types";
 import { useApi } from "../api/client";
 import { SimPlayer } from "./SimPlayer";
 
@@ -21,7 +21,6 @@ function formatAgo(iso: string): string {
 }
 
 interface Props {
-  buildJob: BuildJob | null;
   matchTabs: TestMatchJob[];
   activeTabId: number | null;
   projectId: number | null;
@@ -31,7 +30,6 @@ interface Props {
 }
 
 export function MatchViewer({
-  buildJob,
   matchTabs,
   activeTabId,
   projectId,
@@ -147,18 +145,8 @@ export function MatchViewer({
   })();
 
   // ── Console content ───────────────────────────────────────────────────────
-  const consoleContent = buildJob?.status === "failure" && buildJob.error ? (
-    <>
-      <span className="muted">{`# build #${buildJob.id} failed\n`}</span>
-      <span className="err">{buildJob.error}</span>
-    </>
-  ) : buildJob ? (
-    <span className="muted">
-      {`# build #${buildJob.id} — ${buildJob.status}\n`}
-      {`# compilation logs will appear here once the API exposes them.`}
-    </span>
-  ) : (
-    <span className="muted">{`# console\n# build or run a snake to see output here.`}</span>
+  const consoleContent = (
+    <span className="muted">{`# console\n# run a test match to see output here.`}</span>
   );
 
   return (

@@ -4,10 +4,10 @@
 A project carries both the dev (iterative test) and submitted (ranked) state
 on one row. The API never touches Docker:
 
-  - build  -> insert a row in build_jobs; the builder daemon picks it up.
   - submit -> a pure DB promotion (promote_to_submitted), which copies the
               current dev_image_tag onto the submitted side and bumps the
-              version.
+              version. Requires a ready dev build; the test runner builds
+              automatically when a test match is enqueued.
 
 Project code crosses the wire as a file structure (a list of {path, content,
 encoding}), not a tarball. The API packs it into a .tar.gz for storage and
@@ -23,7 +23,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from psycopg import Connection
 
-from sa_common.db.build_jobs import enqueue_build_job, get_build_job
 from psycopg.errors import ForeignKeyViolation
 
 from sa_common.db.projects import (
@@ -283,19 +282,6 @@ def download_dev_archive(
     )
 
 
-@router.post("/{project_id}/build", status_code=status.HTTP_202_ACCEPTED)
-def build(
-    project_id: int,
-    conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> dict:
-    meta = _owned_meta(conn, project_id, user)
-    if meta.source != "browser":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "only browser projects are built")
-    job_id = enqueue_build_job(conn, project_id)
-    job = get_build_job(conn, job_id)
-    return {"build_job_id": job_id, "job": job}
-
 
 @router.post("/{project_id}/submit", response_model=SubmitResult)
 def submit(
@@ -310,8 +296,7 @@ def submit(
         # the last test build. Tell the user to (re)test first.
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "submit refused: test your latest changes first (no ready dev build, "
-            "or code changed since the last build)",
+            "Test your project before submitting.",
         )
     return SubmitResult(submitted_version=new_version)
 

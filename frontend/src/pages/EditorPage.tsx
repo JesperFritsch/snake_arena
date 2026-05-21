@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { useApi, ApiError } from "../api/client";
-import type { BuildJob, ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
+import type { ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
 import { MatchViewer } from "../components/MatchViewer";
@@ -33,15 +33,13 @@ export function EditorPage() {
   const [submittedFiles, setSubmittedFiles] = useState<ProjectFile[]>([]);
   const [submittedActivePath, setSubmittedActivePath] = useState<string | null>(null);
 
-  const [buildJob, setBuildJob] = useState<BuildJob | null>(null);
   const [matchTabs, setMatchTabs] = useState<TestMatchJob[]>([]);
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
-  const [busy, setBusy] = useState<"" | "save" | "build" | "submit" | "delete" | "restore">("");
+  const [busy, setBusy] = useState<"" | "save" | "submit" | "delete" | "restore">("");
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
 
-  const pollRef       = useRef<number | null>(null);
   const testPollRef   = useRef<number | null>(null);
   const viewerPanelRef = useRef<ImperativePanelHandle>(null);
 
@@ -67,7 +65,6 @@ export function EditorPage() {
       })
       .catch((e) => push(`Failed to load projects: ${e.message}`, "error"));
     return () => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
       if (testPollRef.current) window.clearInterval(testPollRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,7 +75,6 @@ export function EditorPage() {
       const list = knownList ?? projects;
       const m = list.find((p) => p.id === id) ?? (await api.getProject(id));
       setMeta(m);
-      setBuildJob(null);
       setMatchTabs([]);
       setActiveTabId(null);
       if (testPollRef.current) { window.clearInterval(testPollRef.current); testPollRef.current = null; }
@@ -152,32 +148,6 @@ export function EditorPage() {
     }
   }, [api, files, meta, push]);
 
-  const pollBuild = useCallback(
-    (jobId: number) => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const job = await api.getBuildJob(jobId);
-          setBuildJob(job);
-          if (TERMINAL.has(job.status)) {
-            if (pollRef.current) window.clearInterval(pollRef.current);
-            pollRef.current = null;
-            if (meta) api.getProject(meta.id).then(setMeta).catch(() => {});
-            push(
-              job.status === "success" ? "Build succeeded." : `Build ${job.status}.`,
-              job.status === "success" ? "info" : "error",
-            );
-          }
-        } catch (e) {
-          if (pollRef.current) window.clearInterval(pollRef.current);
-          pollRef.current = null;
-          push(`Build polling failed: ${e instanceof ApiError ? e.detail : e}`, "error");
-        }
-      }, 1200);
-    },
-    [api, meta, push],
-  );
-
   const pollTestMatch = useCallback(
     (jobId: number) => {
       if (testPollRef.current) window.clearInterval(testPollRef.current);
@@ -185,6 +155,9 @@ export function EditorPage() {
         try {
           const job = await api.getTestMatchJob(jobId);
           setMatchTabs((prev) => prev.map((t) => (t.id === jobId ? job : t)));
+          // Refresh meta so the build status pill stays in sync while the
+          // worker may be building the dev image as part of this test run.
+          if (meta) api.getProject(meta.id).then(setMeta).catch(() => {});
           if (TERMINAL.has(job.status)) {
             if (testPollRef.current) window.clearInterval(testPollRef.current);
             testPollRef.current = null;
@@ -200,7 +173,7 @@ export function EditorPage() {
         }
       }, 1500);
     },
-    [api, push],
+    [api, meta, push],
   );
 
   const onTestMatchEnqueued = (job: TestMatchJob) => {
@@ -239,32 +212,21 @@ export function EditorPage() {
     setActiveTabId(job.id);
   };
 
-  const build = async () => {
+  const handleTest = async () => {
     if (!meta) return;
-    if (dirty && !(await save())) return; // build uses server-stored code
-    setBusy("build");
-    try {
-      const res = await api.build(meta.id);
-      setBuildJob(res.job ?? null);
-      setMobileTab("viewer");
-      pollBuild(res.build_job_id);
-      push(`Build #${res.build_job_id} queued.`);
-    } catch (e) {
-      push(`Build failed to enqueue: ${e instanceof ApiError ? e.detail : e}`, "error");
-    } finally {
-      setBusy("");
-    }
+    if (dirty && !(await save())) return;
+    setTestDialogOpen(true);
   };
 
   const submit = async () => {
     if (!meta) return;
+    if (dirty && !(await save())) return;
     setBusy("submit");
     try {
       const res = await api.submit(meta.id);
       push(`Submitted as version ${res.submitted_version}.`);
       api.getProject(meta.id).then(setMeta).catch(() => {});
     } catch (e) {
-      // 409 is the expected "test your latest changes first" outcome
       push(e instanceof ApiError ? e.detail : String(e), "error");
     } finally {
       setBusy("");
@@ -309,7 +271,6 @@ export function EditorPage() {
         setFiles([]);
         setOriginalSig("[]");
         setActivePath(null);
-        setBuildJob(null);
       }
       push(`Deleted "${meta.name}".`);
     } catch (e) {
@@ -386,8 +347,12 @@ export function EditorPage() {
           {meta.dev_build_status ?? "no build"}
         </span>
       )}
-      {meta && meta.dev_build_status === "ready" && viewMode === "dev" && (
-        <button className="btn ghost" onClick={() => setTestDialogOpen(true)}>
+      {meta && viewMode === "dev" && (
+        <button
+          className="btn ghost"
+          disabled={busy !== ""}
+          onClick={handleTest}
+        >
           Test
         </button>
       )}
@@ -419,13 +384,10 @@ export function EditorPage() {
             {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
           </button>
           <button
-            className="btn"
-            disabled={!meta || busy === "build" || buildJob?.status === "running"}
-            onClick={build}
+            className="btn primary"
+            disabled={!meta || busy !== ""}
+            onClick={submit}
           >
-            {busy === "build" || buildJob?.status === "running" ? "Building…" : "Build"}
-          </button>
-          <button className="btn primary" disabled={!meta || busy === "submit"} onClick={submit}>
             {busy === "submit" ? "Submitting…" : "Submit"}
           </button>
         </>
@@ -522,7 +484,6 @@ export function EditorPage() {
           <PanelResizeHandle className="resize-handle" />
           <Panel ref={viewerPanelRef} defaultSize={45} minSize={20}>
             <MatchViewer
-                buildJob={buildJob}
                 matchTabs={matchTabs}
                 activeTabId={activeTabId}
                 projectId={meta?.id ?? null}
@@ -539,7 +500,6 @@ export function EditorPage() {
         {mobileTab === "files" && treePane}
         {mobileTab === "editor" && editorPane}
         {mobileTab === "viewer" && <MatchViewer
-                buildJob={buildJob}
                 matchTabs={matchTabs}
                 activeTabId={activeTabId}
                 projectId={meta?.id ?? null}

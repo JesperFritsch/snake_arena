@@ -41,7 +41,7 @@ from sa_common.db.connection import get_conn
 
 
 ProjectSource = Literal["browser", "external_image"]
-BuildStatus = Literal["building", "ready", "failed"]
+BuildStatus = Literal["saved", "building", "ready", "failed"]
 
 
 @dataclass
@@ -206,7 +206,7 @@ def restore_dev_from_submitted(conn: Connection, project_id: int) -> bool:
             """
             UPDATE projects
             SET dev_code_archive = submitted_code_archive,
-                dev_build_status = NULL,
+                dev_build_status = 'saved',
                 updated_at       = NOW()
             WHERE id = %s
               AND submitted_version > 0
@@ -249,7 +249,7 @@ def save_dev_code(
         cur.execute(
             """
             UPDATE projects
-            SET dev_code_archive = %s, updated_at = NOW()
+            SET dev_code_archive = %s, dev_build_status = 'saved', updated_at = NOW()
             WHERE id = %s AND source = 'browser'
             """,
             (dev_code_archive, project_id),

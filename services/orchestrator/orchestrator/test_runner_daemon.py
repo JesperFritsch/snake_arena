@@ -24,9 +24,11 @@ from pathlib import Path
 
 import psycopg
 
+from builder.build import build_project
 from runner.match import run_match
 from runner.router import router_from_env, Router
 from runner.match_results import build_participants
+from sa_common.db.projects import get_project_meta
 from sa_common.db.test_match_jobs import (
     claim_one_queued_test_job,
     mark_test_job_failure,
@@ -51,11 +53,15 @@ class TestRunnerDaemonConfig:
         artifacts_dir: Path,
         redis_url: str = "redis://localhost:6379",
         poll_interval_s: float = 1.0,
+        registry_prefix: str = "snake",
+        build_timeout_s: int = 60,
     ):
         self.sim_image = sim_image
         self.artifacts_dir = artifacts_dir
         self.redis_url = redis_url
         self.poll_interval_s = poll_interval_s
+        self.registry_prefix = registry_prefix
+        self.build_timeout_s = build_timeout_s
 
 
 def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) -> bool:
@@ -80,6 +86,24 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
 
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
+
+        # Build the player's dev image if it isn't already ready.
+        player = get_project_meta(conn, job.player_project_id)
+        if player is None:
+            raise SetupError(f"player project {job.player_project_id} not found")
+        if player.dev_build_status != "ready":
+            log.info(
+                "test job id=%d: player project %d needs build (status=%s)",
+                job.id, job.player_project_id, player.dev_build_status,
+            )
+            build_result = build_project(
+                project_id=job.player_project_id,
+                registry_prefix=config.registry_prefix,
+                build_timeout_s=config.build_timeout_s,
+            )
+            if not build_result.success:
+                raise SetupError(f"build failed: {build_result.error}")
+
         setup = resolve_test_agents(conn, job.player_project_id, job.opponent_project_ids)
 
         result = run_match(

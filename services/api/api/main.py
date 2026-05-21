@@ -3,8 +3,8 @@
 
 Thin HTTP layer over sa_common. No business logic lives here — routes
 validate input, check ownership, and call sa_common DB helpers. Match
-orchestration and agent builds happen in separate containers that poll the
-match_jobs / build_jobs tables.
+orchestration happens in separate containers that poll the match_jobs /
+test_match_jobs tables. Agent builds are triggered inline by the test runner.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.db import close_pool, init_pool
 from api.redis import close_redis, init_redis
-from api.routers import jobs, matches, projects, test_matches
+from api.routers import users, matches, projects, test_matches
 from api.settings import load_settings, get_settings, Settings
 
 log = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def create_app() -> FastAPI:
             return []
         return sorted(p.name for p in d.iterdir() if p.is_dir())
 
-    app.include_router(jobs.router)
+    app.include_router(users.router)
     app.include_router(projects.router)
     app.include_router(matches.router)
     app.include_router(test_matches.router)

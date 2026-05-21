@@ -1,8 +1,6 @@
 import { useAuth } from "@clerk/clerk-react";
 import { useMemo } from "react";
 import type {
-  BuildEnqueueResult,
-  BuildJob,
   ProjectCreate,
   ProjectFiles,
   ProjectMeta,
@@ -73,8 +71,6 @@ export interface ApiClient {
   getProject(id: number): Promise<ProjectMeta>;
   getFiles(id: number): Promise<ProjectFiles>;
   saveFiles(id: number, files: ProjectFiles): Promise<ProjectMeta>;
-  build(id: number): Promise<BuildEnqueueResult>;
-  getBuildJob(id: number): Promise<BuildJob>;
   submit(id: number): Promise<SubmitResult>;
   deleteProject(id: number): Promise<void>;
   getSubmittedFiles(id: number): Promise<ProjectFiles>;
@@ -100,8 +96,6 @@ export function useApi(): ApiClient {
       getProject: (id) => request(g, "GET", `/projects/${id}`),
       getFiles: (id) => request(g, "GET", `/projects/${id}/files`),
       saveFiles: (id, files) => request(g, "PUT", `/projects/${id}/files`, files),
-      build: (id) => request(g, "POST", `/projects/${id}/build`),
-      getBuildJob: (id) => request(g, "GET", `/build-jobs/${id}`),
       submit: (id) => request(g, "POST", `/projects/${id}/submit`),
       deleteProject: (id) => request(g, "DELETE", `/projects/${id}`),
       getSubmittedFiles: (id) => request(g, "GET", `/projects/${id}/files/submitted`),

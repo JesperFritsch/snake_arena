@@ -31,6 +31,7 @@ export function SimPlayer({ job }: Props) {
   const gridSizeRef  = useRef<{ width: number; height: number } | null>(null);
 
   const currentStepRef = useRef(0);
+  const totalStepsRef  = useRef(0);
 
   const [status, setStatus]           = useState<Status>("connecting");
   const [totalSteps, setTotalSteps]   = useState(0);
@@ -40,9 +41,9 @@ export function SimPlayer({ job }: Props) {
   const [errorMsg, setErrorMsg]       = useState("");
 
   currentStepRef.current = currentStep;
+  totalStepsRef.current  = totalSteps;
 
-  const speed  = SPEEDS[speedIdx];
-  const isLive = status === "live";
+  const speed = SPEEDS[speedIdx];
 
   // ── Render ────────────────────────────────────────────────────────────────
   const renderStep = useCallback((step: number) => {
@@ -166,13 +167,13 @@ export function SimPlayer({ job }: Props) {
           resizeCanvasRef.current();
           setStatus("live");
           setCurrentStep(0);
+          setPlaying(true);
         } else if (msg.type === "step") {
           const n = storeRef.current.stepCount;
+          setPlaying(true);
           setTotalSteps(n);
-          setCurrentStep(n - 1);
         } else if (msg.type === "stop") {
           setStatus("ended");
-          setPlaying(false);
           ws?.close();
         } else if (msg.type === "error") {
           setStatus("failed");
@@ -220,37 +221,39 @@ export function SimPlayer({ job }: Props) {
 
   // ── Playback interval ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (isLive || !playing || totalSteps === 0) return;
-    const id = setInterval(() => {
-      setCurrentStep((prev) => {
-        const next = prev + 1;
-        if (next >= totalSteps) { setPlaying(false); return totalSteps - 1; }
-        return next;
-      });
-    }, MS_PER_STEP_1X / speed);
-    return () => clearInterval(id);
-  }, [isLive, playing, speed, totalSteps]);
+    if (!playing) return;
+    let id: number;
+    const tick = () => {
+      const total = totalStepsRef.current;
+      const current = currentStepRef.current;
+      if (total === 0 || current >= total - 1) {
+        // No new step yet — poll quickly rather than stopping.
+        id = window.setTimeout(tick, 5);
+      } else {
+        setCurrentStep(current + 1);
+        id = window.setTimeout(tick, MS_PER_STEP_1X / speed);
+      }
+    };
+    id = window.setTimeout(tick, MS_PER_STEP_1X / speed);
+    return () => window.clearTimeout(id);
+  }, [playing, speed]);
 
   // ── Controls ──────────────────────────────────────────────────────────────
   const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
     setCurrentStep(Number(e.target.value));
-    if (!isLive) setPlaying(false);
+    setPlaying(false);
   };
 
   const togglePlay = () => {
-    if (isLive) return;
     if (currentStep >= totalSteps - 1 && !playing) setCurrentStep(0);
     setPlaying((p) => !p);
   };
 
   const cycleSpeed = () => setSpeedIdx((i) => (i + 1) % SPEEDS.length);
 
-  const showControls = status === "ended" || (status === "live" && totalSteps > 0);
-  const snakeTags    = storeRef.current.startData?.snake_tags;
+  const showControls = totalSteps > 0;
+  const snakeLegend  = storeRef.current.startData?.snake_tags;
   const SNAKE_COLORS = ["#b8ff3c","#60a5fa","#f87171","#fb923c","#a78bfa","#34d399"];
-  // Map snake ID (0, 1, 2…) to project name; fall back to the raw tag if missing.
-  const snakeName = (id: string) =>
-    job.participant_names[Number(id)] ?? snakeTags?.[id] ?? `agent ${id}`;
 
   return (
     <div className="sim-player">
@@ -267,18 +270,20 @@ export function SimPlayer({ job }: Props) {
         {status === "error" && (
           <div className="sim-overlay sim-overlay-err">{errorMsg || "connection error"}</div>
         )}
-        {status === "live" && <div className="sim-live-badge">● LIVE</div>}
+        {status === "live" && currentStep >= totalSteps - 1 && totalSteps > 0 && (
+          <div className="sim-live-badge">● LIVE</div>
+        )}
       </div>
 
-      {snakeTags && (
+      {snakeLegend && (
         <div className="sim-legend">
-          {Object.keys(snakeTags).map((id) => (
+          {Object.entries(snakeLegend).map(([id, name]) => (
             <span key={id} className="sim-legend-item">
               <span
                 className="sim-legend-dot"
                 style={{ background: SNAKE_COLORS[Number(id) % SNAKE_COLORS.length] }}
               />
-              {snakeName(id)}
+              {name}
             </span>
           ))}
         </div>
@@ -286,11 +291,9 @@ export function SimPlayer({ job }: Props) {
 
       {showControls && (
         <div className="sim-controls">
-          {!isLive && (
-            <button className="btn ghost sim-ctrl-btn" onClick={togglePlay}>
-              {playing ? "⏸" : "▶"}
-            </button>
-          )}
+          <button className="btn ghost sim-ctrl-btn" onClick={togglePlay}>
+            {playing ? "⏸" : "▶"}
+          </button>
           <input
             type="range"
             className="sim-scrubber"
@@ -298,14 +301,11 @@ export function SimPlayer({ job }: Props) {
             max={Math.max(0, totalSteps - 1)}
             value={currentStep}
             onChange={handleScrub}
-            disabled={isLive}
           />
           <span className="sim-step-counter">{currentStep + 1} / {totalSteps}</span>
-          {!isLive && (
-            <button className="btn ghost sim-ctrl-btn" onClick={cycleSpeed} title="playback speed">
-              {speed}×
-            </button>
-          )}
+          <button className="btn ghost sim-ctrl-btn" onClick={cycleSpeed} title="playback speed">
+            {speed}×
+          </button>
         </div>
       )}
 

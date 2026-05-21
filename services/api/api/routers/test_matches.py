@@ -83,11 +83,6 @@ def enqueue(
     player = get_project_meta(conn, body.player_project_id)
     if player is None or player.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "player project not found")
-    if player.dev_build_status != "ready":
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "player project has no ready dev build — build it first",
-        )
 
     for opp_id in body.opponent_project_ids:
         opp = get_project_meta(conn, opp_id)

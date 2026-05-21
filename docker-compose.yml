@@ -47,17 +47,4 @@ services:
     ports:
       - "127.0.0.1:8081:80"
 
-  builder:
-    build:
-      context: .
-      dockerfile: Dockerfile.orchestrator
-    command: ["build"]
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - postgres
-    restart: unless-stopped
-
 # sim-artifacts is a bind mount (./sim-artifacts) — no named volume needed

@@ -14,7 +14,7 @@ export interface ProjectFiles {
 }
 
 export type ProjectSource = "browser" | "external_image";
-export type BuildStatus = "building" | "ready" | "failed";
+export type BuildStatus = "saved" | "building" | "ready" | "failed";
 
 // ProjectMeta (projects.py) — no code archives.
 export interface ProjectMeta {
@@ -46,21 +46,6 @@ export type JobStatus =
   | "success"
   | "failure"
   | "cancelled";
-
-export interface BuildJob {
-  id: number;
-  project_id: number;
-  status: JobStatus | string;
-  requested_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-  error: string | null;
-}
-
-export interface BuildEnqueueResult {
-  build_job_id: number;
-  job: BuildJob | null;
-}
 
 export interface SubmitResult {
   submitted_version: number;
