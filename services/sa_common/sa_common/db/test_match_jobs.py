@@ -34,11 +34,13 @@ class TestMatchJob:
     finished_at: datetime | None
     match_id: int | None
     error: str | None
+    replay_json_path: str | None
 
 
 _JOB_COLUMNS = """
     id, status, player_project_id, opponent_project_ids, sim_args,
-    requested_by, requested_at, started_at, finished_at, match_id, error
+    requested_by, requested_at, started_at, finished_at, match_id, error,
+    replay_json_path
 """
 
 
@@ -55,6 +57,7 @@ def _row_to_job(row: dict[str, Any]) -> TestMatchJob:
         finished_at=row["finished_at"],
         match_id=row["match_id"],
         error=row["error"],
+        replay_json_path=row["replay_json_path"],
     )
 
 
@@ -102,22 +105,28 @@ def claim_one_queued_test_job(conn: psycopg.Connection) -> TestMatchJob | None:
             RETURNING
                 j.id, j.status, j.player_project_id, j.opponent_project_ids,
                 j.sim_args, j.requested_by, j.requested_at, j.started_at,
-                j.finished_at, j.match_id, j.error
+                j.finished_at, j.match_id, j.error, j.replay_json_path
             """
         )
         row = cur.fetchone()
         return _row_to_job(row) if row else None
 
 
-def mark_test_job_success(conn: psycopg.Connection, job_id: int, match_id: int) -> None:
+def mark_test_job_success(
+    conn: psycopg.Connection,
+    job_id: int,
+    match_id: int,
+    replay_json_path: str | None = None,
+) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE test_match_jobs
-            SET status = 'success', finished_at = NOW(), match_id = %s, error = NULL
+            SET status = 'success', finished_at = NOW(), match_id = %s,
+                replay_json_path = %s, error = NULL
             WHERE id = %s
             """,
-            (match_id, job_id),
+            (match_id, replay_json_path, job_id),
         )
 
 

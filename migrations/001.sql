@@ -139,7 +139,8 @@ CREATE TABLE test_match_jobs (
     started_at           TIMESTAMPTZ,
     finished_at          TIMESTAMPTZ,
     match_id             BIGINT REFERENCES matches(id),
-    error                TEXT
+    error                TEXT,
+    replay_json_path     TEXT                                   -- relative path within ARTIFACTS_DIR, e.g. runs/{uuid}.json.gz
 );
 
 -- Indexes

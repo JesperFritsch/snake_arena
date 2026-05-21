@@ -10,11 +10,16 @@ dependencies = [
     "pyjwt[crypto]>=2.9",
     "python-multipart>=0.0.9",
     "pydantic>=2.13",
+    "redis[hiredis]>=5.0",
     "snake-arena-common",
+    "snake_sim @ git+https://github.com/JesperFritsch/snake_sim.git@master",
 ]
 
 [project.scripts]
 api = "api.main:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.uv.sources]
 snake-arena-common = { workspace = true }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { useApi, ApiError } from "../api/client";
 import type { BuildJob, ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
@@ -40,8 +40,9 @@ export function EditorPage() {
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
 
-  const pollRef = useRef<number | null>(null);
-  const testPollRef = useRef<number | null>(null);
+  const pollRef       = useRef<number | null>(null);
+  const testPollRef   = useRef<number | null>(null);
+  const viewerPanelRef = useRef<ImperativePanelHandle>(null);
 
   const dirty = serialize(files) !== originalSig;
   const dirtyPaths = new Set(
@@ -205,6 +206,9 @@ export function EditorPage() {
     setMobileTab("viewer");
     pollTestMatch(job.id);
     push(`Test match #${job.id} queued.`);
+    // Expand the viewer panel past the WIDE_THRESHOLD so the layout snaps to
+    // side-by-side (player left, console right) automatically.
+    viewerPanelRef.current?.resize(52);
   };
 
   const build = async () => {
@@ -488,7 +492,7 @@ export function EditorPage() {
             </PanelGroup>
           </Panel>
           <PanelResizeHandle className="resize-handle" />
-          <Panel defaultSize={45} minSize={20}>
+          <Panel ref={viewerPanelRef} defaultSize={45} minSize={20}>
             <MatchViewer buildJob={buildJob} testMatchJob={testMatchJob} />
           </Panel>
         </PanelGroup>

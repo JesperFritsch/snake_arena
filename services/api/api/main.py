@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.db import close_pool, init_pool
+from api.redis import close_redis, init_redis
 from api.routers import jobs, matches, projects, test_matches
 from api.settings import load_settings, get_settings, Settings
 
@@ -30,12 +31,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         min_size=settings.pool_min_size,
         max_size=settings.pool_max_size,
     )
-    log.info("connection pool opened")
+    init_redis(settings.redis_url)
+    log.info("connection pool and Redis pool opened")
     try:
         yield
     finally:
         close_pool()
-        log.info("connection pool closed")
+        await close_redis()
+        log.info("connection pool and Redis pool closed")
 
 
 def create_app() -> FastAPI:

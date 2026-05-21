@@ -40,6 +40,12 @@ def close_pool() -> None:
         _pool = None
 
 
+def get_pool() -> ConnectionPool:
+    if _pool is None:
+        raise RuntimeError("connection pool not initialised")
+    return _pool
+
+
 def get_db() -> Iterator[psycopg.Connection]:
     """FastAPI dependency: lease a connection for the duration of one request.
 

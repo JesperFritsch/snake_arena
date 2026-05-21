@@ -21,6 +21,7 @@ from docker.models.containers import Container
 from docker.models.networks import Network
 
 from snake_sim.environment.interfaces.loop_observable_interface import ILoopObservable
+from snake_sim.environment.interfaces.loop_observer_interface import ILoopObserver
 from snake_sim.loop_observables.socket_observable import SocketObservable
 from snake_sim.analyze.scripts.run_analyzer import analyze
 
@@ -51,6 +52,7 @@ def run_match(
     agent_cpus: float = 1.0,
     agent_pids_limit: int = 128,
     grpc_ready_timeout_s: int = 15,
+    extra_observers: list[ILoopObserver] | None = None,
 ) -> MatchResult:
     match_id = match_id or f"match-{uuid.uuid4().hex[:8]}"
     artifacts_host_dir.mkdir(parents=True, exist_ok=True)
@@ -140,6 +142,8 @@ def run_match(
             poll_interval_s=0.01,
         )
         loop_observable.add_observer(cpu_observer)
+        for obs in (extra_observers or []):
+            loop_observable.add_observer(obs)
         loop_observable.start()
 
         log.info("starting sim with args: %s", full_sim_args)

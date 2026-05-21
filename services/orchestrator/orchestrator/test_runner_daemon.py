@@ -5,6 +5,10 @@ Mirrors runner_daemon but reads from test_match_jobs and resolves agents
 asymmetrically: player uses dev_image_tag, opponents use submitted_image_tag.
 Resulting matches are recorded with is_test=True so the leaderboard can
 exclude them.
+
+During each match a RedisStreamObserver publishes JSON frames to a Redis
+pub/sub channel (test-match:{job_id}) for live browser streaming, and saves
+a .json.gz replay file to artifacts_dir at the end.
 """
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import logging
 import time
 import uuid
 import docker
+import redis
 
 from threading import Event
 from datetime import datetime, timezone
@@ -32,6 +37,7 @@ from sa_common.db.connection import get_conn
 from sa_common.types import SimArgs
 
 from orchestrator.agents import SetupError, resolve_test_agents
+from orchestrator.redis_observer import RedisStreamObserver
 
 log = logging.getLogger(__name__)
 d_client = docker.from_env()
@@ -43,10 +49,12 @@ class TestRunnerDaemonConfig:
         self,
         sim_image: str,
         artifacts_dir: Path,
+        redis_url: str = "redis://localhost:6379",
         poll_interval_s: float = 1.0,
     ):
         self.sim_image = sim_image
         self.artifacts_dir = artifacts_dir
+        self.redis_url = redis_url
         self.poll_interval_s = poll_interval_s
 
 
@@ -60,6 +68,16 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     match_uuid = f"test-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(timezone.utc)
 
+    replay_relative = f"runs/{match_uuid}.json.gz"
+    replay_abs = config.artifacts_dir / replay_relative
+
+    redis_client = redis.Redis.from_url(config.redis_url, socket_connect_timeout=5)
+    observer = RedisStreamObserver(
+        redis_client=redis_client,
+        channel=f"test-match:{job.id}",
+        replay_path=replay_abs,
+    )
+
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
         setup = resolve_test_agents(conn, job.player_project_id, job.opponent_project_ids)
@@ -72,6 +90,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             match_id=match_uuid,
             router=router,
             d_client=d_client,
+            extra_observers=[observer],
         )
 
         participants = build_participants(
@@ -80,6 +99,8 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             version_by_agent_name=setup.version_by_name,
             seat_by_agent_name=setup.seat_by_name,
         )
+
+        saved_replay = replay_abs.exists()
 
         with conn.transaction():
             match_id = record_match_result(
@@ -94,7 +115,12 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 participants=participants,
                 is_test=True,
             )
-            mark_test_job_success(conn, job.id, match_id)
+            mark_test_job_success(
+                conn,
+                job.id,
+                match_id,
+                replay_json_path=replay_relative if saved_replay else None,
+            )
 
         log.info("test job id=%d done (match_id=%d)", job.id, match_id)
 
@@ -107,6 +133,12 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         log.exception("test job id=%d crashed during execution", job.id)
         with conn.transaction():
             mark_test_job_failure(conn, job.id, repr(e))
+
+    finally:
+        try:
+            redis_client.close()
+        except Exception:
+            pass
 
     return True
 

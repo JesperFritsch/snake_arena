@@ -84,6 +84,7 @@ export interface TestMatchJob {
   finished_at: string | null;
   match_id: number | null;
   error: string | null;
+  replay_json_path: string | null;
 }
 
 export interface TestMatchCreate {

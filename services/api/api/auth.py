@@ -44,6 +44,10 @@ def _jwks_client() -> PyJWKClient:
 
 
 
+def decode_token(token: str) -> dict:
+    return _decode(token)
+
+
 def _decode(token: str) -> dict:
     settings = _settings()
     try:

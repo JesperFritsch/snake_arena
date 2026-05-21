@@ -75,6 +75,10 @@ def main() -> None:
         type=Path,
         default=Path(os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts")),
     )
+    p_test.add_argument(
+        "--redis-url",
+        default=os.environ.get("REDIS_URL", "redis://localhost:6379"),
+    )
     _add_shared_args(p_test, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
 
     p_build = subparsers.add_parser("build", help="poll build_jobs and build project images")
@@ -115,6 +119,7 @@ def main() -> None:
         config = TestRunnerDaemonConfig(
             sim_image=args.sim_image,
             artifacts_dir=args.artifacts_dir,
+            redis_url=args.redis_url,
             poll_interval_s=args.poll_interval,
         )
         run_one, run_forever = run_test_iteration, run_test_forever
