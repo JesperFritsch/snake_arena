@@ -33,7 +33,7 @@ export class SimStore {
   addMessage(msg: SimMessage): void {
     switch (msg.type) {
       case "start":
-        this.startData = msg.data;
+        this.startData = msg.data.env_meta_data;
         this.steps = [];
         this.finalStep = null;
         break;

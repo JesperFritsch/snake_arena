@@ -14,7 +14,10 @@ class MatchResult:
     agent_logs: dict[str, str] | None = Field(default_factory={})
     tags_to_names: dict[str, str] | None = Field(default_factory={})
     replay_path: Path | None = None
-    run_analysis: RunAnalysis | None = None 
+    run_analysis: RunAnalysis | None = None
+    # Per-step stdout chunks for the dev agent (seat 0), split on the harness
+    # step separator. Used to build the test-match console view.
+    dev_agent_step_logs: list[str] | None = None
     error: str | None = None
 
 

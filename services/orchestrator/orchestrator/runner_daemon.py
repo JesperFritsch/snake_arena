@@ -92,6 +92,11 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             d_client=d_client,
         )
 
+        # TODO: adopt the test-match pattern here — capture the replay in-process
+        # via a FilePersistObserver, then run analyze() and build the bundle in
+        # this daemon (run_match is pure execution and no longer analyzes).
+        # Until then ranked matches record participation best-effort (no analysis).
+
         participants = build_participants(
             result=result,
             project_by_agent_name=setup.project_by_name,

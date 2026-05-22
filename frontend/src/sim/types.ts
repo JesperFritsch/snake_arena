@@ -1,6 +1,8 @@
-// Types mirroring the JSON messages published by RedisStreamObserver.
-// Keys are stringified integers (JSON only supports string keys in objects).
+// Types mirroring the snake_sim model dumps published by RedisStreamObserver
+// and stored in the replay. Keys are stringified integers (JSON only supports
+// string keys in objects).
 
+// Contents of LoopStartData.env_meta_data (EnvMetaData.model_dump).
 export interface SimStartData {
   height: number;
   width: number;
@@ -11,6 +13,7 @@ export interface SimStartData {
   snake_values: Record<string, { head_value: number; body_value: number }>;
   start_positions: Record<string, [number, number]>; // "0" → [x, y]
   base_map: number[][];                        // [row/y][col/x]
+  base_map_dtype?: string;
 }
 
 export interface SimStepData {
@@ -34,7 +37,7 @@ export interface SimLogsData {
 }
 
 export type SimMessage =
-  | { type: "start"; data: SimStartData }
+  | { type: "start"; data: { env_meta_data: SimStartData } }
   | { type: "step";  data: SimStepData }
   | { type: "stop";  data: SimStopData }
   | { type: "logs";  data: SimLogsData }

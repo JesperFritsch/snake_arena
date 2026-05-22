@@ -4,7 +4,7 @@ import { unzipSync } from "fflate";
 import { useApi } from "../api/client";
 import { SimStore } from "../sim/store";
 import { SimRenderer } from "../sim/renderer";
-import type { SimMessage, SimStartData } from "../sim/types";
+import type { SimMessage } from "../sim/types";
 import type { TestMatchJob } from "../api/types";
 
 const BASE_WS_URL = (import.meta.env.VITE_API_BASE_URL ?? "")
@@ -123,13 +123,17 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
       const buf   = await resp.arrayBuffer();
       const files = unzipSync(new Uint8Array(buf));
       const replayText = new TextDecoder().decode(files["replay.json"]);
-      const messages: SimMessage[] = JSON.parse(replayText);
+      // replay.json is JSONL — one {type,data} message per line.
+      const messages: SimMessage[] = replayText
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as SimMessage);
 
       storeRef.current.reset();
       for (const msg of messages) {
         storeRef.current.addMessage(msg);
         if (msg.type === "start") {
-          const d = msg.data as SimStartData;
+          const d = msg.data.env_meta_data;
           gridSizeRef.current = { width: d.width, height: d.height };
         }
       }
@@ -175,7 +179,7 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
         storeRef.current.addMessage(msg);
 
         if (msg.type === "start") {
-          const d = msg.data as SimStartData;
+          const d = msg.data.env_meta_data;
           gridSizeRef.current = { width: d.width, height: d.height };
           resizeCanvasRef.current();
           setStatus("live");

@@ -23,7 +23,6 @@ from docker.models.networks import Network
 from snake_sim.environment.interfaces.loop_observable_interface import ILoopObservable
 from snake_sim.environment.interfaces.loop_observer_interface import ILoopObserver
 from snake_sim.loop_observables.socket_observable import SocketObservable
-from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from runner.agent_container_manager import AgentContainerManager
 from sa_common.types import MatchResult, SimArgs
@@ -31,6 +30,25 @@ from runner.router import Router
 
 
 log = logging.getLogger(__name__)
+
+_STEP_SEP = "---STEP_END---\n"  # printed by the agent harness after each update()
+_STEP_STDOUT_BUDGET = 2_000     # bytes per step chunk before truncation notice
+
+
+def _split_step_logs(text: str, budget: int = _STEP_STDOUT_BUDGET) -> list[str]:
+    """Split an agent's stdout into per-step chunks on the harness separator,
+    capping each chunk so a chatty early step can't crowd out later ones."""
+    chunks = text.split(_STEP_SEP)
+    if chunks and not chunks[-1].strip():
+        chunks = chunks[:-1]
+    out: list[str] = []
+    for chunk in chunks:
+        if len(chunk.encode()) > budget:
+            chunk = chunk.encode()[:budget].decode(errors="replace") + (
+                "\n[stdout truncated — output too long for this step]\n"
+            )
+        out.append(chunk)
+    return out
 
 
 @dataclass
@@ -147,15 +165,14 @@ def run_match(
         full_sim_args = [
             "compute",
             "--ext-targets", *targets,
-            "--ext-conn-timeout", "0.1",   # time to ESTABLISH the gRPC channel (agent boot)
+            "--ext-conn-timeout", "2.0",   # time to ESTABLISH the gRPC channel (agent boot)
             "--ext-init-timeout", "0.05",  # per-call deadline once connected (50ms)
             # "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
-            "--record-dir", "/tmp/runs",
-            "--record-file", replay_filename,
-            "--log-dir", "/tmp",
             "--no-render",
+            "--no-record",
             "--snake-count", "0",  # don't run any inproc snakes
             "--socket-observer", observable_addr,
+            "--log-dir", "/tmp",
             *sim_args.to_args(),
         ]
 
@@ -165,19 +182,15 @@ def run_match(
         loop_observable.start()
 
         log.info("starting sim with args: %s", full_sim_args)
+
         sim_container = d_client.containers.run(
             sim_image,
             command=full_sim_args,
             network=sim_net.name,
             name=f"{match_id}-sim",
-            volumes={str(artifacts_host_dir.resolve()): {"bind": "/tmp", "mode": "rw"}},
             detach=True,
             remove=False,
             mem_limit="2g",
-            # Sim is trusted (only agents are sandboxed). Run as root so it can
-            # always write replay/log files to the bind-mounted artifacts dir
-            # regardless of host-side ownership.
-            user="root",
         )
 
         # attach sim to each agent network so it can reach every agent
@@ -197,23 +210,19 @@ def run_match(
 
         sim_logs = sim_container.logs().decode(errors="replace")
         agent_logs = _collect_agent_logs(agent_containers)
-        replay_path = artifacts_host_dir / "runs" / replay_filename
-        replay_path = replay_path if replay_path.exists() else None
 
-        run_analysis = None
-        if exit_code == 0 and replay_path is not None:
-            try:
-                run_analysis = analyze(replay_path)
-            except Exception as e:
-                log.warning("analysis failed: %s", e)
+        # Per-step stdout for the dev agent (seat 0), while containers are alive.
+        dev_step_logs = None
+        if agent_containers:
+            dev_text = agent_logs.get(agent_containers[0].name, "")
+            dev_step_logs = _split_step_logs(dev_text)
 
         return MatchResult(
-            success=(exit_code == 0 and replay_path is not None),
+            success=exit_code == 0,
             sim_logs=sim_logs,
             agent_logs=agent_logs,
             tags_to_names=target_to_name,
-            replay_path=replay_path,
-            run_analysis=run_analysis,
+            dev_agent_step_logs=dev_step_logs,
         )
 
     finally:

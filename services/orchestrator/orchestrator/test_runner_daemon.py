@@ -12,9 +12,12 @@ a .json.gz replay file to artifacts_dir at the end.
 """
 from __future__ import annotations
 
+import io
+import json
 import logging
 import time
 import uuid
+import zipfile
 import docker
 import redis
 
@@ -38,12 +41,41 @@ from sa_common.db.matches import record_match_result
 from sa_common.db.connection import get_conn
 from sa_common.types import SimArgs
 
+from snake_sim.loop_observers.file_persist_observer import FilePersistObserver
+from snake_sim.analyze.scripts.run_analyzer import analyze
+
 from orchestrator.agents import SetupError, resolve_test_agents
 from orchestrator.redis_observer import RedisStreamObserver
 
 log = logging.getLogger(__name__)
 d_client = docker.from_env()
 router = router_from_env(d_client)
+
+
+def _build_bundle(
+    bundle_path: Path,
+    replay_path: Path,
+    dev_step_logs: list[str] | None,
+) -> bool:
+    """Zip the test-match artifacts (replay + dev-agent logs) into bundle_path.
+
+    Returns True if the bundle was written. analysis.json is a placeholder
+    until the frontend consumes run_analyzer output.
+    """
+    try:
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if replay_path.exists():
+                zf.writestr("replay.json", replay_path.read_bytes())
+            zf.writestr("agent_logs.json", json.dumps({"0": dev_step_logs or []}).encode())
+            zf.writestr("analysis.json", b"{}")
+        bundle_path.write_bytes(buf.getvalue())
+        log.info("saved bundle to %s (%d bytes)", bundle_path, bundle_path.stat().st_size)
+        return True
+    except Exception:
+        log.warning("failed to save bundle to %s", bundle_path, exc_info=True)
+        return False
 
 
 class TestRunnerDaemonConfig:
@@ -76,6 +108,8 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     match_uuid = f"test-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(timezone.utc)
 
+    job_dir = config.artifacts_dir / "test-matches" / str(job.id)
+    replay_path = job_dir / "replay.json"
     bundle_relative = f"test-matches/{job.id}/bundle.zip"
     bundle_abs = config.artifacts_dir / bundle_relative
 
@@ -83,8 +117,10 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     observer = RedisStreamObserver(
         redis_client=redis_client,
         channel=f"test-match:{job.id}",
-        bundle_path=bundle_abs,
     )
+    # Captures the replay to job_dir/replay.json in-process (no volume mount,
+    # no sim-side recording). Created here so the finally block can close it.
+    file_observer = FilePersistObserver(store_dir=job_dir, filename="replay.json")
 
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
@@ -121,8 +157,26 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             match_id=match_uuid,
             router=router,
             d_client=d_client,
-            extra_observers=[observer],
+            extra_observers=[observer, file_observer],
         )
+
+        # Flush the in-process replay writer before reading the file back.
+        file_observer.close()
+
+        # Emit terminal frames to any live viewer: logs first, then stop.
+        # The API closes the stream on "stop", so logs must precede it. Done
+        # before analyze/bundle so viewers aren't blocked on post-processing.
+        observer.publish_logs(result.dev_agent_step_logs)
+        observer.publish_stop()
+
+        # Analyze the captured replay; populate result.run_analysis so
+        # build_participants can derive per-snake outcomes. Skip an empty
+        # replay (match streamed nothing) — analyze() would choke on it.
+        if result.success and replay_path.exists() and replay_path.stat().st_size > 0:
+            try:
+                result.run_analysis = analyze(replay_path)
+            except Exception:
+                log.warning("analysis failed for job id=%d", job.id, exc_info=True)
 
         participants = build_participants(
             result=result,
@@ -131,7 +185,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             seat_by_agent_name=setup.seat_by_name,
         )
 
-        saved_bundle = bundle_abs.exists()
+        saved_bundle = _build_bundle(bundle_abs, replay_path, result.dev_agent_step_logs)
 
         with conn.transaction():
             match_id = record_match_result(
@@ -141,7 +195,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 sim_args=sim_args,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
-                replay_r2_key=str(result.replay_path) if result.replay_path else None,
+                replay_r2_key=None,
                 error=result.error,
                 participants=participants,
                 is_test=True,
@@ -166,6 +220,10 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             mark_test_job_failure(conn, job.id, repr(e))
 
     finally:
+        try:
+            file_observer.close()  # idempotent; ensures the writer thread is joined
+        except Exception:
+            pass
         try:
             redis_client.close()
         except Exception:
