@@ -158,15 +158,13 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             router=router,
             d_client=d_client,
             extra_observers=[observer, file_observer],
+            on_step_log=observer.publish_step_log,
         )
 
         # Flush the in-process replay writer before reading the file back.
         file_observer.close()
 
-        # Emit terminal frames to any live viewer: logs first, then stop.
-        # The API closes the stream on "stop", so logs must precede it. Done
-        # before analyze/bundle so viewers aren't blocked on post-processing.
-        observer.publish_logs(result.dev_agent_step_logs)
+        # Per-step logs already streamed live via on_step_log; just signal end.
         observer.publish_stop()
 
         # Analyze the captured replay; populate result.run_analysis so

@@ -3,13 +3,12 @@
 
 Live streaming only — no persistence. While the match runs it forwards each
 start/step as a {type, data} message (data is the snake_sim model dump).
+Per-step dev-agent stdout is pushed via publish_step_log() (driven by the
+runner's log streamer).
 
-The terminal frames are deferred: the API closes the stream on the first
-"stop" message, and the dev-agent logs only exist once the match has ended
-(collected from the container). So this observer records final_step in
-notify_stop but does NOT publish it; the orchestrator calls publish_logs()
-then publish_stop() once it has the logs, guaranteeing "logs" arrives before
-"stop".
+The "stop" frame is deferred: the API closes the stream on it, so the
+observer records final_step in notify_stop but does NOT publish it — the
+orchestrator calls publish_stop() once the match is fully done.
 
 Called from the SocketObservable background thread during a test match, so
 the Redis client must be the sync variant.
@@ -45,8 +44,9 @@ class RedisStreamObserver(ILoopObserver):
 
     # ---- terminal frames, driven by the orchestrator after the match ----
 
-    def publish_logs(self, dev_step_logs: list[str] | None) -> None:
-        self._publish({"type": "logs", "data": {"agent_logs": {"0": dev_step_logs or []}}})
+    def publish_step_log(self, step: int, text: str) -> None:
+        """Live, per-step dev-agent stdout (called from the runner's streamer)."""
+        self._publish({"type": "step_log", "data": {"step": step, "log": text}})
 
     def publish_stop(self) -> None:
         self._publish({"type": "stop", "data": {"final_step": self.final_step or 0}})

@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import time
 import tomllib
+import uuid
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -140,7 +141,7 @@ def _run_build(
         for c in project.name.lower()
     ) or "unnamed"
     base_image = f"{registry_prefix}-base-{project.language}"
-    image_tag = f"{registry_prefix}-{project.user_id}-{safe_name}"
+    image_tag = f"{registry_prefix}-{project.user_id}-{safe_name}-{uuid.uuid4().hex[:8]}"
 
     try:
         client = docker.from_env()

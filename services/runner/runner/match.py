@@ -8,11 +8,13 @@ MatchResult. Persistence is the orchestrator's job.
 import logging
 import os
 import socket
+import threading
 import time
 import uuid
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import docker
 from docker import DockerClient
@@ -33,22 +35,109 @@ log = logging.getLogger(__name__)
 
 _STEP_SEP = "---STEP_END---\n"  # printed by the agent harness after each update()
 _STEP_STDOUT_BUDGET = 2_000     # bytes per step chunk before truncation notice
+_TRUNCATION_NOTICE = "\n[stdout truncated — output too long for this step]\n"
 
 
 def _split_step_logs(text: str, budget: int = _STEP_STDOUT_BUDGET) -> list[str]:
-    """Split an agent's stdout into per-step chunks on the harness separator,
-    capping each chunk so a chatty early step can't crowd out later ones."""
+    """Split an agent's stdout into per-frame chunks on the harness separator.
+
+    out[S] is the agent's stdout from the update() that reacted to frame S's
+    world (chunk S), so it lines up with frame S on screen. Each chunk is
+    capped so a chatty step can't crowd out later ones.
+    """
     chunks = text.split(_STEP_SEP)
     if chunks and not chunks[-1].strip():
         chunks = chunks[:-1]
     out: list[str] = []
     for chunk in chunks:
         if len(chunk.encode()) > budget:
-            chunk = chunk.encode()[:budget].decode(errors="replace") + (
-                "\n[stdout truncated — output too long for this step]\n"
-            )
+            chunk = chunk.encode()[:budget].decode(errors="replace") + _TRUNCATION_NOTICE
         out.append(chunk)
     return out
+
+
+class _StepLogStreamer:
+    """Follows a container's stdout in a daemon thread and invokes
+    on_step_log(frame, text) as each frame's output completes (delimited by the
+    harness separator). Chunk c is the agent reacting to frame c's world, so it
+    maps to frame c.
+
+    Each frame is capped at `budget` bytes *mid-stream*: once it exceeds the
+    budget, further bytes are dropped (memory stays bounded even if an agent
+    floods stdout) and the cap resets at the next separator. Best-effort,
+    live-only — the bundle uses _split_step_logs.
+    """
+
+    def __init__(
+        self,
+        container: Container,
+        on_step_log: Callable[[int, str], None],
+        budget: int = _STEP_STDOUT_BUDGET,
+    ) -> None:
+        self._container = container
+        self._on_step_log = on_step_log
+        self._budget = budget
+        self._thread = threading.Thread(target=self._run, daemon=True, name="step-log-stream")
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        sep = _STEP_SEP.encode()
+        seplen = len(sep)
+        frame = 0               # chunk c is the agent's reaction to frame c
+        kept = bytearray()      # content stored for the current chunk (<= budget)
+        truncated = False
+        scan = bytearray()      # recent bytes, to detect a separator across reads
+
+        def absorb(b: bytes) -> None:
+            nonlocal truncated
+            if truncated:
+                return
+            room = self._budget - len(kept)
+            if room <= 0:
+                truncated = True
+                return
+            if len(b) <= room:
+                kept.extend(b)
+            else:
+                kept.extend(b[:room])
+                truncated = True
+
+        def emit() -> None:
+            nonlocal frame, kept, truncated
+            text = kept.decode(errors="replace")
+            if truncated:
+                text += _TRUNCATION_NOTICE
+            try:
+                self._on_step_log(frame, text)
+            except Exception:
+                log.warning("on_step_log callback failed", exc_info=True)
+            frame += 1
+            kept = bytearray()
+            truncated = False
+
+        try:
+            for data in self._container.logs(stream=True, follow=True):
+                if not data:
+                    continue
+                scan.extend(data)
+                # Pull off every complete <content><SEP> segment.
+                while True:
+                    i = scan.find(sep)
+                    if i == -1:
+                        break
+                    absorb(bytes(scan[:i]))
+                    emit()
+                    del scan[: i + seplen]
+                # Absorb all but the trailing seplen-1 bytes, which might be the
+                # start of a separator that completes in the next read.
+                if len(scan) > seplen - 1:
+                    cut = len(scan) - (seplen - 1)
+                    absorb(bytes(scan[:cut]))
+                    del scan[:cut]
+        except Exception:
+            log.warning("step log streamer stopped", exc_info=True)
 
 
 @dataclass
@@ -72,6 +161,7 @@ def run_match(
     grpc_ready_timeout_s: int = 15,
     extra_observers: list[ILoopObserver] | None = None,
     artifacts_local_dir: Path | None = None,
+    on_step_log: Callable[[int, str], None] | None = None,
 ) -> MatchResult:
     match_id = match_id or f"match-{uuid.uuid4().hex[:8]}"
     # artifacts_local_dir is the path reachable by this process (inside the
@@ -156,6 +246,11 @@ def run_match(
             if hasattr(obs, "set_agent_containers"):
                 obs.set_agent_containers(seat_to_container)
 
+        # Stream the dev agent's (seat 0) stdout per step to the caller, live.
+        # follow=True starts from container creation, so no early output is missed.
+        if on_step_log is not None and agent_containers:
+            _StepLogStreamer(agent_containers[0], on_step_log).start()
+
         sim_net = d_client.networks.create(f"{match_id}-sim", driver="bridge", internal=False)
         networks.append(sim_net)
         router.attach(sim_net)
@@ -165,7 +260,7 @@ def run_match(
         full_sim_args = [
             "compute",
             "--ext-targets", *targets,
-            "--ext-conn-timeout", "2.0",   # time to ESTABLISH the gRPC channel (agent boot)
+            "--ext-conn-timeout", "0.05",   # time to ESTABLISH the gRPC channel (agent boot)
             "--ext-init-timeout", "0.05",  # per-call deadline once connected (50ms)
             # "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
             "--no-render",

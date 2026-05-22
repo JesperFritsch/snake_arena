@@ -31,17 +31,12 @@ export interface SimStopData {
   final_step: number;
 }
 
-export interface SimLogsData {
-  // seat index string → per-step stdout chunks (one entry per step)
-  agent_logs: Record<string, string[]>;
-}
-
 export type SimMessage =
-  | { type: "start"; data: { env_meta_data: SimStartData } }
-  | { type: "step";  data: SimStepData }
-  | { type: "stop";  data: SimStopData }
-  | { type: "logs";  data: SimLogsData }
-  | { type: "error"; data: { message: string } };
+  | { type: "start";    data: { env_meta_data: SimStartData } }
+  | { type: "step";     data: SimStepData }
+  | { type: "stop";     data: SimStopData }
+  | { type: "step_log"; data: { step: number; log: string } }
+  | { type: "error";    data: { message: string } };
 
 // Reconstructed per-step state used by the renderer.
 export interface SnakeState {

@@ -1,4 +1,4 @@
-import type { SimMessage, SimStartData, SimStepData, SimState, SnakeState, SimLogsData } from "./types";
+import type { SimMessage, SimStartData, SimStepData, SimState, SnakeState } from "./types";
 
 /**
  * Accumulates sim messages and reconstructs game state at any step.
@@ -20,10 +20,11 @@ export class SimStore {
   private steps: SimStepData[] = [];
   private finalStep: number | null = null;
   annotations: Annotation[] = [];
-  private agentLogs: SimLogsData["agent_logs"] | null = null;
+  private agentLogs: Record<string, string[]> | null = null;
 
-  get stepCount(): number {
-    return this.steps.length;
+  /** Renderable frames: frame 0 is the start state, then one per step. */
+  get frameCount(): number {
+    return this.startData ? this.steps.length + 1 : 0;
   }
 
   get isComplete(): boolean {
@@ -43,9 +44,12 @@ export class SimStore {
       case "stop":
         this.finalStep = msg.data.final_step;
         break;
-      case "logs":
-        this.agentLogs = msg.data.agent_logs;
+      case "step_log": {
+        if (!this.agentLogs) this.agentLogs = { "0": [] };
+        const chunks = this.agentLogs["0"] ?? (this.agentLogs["0"] = []);
+        chunks[msg.data.step] = msg.data.log;
         break;
+      }
     }
   }
 
@@ -56,24 +60,26 @@ export class SimStore {
     return chunks[stepIndex] ?? null;
   }
 
-  /** Reconstruct game state at a given step index (0-based). */
-  getStateAtStep(stepIndex: number): SimState | null {
+  /** Reconstruct the rendered state at a frame. Frame 0 is the start state
+   *  (heads at start positions, all alive); frame S is the state after the
+   *  first S steps have been applied. */
+  getStateAtStep(frameIndex: number): SimState | null {
     if (!this.startData) return null;
-    const clampedIndex = Math.max(0, Math.min(stepIndex, this.steps.length - 1));
+    const frame = Math.max(0, Math.min(frameIndex, this.steps.length));
 
-    // Build initial state from start positions
+    // Frame 0: snakes at their start positions, no steps applied.
     const snakes = new Map<number, SnakeState>();
     for (const [idStr, pos] of Object.entries(this.startData.start_positions)) {
       snakes.set(Number(idStr), { body: [[pos[0], pos[1]]], alive: true });
     }
     const food = new Set<string>();
 
-    // Apply steps 0 .. clampedIndex
-    for (let i = 0; i <= clampedIndex; i++) {
+    // Apply the first `frame` steps (frame 0 applies none).
+    for (let i = 0; i < frame; i++) {
       _applyStep(snakes, food, this.steps[i]);
     }
 
-    return { step: clampedIndex, snakes, food };
+    return { step: frame, snakes, food };
   }
 
   reset(): void {

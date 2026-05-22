@@ -142,10 +142,11 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
       const agentLogsFile = files["agent_logs.json"];
       if (agentLogsFile) {
         const agentLogs = JSON.parse(new TextDecoder().decode(agentLogsFile)) as Record<string, string[]>;
-        storeRef.current.addMessage({ type: "logs", data: { agent_logs: agentLogs } });
+        (agentLogs["0"] ?? []).forEach((log, step) => {
+          storeRef.current.addMessage({ type: "step_log", data: { step, log } });
+        });
       }
-      const n = storeRef.current.stepCount;
-      setTotalSteps(n);
+      setTotalSteps(storeRef.current.frameCount);
       setCurrentStep(0);
       setStatus("ended");
       setPlaying(true);
@@ -184,13 +185,13 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
           resizeCanvasRef.current();
           setStatus("live");
           setCurrentStep(0);
+          setTotalSteps(storeRef.current.frameCount); // frame 0 = start state
           setPlaying(true);
         } else if (msg.type === "step") {
-          const n = storeRef.current.stepCount;
           setPlaying(true);
-          setTotalSteps(n);
-        } else if (msg.type === "logs") {
-          // Logs arrived — update the console for whichever step is current.
+          setTotalSteps(storeRef.current.frameCount);
+        } else if (msg.type === "step_log") {
+          // Step log arrived — refresh the console for the current step.
           onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStepRef.current));
         } else if (msg.type === "stop") {
           setStatus("ended");
