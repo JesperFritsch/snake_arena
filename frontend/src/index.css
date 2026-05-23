@@ -296,6 +296,10 @@ button {
   flex: 1;
 }
 
+.editor-toolbar {
+  height: 46px;
+}
+
 .panel-body {
   flex: 1;
   min-height: 0;
@@ -885,5 +889,16 @@ button {
   }
   .mtabs {
     display: flex;
+  }
+  /* Toolbar wraps so every button stays on screen in portrait. */
+  .editor-toolbar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .editor-toolbar .spacer {
+    display: none;
   }
 }

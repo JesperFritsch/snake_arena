@@ -1,5 +1,6 @@
 import os
 import sys
+import traceback
 
 os.environ["GRPC_VERBOSITY"] = "ERROR"
 
@@ -55,7 +56,16 @@ class RemoteSnakeServicer(sim_interface_pb2_grpc.RemoteSnakeServicer):
     def Update(self, request_iterator, context):
         for env_step_data_proto in request_iterator:
             sys.stdout.flush()
-            direction = self._snake_instance.update(env_data_to_dict(env_step_data_proto, self._dims[0], self._dims[1], self._dtype))
+            try:
+                direction = self._snake_instance.update(env_data_to_dict(env_step_data_proto, self._dims[0], self._dims[1], self._dtype))
+            except Exception:
+                # Surface the crash in this step's stdout and still terminate the
+                # chunk, so the console shows the failing step. Re-raise so the
+                # sim sees the agent as crashed (snake dies as before).
+                traceback.print_exc(file=sys.stdout)
+                sys.stdout.write("---STEP_END---\n")
+                sys.stdout.flush()
+                raise
             sys.stdout.flush()
             sys.stdout.write("---STEP_END---\n")
             sys.stdout.flush()

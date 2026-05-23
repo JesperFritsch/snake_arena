@@ -379,7 +379,7 @@ export function EditorPage() {
 
   // ---- toolbar ------------------------------------------------------------
   const toolbar = (
-    <header className="panel-head" style={{ height: 46 }}>
+    <header className="panel-head editor-toolbar">
       <select
         className="select"
         value={meta?.id ?? ""}
