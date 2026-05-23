@@ -346,16 +346,81 @@ button {
   margin-left: 6px;
 }
 
-.tree-row .del {
+.tree-row .kebab {
   margin-left: auto;
   opacity: 0;
   color: var(--text-faint);
   padding: 0 4px;
+  cursor: pointer;
 }
-.tree-row:hover .del {
+.tree-row:hover .kebab,
+.tree-row.active .kebab {
   opacity: 1;
 }
-.tree-row .del:hover {
+.tree-row .kebab:hover {
+  color: var(--text);
+}
+
+.tree-add {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 4px 8px;
+  padding: 4px 8px;
+  text-align: left;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  color: var(--text-faint);
+  cursor: pointer;
+  font: inherit;
+}
+.tree-add:hover {
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.tree-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 8px 2px 12px;
+}
+.tree-edit .input {
+  width: 100%;
+}
+.tree-edit-err {
+  font-size: 10px;
+  color: var(--red);
+  padding-left: 2px;
+}
+
+.ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 120px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+.ctx-menu button {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+.ctx-menu button:hover {
+  background: var(--border-soft);
+  color: var(--text);
+}
+.ctx-menu button.danger:hover {
   color: var(--red);
 }
 
@@ -863,17 +928,11 @@ button {
   flex-shrink: 0;
 }
 
-/* mobile: editor page switches to tabbed single-pane */
+/* mobile: editor page switches to tabbed single-pane (rendered only on mobile) */
 .mtabs {
-  display: none;
-}
-.mtabs-body {
-  display: none;
+  display: flex;
 }
 @media (max-width: 760px) {
-  .mtabs-body {
-    display: block;
-  }
   .topbar {
     gap: 12px;
     padding: 0 12px;
@@ -883,12 +942,6 @@ button {
   }
   .brand .ital {
     display: none;
-  }
-  .desktop-only {
-    display: none !important;
-  }
-  .mtabs {
-    display: flex;
   }
   /* Toolbar wraps so every button stays on screen in portrait. */
   .editor-toolbar {
@@ -900,5 +953,9 @@ button {
   }
   .editor-toolbar .spacer {
     display: none;
+  }
+  /* No hover on touch — keep the file actions affordance visible. */
+  .tree-row .kebab {
+    opacity: 1;
   }
 }

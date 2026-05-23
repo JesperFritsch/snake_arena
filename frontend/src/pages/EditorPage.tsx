@@ -7,6 +7,8 @@ import { CodeEditor } from "../components/CodeEditor";
 import { MatchViewer } from "../components/MatchViewer";
 import { TestDialog, loadTestSettings, saveTestSettings } from "../components/TestDialog";
 import type { TestSettings } from "../components/TestDialog";
+import { NewProjectDialog } from "../components/NewProjectDialog";
+import { useIsMobile } from "../lib/useIsMobile";
 import { useToast } from "../components/Toast";
 
 const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "cancelled"]);
@@ -37,11 +39,12 @@ export function EditorPage() {
   const [matchTabs, setMatchTabs] = useState<TestMatchJob[]>([]);
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [busy, setBusy] = useState<"" | "save" | "submit" | "delete" | "restore">("");
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
+  const isMobile = useIsMobile();
 
-  const testPollRef    = useRef<number | null>(null);
   const viewerPanelRef = useRef<ImperativePanelHandle>(null);
   const shortcutSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
   const shortcutTestRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -67,9 +70,6 @@ export function EditorPage() {
         if (ps.length) void selectProject(ps[0].id, ps);
       })
       .catch((e) => push(`Failed to load projects: ${e.message}`, "error"));
-    return () => {
-      if (testPollRef.current) window.clearInterval(testPollRef.current);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -80,7 +80,6 @@ export function EditorPage() {
       setMeta(m);
       setMatchTabs([]);
       setActiveTabId(null);
-      if (testPollRef.current) { window.clearInterval(testPollRef.current); testPollRef.current = null; }
       setViewMode("dev");
       setSubmittedFiles([]);
       setSubmittedActivePath(null);
@@ -111,16 +110,16 @@ export function EditorPage() {
     setFiles((fs) => fs.map((f) => (f.path === activePath ? { ...f, content } : f)));
   };
 
-  const addFile = () => {
-    const path = window.prompt("New file path (e.g. src/util.py)")?.trim();
-    if (!path) return;
-    if (files.some((f) => f.path === path)) {
-      push("A file with that path already exists.", "error");
-      return;
-    }
+  // FileTree validates name uniqueness before calling these.
+  const addFile = (path: string) => {
     setFiles((fs) => [...fs, { path, content: "", encoding: "utf-8" }]);
     setActivePath(path);
     setMobileTab("editor");
+  };
+
+  const renameFile = (oldPath: string, newPath: string) => {
+    setFiles((fs) => fs.map((f) => (f.path === oldPath ? { ...f, path: newPath } : f)));
+    if (activePath === oldPath) setActivePath(newPath);
   };
 
   const deleteFile = (path: string) => {
@@ -151,33 +150,23 @@ export function EditorPage() {
     }
   }, [api, files, meta, push]);
 
-  const pollTestMatch = useCallback(
-    (jobId: number) => {
-      if (testPollRef.current) window.clearInterval(testPollRef.current);
-      testPollRef.current = window.setInterval(async () => {
-        try {
-          const job = await api.getTestMatchJob(jobId);
-          setMatchTabs((prev) => prev.map((t) => (t.id === jobId ? job : t)));
-          // Refresh meta so the build status pill stays in sync while the
-          // worker may be building the dev image as part of this test run.
-          if (meta) api.getProject(meta.id).then(setMeta).catch(() => {});
-          if (TERMINAL.has(job.status)) {
-            if (testPollRef.current) window.clearInterval(testPollRef.current);
-            testPollRef.current = null;
-            push(
-              job.status === "success" ? "Test match finished." : `Test match ${job.status}.`,
-              job.status === "success" ? "info" : "error",
-            );
-          }
-        } catch (e) {
-          if (testPollRef.current) window.clearInterval(testPollRef.current);
-          testPollRef.current = null;
-          push(`Test match polling failed: ${e instanceof ApiError ? e.detail : e}`, "error");
-        }
-      }, 1500);
-    },
-    [api, meta, push],
-  );
+  // Match + build status now arrive over the match WebSocket (no polling).
+  const onMatchStatus = (jobId: number, status: string) => {
+    setMatchTabs((prev) =>
+      prev.map((t) => (t.id === jobId ? { ...t, status } : t)),
+    );
+    if (TERMINAL.has(status)) {
+      push(
+        status === "success" ? "Test match finished." : `Test match ${status}.`,
+        status === "success" ? "info" : "error",
+      );
+    }
+  };
+
+  const onBuildStatus = (status: string) => {
+    // Keep the toolbar build pill in sync with the live build event.
+    setMeta((m) => (m ? { ...m, dev_build_status: status } : m));
+  };
 
   const onTestMatchEnqueued = (job: TestMatchJob) => {
     setMatchTabs((prev) =>
@@ -185,7 +174,6 @@ export function EditorPage() {
     );
     setActiveTabId(job.id);
     setMobileTab("viewer");
-    pollTestMatch(job.id);
     push(`Test match #${job.id} queued.`);
     viewerPanelRef.current?.resize(52);
   };
@@ -295,27 +283,13 @@ export function EditorPage() {
     }
   };
 
-  const createProject = async () => {
-    const name = window.prompt("Project name")?.trim();
-    if (!name) return;
-    const langHint = languages.length ? languages.join(" / ") : "e.g. python";
-    const language = (window.prompt(`Language (${langHint})`, languages[0] ?? "") ?? "")
-      .trim()
-      .toLowerCase();
-    if (!language) return;
-    try {
-      const created = await api.createProject({
-        name,
-        language,
-        source: "browser",
-      });
-      const next = [created, ...projects];
-      setProjects(next);
-      await selectProject(created.id, next);
-      push(`Created “${name}”.`);
-    } catch (e) {
-      push(`Could not create project: ${e instanceof ApiError ? e.detail : e}`, "error");
-    }
+  // Throws on failure so NewProjectDialog can surface it inline.
+  const createProject = async (name: string, language: string) => {
+    const created = await api.createProject({ name, language, source: "browser" });
+    const next = [created, ...projects];
+    setProjects(next);
+    await selectProject(created.id, next);
+    push(`Created “${name}”.`);
   };
 
   const deleteCurrentProject = async () => {
@@ -392,7 +366,7 @@ export function EditorPage() {
           </option>
         ))}
       </select>
-      <button className="btn ghost" onClick={createProject}>
+      <button className="btn ghost" onClick={() => setNewProjectOpen(true)}>
         + Project
       </button>
       <button
@@ -471,11 +445,18 @@ export function EditorPage() {
   if (projects.length === 0 && !meta) {
     return (
       <div className="panel">
+        {newProjectOpen && (
+          <NewProjectDialog
+            languages={languages}
+            onClose={() => setNewProjectOpen(false)}
+            onCreate={createProject}
+          />
+        )}
         {toolbar}
         <div className="empty">
           <span className="big">no projects yet</span>
           <span>Create your first snake to start editing.</span>
-          <button className="btn primary" style={{ marginTop: 8 }} onClick={createProject}>
+          <button className="btn primary" style={{ marginTop: 8 }} onClick={() => setNewProjectOpen(true)}>
             + New Project
           </button>
         </div>
@@ -498,6 +479,7 @@ export function EditorPage() {
         setMobileTab("editor");
       }}
       onAddFile={viewMode === "dev" ? addFile : undefined}
+      onRenameFile={viewMode === "dev" ? renameFile : undefined}
       onDeleteFile={viewMode === "dev" ? deleteFile : undefined}
     />
   );
@@ -530,58 +512,73 @@ export function EditorPage() {
           onRun={runTestMatch}
         />
       )}
+      {newProjectOpen && (
+        <NewProjectDialog
+          languages={languages}
+          onClose={() => setNewProjectOpen(false)}
+          onCreate={createProject}
+        />
+      )}
       {toolbar}
 
-      {/* mobile tab switcher */}
-      <div className="mtabs panel-head">
-        <div className="seg">
-          {(["files", "editor", "viewer"] as MobileTab[]).map((t) => (
-            <button key={t} className={mobileTab === t ? "on" : ""} onClick={() => setMobileTab(t)}>
-              {t}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* desktop: tree | editor || match viewer, all resizable */}
-      <div className="panel-body desktop-only" style={{ overflow: "hidden" }}>
-        <PanelGroup direction="horizontal">
-          <Panel defaultSize={55} minSize={30}>
-            <PanelGroup direction="horizontal">
-              <Panel defaultSize={28} minSize={14} maxSize={50}>
-                {treePane}
-              </Panel>
-              <PanelResizeHandle className="resize-handle" />
-              <Panel minSize={25}>{editorPane}</Panel>
-            </PanelGroup>
-          </Panel>
-          <PanelResizeHandle className="resize-handle" />
-          <Panel ref={viewerPanelRef} defaultSize={45} minSize={20}>
-            <MatchViewer
+      {/* Render only the layout for the current viewport — mounting both trees
+          would mount two MatchViewers (two match WebSockets). */}
+      {isMobile ? (
+        <>
+          <div className="mtabs panel-head">
+            <div className="seg">
+              {(["files", "editor", "viewer"] as MobileTab[]).map((t) => (
+                <button key={t} className={mobileTab === t ? "on" : ""} onClick={() => setMobileTab(t)}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="panel-body" style={{ overflow: "hidden" }}>
+            {mobileTab === "files" && treePane}
+            {mobileTab === "editor" && editorPane}
+            {mobileTab === "viewer" && (
+              <MatchViewer
                 matchTabs={matchTabs}
                 activeTabId={activeTabId}
                 projectId={meta?.id ?? null}
                 onTabSelect={onTabSelect}
                 onTabClose={onTabClose}
                 onOpenMatch={onOpenMatch}
+                onMatchStatus={onMatchStatus}
+                onBuildStatus={onBuildStatus}
               />
-          </Panel>
-        </PanelGroup>
-      </div>
-
-      {/* mobile: one pane at a time */}
-      <div className="panel-body mtabs-body" style={{ overflow: "hidden" }}>
-        {mobileTab === "files" && treePane}
-        {mobileTab === "editor" && editorPane}
-        {mobileTab === "viewer" && <MatchViewer
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="panel-body" style={{ overflow: "hidden" }}>
+          <PanelGroup direction="horizontal">
+            <Panel defaultSize={55} minSize={30}>
+              <PanelGroup direction="horizontal">
+                <Panel defaultSize={28} minSize={14} maxSize={50}>
+                  {treePane}
+                </Panel>
+                <PanelResizeHandle className="resize-handle" />
+                <Panel minSize={25}>{editorPane}</Panel>
+              </PanelGroup>
+            </Panel>
+            <PanelResizeHandle className="resize-handle" />
+            <Panel ref={viewerPanelRef} defaultSize={45} minSize={20}>
+              <MatchViewer
                 matchTabs={matchTabs}
                 activeTabId={activeTabId}
                 projectId={meta?.id ?? null}
                 onTabSelect={onTabSelect}
                 onTabClose={onTabClose}
                 onOpenMatch={onOpenMatch}
-              />}
-      </div>
+                onMatchStatus={onMatchStatus}
+                onBuildStatus={onBuildStatus}
+              />
+            </Panel>
+          </PanelGroup>
+        </div>
+      )}
     </div>
   );
 }

@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 
 _STEP_SEP = "---STEP_END---\n"  # printed by the agent harness after each update()
 _STEP_STDOUT_BUDGET = 2_000     # bytes per step chunk before truncation notice
+_STARTUP_LOG_BUDGET = 16_000    # bytes kept when an agent crashes before any step
 _TRUNCATION_NOTICE = "\n[stdout truncated — output too long for this step]\n"
 
 
@@ -54,6 +55,27 @@ def _split_step_logs(text: str, budget: int = _STEP_STDOUT_BUDGET) -> list[str]:
             chunk = chunk.encode()[:budget].decode(errors="replace") + _TRUNCATION_NOTICE
         out.append(chunk)
     return out
+
+
+def _tail_log(text: str, budget: int = _STARTUP_LOG_BUDGET) -> str:
+    """Last `budget` bytes of text — for a crash before any step, where the
+    traceback is at the end of the output."""
+    b = text.encode()
+    if len(b) <= budget:
+        return text
+    return "[earlier output truncated]\n" + b[-budget:].decode(errors="replace")
+
+
+def _dev_step_logs(dev_text: str) -> list[str] | None:
+    """Dev-agent (seat 0) console logs. If the agent took steps, split into
+    per-frame chunks. If it crashed before the first update (no separators),
+    return the whole log as a single step-0 entry so the console still shows
+    what happened."""
+    if not dev_text.strip():
+        return None
+    if _STEP_SEP in dev_text:
+        return _split_step_logs(dev_text)
+    return [_tail_log(dev_text)]
 
 
 class _StepLogStreamer:
@@ -158,7 +180,7 @@ def run_match(
     agent_mem_limit: str = "512m",
     agent_cpus: float = 1.0,
     agent_pids_limit: int = 128,
-    grpc_ready_timeout_s: int = 15,
+    grpc_ready_timeout_s: int = 2,
     extra_observers: list[ILoopObserver] | None = None,
     artifacts_local_dir: Path | None = None,
     on_step_log: Callable[[int, str], None] | None = None,
@@ -225,9 +247,15 @@ def run_match(
 
         log.info("waiting for agents to be ready")
         if not _wait_for_agents_ready(agent_containers, timeout=grpc_ready_timeout_s):
+            agent_logs = _collect_agent_logs(agent_containers)
+            dev_step_logs = (
+                _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
+                if agent_containers else None
+            )
             return MatchResult(
                 success=False,
-                agent_logs=_collect_agent_logs(agent_containers),
+                agent_logs=agent_logs,
+                dev_agent_step_logs=dev_step_logs,
                 error="agents not ready within timeout",
             )
 
@@ -306,11 +334,12 @@ def run_match(
         sim_logs = sim_container.logs().decode(errors="replace")
         agent_logs = _collect_agent_logs(agent_containers)
 
-        # Per-step stdout for the dev agent (seat 0), while containers are alive.
-        dev_step_logs = None
-        if agent_containers:
-            dev_text = agent_logs.get(agent_containers[0].name, "")
-            dev_step_logs = _split_step_logs(dev_text)
+        # Dev-agent (seat 0) console logs: per-step if it ran, else the whole
+        # log (e.g. a crash during init, before any update).
+        dev_step_logs = (
+            _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
+            if agent_containers else None
+        )
 
         return MatchResult(
             success=exit_code == 0,

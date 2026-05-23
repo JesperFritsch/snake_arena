@@ -31,7 +31,13 @@ export interface SimStopData {
   final_step: number;
 }
 
+export type JobStatus = "queued" | "running" | "success" | "failure" | "cancelled";
+export type BuildEvent = "started" | "success" | "failed";
+
 export type SimMessage =
+  | { type: "snapshot"; data: { job_status: JobStatus | "unknown"; build_status: string | null; error: string | null } }
+  | { type: "build";    data: { status: BuildEvent; error?: string } }
+  | { type: "status";   data: { status: JobStatus } }
   | { type: "start";    data: { env_meta_data: SimStartData } }
   | { type: "step";     data: SimStepData }
   | { type: "stop";     data: SimStopData }

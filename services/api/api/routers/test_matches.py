@@ -140,17 +140,14 @@ async def stream_test_match(
     job_id: int,
     websocket: WebSocket,
     token: str = Query(..., description="Clerk JWT for authentication"),
-    settings: Settings = Depends(get_settings),
 ) -> None:
-    """Stream live sim events while a match is running.
-
-    Only handles queued/running matches. Completed matches should be fetched
-    as a bundle via GET /{job_id}/bundle-url instead.
-    """
+    """Stream the test match: an initial snapshot of current job + build
+    status, then live frames (build/status/sim events). Closes on a terminal
+    `status` frame so callers don't need to poll."""
     await websocket.accept()
 
     try:
-        user, job = await asyncio.to_thread(_auth_and_get_job, token, job_id)
+        user, _job = await asyncio.to_thread(_auth_and_get_job, token, job_id)
     except HTTPException as exc:
         await websocket.close(code=4000 + (exc.status_code % 1000))
         return
@@ -160,19 +157,7 @@ async def stream_test_match(
         return
 
     try:
-        if job.status in ("queued", "running"):
-            await _stream_live(websocket, job_id, settings)
-        elif job.status == "failure":
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "data": {"message": job.error or "match failed"},
-            }))
-        else:
-            # success or unknown — client should use /bundle-url instead
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "data": {"message": "match already completed — fetch bundle instead"},
-            }))
+        await _stream_live(websocket, job_id)
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -209,12 +194,42 @@ def _auth_and_get_job(token: str, job_id: int) -> tuple[User, TestMatchJob]:
         return user, job
 
 
-async def _stream_live(websocket: WebSocket, job_id: int, settings: Settings) -> None:
-    """Subscribe to Redis and forward frames until STOP or disconnect."""
+_TERMINAL_JOB_STATUSES = {"success", "failure", "cancelled"}
+
+
+def _load_snapshot(job_id: int) -> dict:
+    """Current job + build state, sent on WS connect so the client doesn't need
+    to poll for anything that happened before it subscribed."""
+    with get_pool().connection() as conn:
+        job = get_test_job(conn, job_id)
+        if job is None:
+            return {"job_status": "unknown", "build_status": None, "error": None}
+        project = None
+        try:
+            project = get_project_meta(conn, job.player_project_id)
+        except Exception:
+            log.exception("snapshot: project meta lookup failed for job %d", job_id)
+        return {
+            "job_status": job.status,
+            "build_status": project.dev_build_status if project else None,
+            "error": job.error,
+        }
+
+
+async def _stream_live(websocket: WebSocket, job_id: int) -> None:
+    """Subscribe to Redis, send a snapshot of current job + build state, then
+    forward every published frame until a terminal `status` arrives."""
     redis = get_redis()
     pubsub = redis.pubsub()
+    # Subscribe BEFORE reading the snapshot so any transition between the
+    # snapshot and the first forwarded message is still delivered.
     await pubsub.subscribe(f"test-match:{job_id}")
     try:
+        snapshot = await asyncio.to_thread(_load_snapshot, job_id)
+        await websocket.send_text(json.dumps({"type": "snapshot", "data": snapshot}))
+        if snapshot["job_status"] in _TERMINAL_JOB_STATUSES:
+            return  # already done — client should fetch the bundle
+
         async with asyncio.timeout(600):
             async for message in pubsub.listen():
                 if message["type"] != "message":
@@ -223,7 +238,11 @@ async def _stream_live(websocket: WebSocket, job_id: int, settings: Settings) ->
                 text = data.decode() if isinstance(data, (bytes, bytearray)) else data
                 await websocket.send_text(text)
                 try:
-                    if json.loads(text).get("type") == "stop":
+                    msg = json.loads(text)
+                    if (
+                        msg.get("type") == "status"
+                        and msg.get("data", {}).get("status") in _TERMINAL_JOB_STATUSES
+                    ):
                         break
                 except Exception:
                     pass

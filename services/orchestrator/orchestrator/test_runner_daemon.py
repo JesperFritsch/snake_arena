@@ -122,7 +122,10 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     # no sim-side recording). Created here so the finally block can close it.
     file_observer = FilePersistObserver(store_dir=job_dir, filename="replay.json")
 
+    terminal_status: str | None = None  # finally block always publishes this
+
     try:
+        observer.publish_status("running")
         sim_args = SimArgs.model_validate(job.sim_args)
 
         # Build the player's dev image if it isn't already ready.
@@ -134,6 +137,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 "test job id=%d: player project %d needs build (status=%s)",
                 job.id, job.player_project_id, player.dev_build_status,
             )
+            observer.publish_build("started")
             build_result = build_project(
                 project_id=job.player_project_id,
                 registry_prefix=config.registry_prefix,
@@ -144,7 +148,9 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 # Truncate to keep the DB column sane.
                 if len(detail) > 8000:
                     detail = detail[-8000:]
+                observer.publish_build("failed", error=detail)
                 raise SetupError(f"build failed:\n{detail}")
+            observer.publish_build("success")
 
         setup = resolve_test_agents(conn, job.player_project_id, job.opponent_project_ids)
 
@@ -164,13 +170,19 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         # Flush the in-process replay writer before reading the file back.
         file_observer.close()
 
-        # Per-step logs already streamed live via on_step_log; just signal end.
+        # Per-step logs streamed live via on_step_log during the match. If no
+        # steps ran (agent crashed at startup / never connected — the sim may
+        # still have run with zero snakes), nothing was streamed, so surface the
+        # captured log as the single step-0 entry for live viewers.
+        if observer.step_count == 0 and result.dev_agent_step_logs:
+            observer.publish_step_log(0, result.dev_agent_step_logs[0])
         observer.publish_stop()
 
         # Analyze the captured replay; populate result.run_analysis so
-        # build_participants can derive per-snake outcomes. Skip an empty
-        # replay (match streamed nothing) — analyze() would choke on it.
-        if result.success and replay_path.exists() and replay_path.stat().st_size > 0:
+        # build_participants can derive per-snake outcomes. Skip when the match
+        # had no steps (e.g. the agent never connected) — there's nothing to
+        # analyze and analyze() can't build a result from zero steps.
+        if result.success and observer.step_count > 0 and replay_path.exists():
             try:
                 result.run_analysis = analyze(replay_path)
             except Exception:
@@ -205,19 +217,27 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 bundle_path=bundle_relative if saved_bundle else None,
             )
 
+        terminal_status = "success" if result.success else "failure"
         log.info("test job id=%d done (match_id=%d)", job.id, match_id)
 
     except SetupError as e:
         log.warning("test job id=%d setup failed: %s", job.id, e)
         with conn.transaction():
             mark_test_job_failure(conn, job.id, f"setup: {e}")
+        terminal_status = "failure"
 
     except Exception as e:
         log.exception("test job id=%d crashed during execution", job.id)
         with conn.transaction():
             mark_test_job_failure(conn, job.id, repr(e))
+        terminal_status = "failure"
 
     finally:
+        # Terminal status closes the WS for live viewers; always publish it.
+        try:
+            observer.publish_status(terminal_status or "failure")
+        except Exception:
+            log.warning("failed to publish terminal status for job id=%d", job.id, exc_info=True)
         try:
             file_observer.close()  # idempotent; ensures the writer thread is joined
         except Exception:

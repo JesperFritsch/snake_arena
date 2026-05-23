@@ -34,6 +34,7 @@ from sa_common.db.projects import (
     get_project_meta,
     list_projects_for_user,
     pack_files,
+    project_name_exists,
     promote_to_submitted,
     restore_dev_from_submitted,
     save_dev_code,
@@ -157,6 +158,21 @@ def create(
     meta = get_project_meta(conn, project_id)
     assert meta is not None
     return meta
+
+
+@router.get("/name-available")
+def name_available(
+    name: str,
+    conn: Connection = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Live check for the new-project dialog. Names are globally unique."""
+    trimmed = name.strip()
+    if not trimmed:
+        return {"available": False, "reason": "empty"}
+    if project_name_exists(conn, trimmed):
+        return {"available": False, "reason": "taken"}
+    return {"available": True}
 
 
 @router.get("/{project_id}", response_model=ProjectMeta)

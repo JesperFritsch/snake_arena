@@ -68,6 +68,7 @@ export interface ApiClient {
   me(): Promise<UserOut>;
   listProjects(): Promise<ProjectMeta[]>;
   createProject(body: ProjectCreate): Promise<ProjectMeta>;
+  checkNameAvailable(name: string): Promise<{ available: boolean; reason?: string }>;
   getProject(id: number): Promise<ProjectMeta>;
   getFiles(id: number): Promise<ProjectFiles>;
   saveFiles(id: number, files: ProjectFiles): Promise<ProjectMeta>;
@@ -77,7 +78,6 @@ export interface ApiClient {
   restoreFromSubmitted(id: number): Promise<ProjectMeta>;
   listOpponents(): Promise<PublicProjectSummary[]>;
   enqueueTestMatch(body: TestMatchCreate): Promise<TestMatchJob>;
-  getTestMatchJob(id: number): Promise<TestMatchJob>;
   listTestMatchJobs(projectId: number, limit?: number): Promise<TestMatchJob[]>;
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
 }
@@ -93,6 +93,8 @@ export function useApi(): ApiClient {
       me: () => request(g, "GET", "/me"),
       listProjects: () => request(g, "GET", "/projects"),
       createProject: (body) => request(g, "POST", "/projects", body),
+      checkNameAvailable: (name) =>
+        request(g, "GET", `/projects/name-available?name=${encodeURIComponent(name)}`),
       getProject: (id) => request(g, "GET", `/projects/${id}`),
       getFiles: (id) => request(g, "GET", `/projects/${id}/files`),
       saveFiles: (id, files) => request(g, "PUT", `/projects/${id}/files`, files),
@@ -102,7 +104,6 @@ export function useApi(): ApiClient {
       restoreFromSubmitted: (id) => request(g, "POST", `/projects/${id}/restore`),
       listOpponents: () => request(g, "GET", "/test-matches/opponents"),
       enqueueTestMatch: (body) => request(g, "POST", "/test-matches", body),
-      getTestMatchJob: (id) => request(g, "GET", `/test-matches/${id}`),
       listTestMatchJobs: (projectId, limit = 10) =>
         request(g, "GET", `/test-matches?player_project_id=${projectId}&limit=${limit}`),
       getTestMatchBundleUrl: (jobId) =>

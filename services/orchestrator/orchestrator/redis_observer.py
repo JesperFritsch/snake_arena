@@ -31,11 +31,13 @@ class RedisStreamObserver(ILoopObserver):
         self._redis = redis_client
         self._channel = channel
         self.final_step: int | None = None
+        self.step_count = 0
 
     def notify_start(self, start_data: LoopStartData) -> None:
         self._publish({"type": "start", "data": start_data.model_dump(mode="json")})
 
     def notify_step(self, step_data: LoopStepData) -> None:
+        self.step_count += 1
         self._publish({"type": "step", "data": step_data.model_dump(mode="json")})
 
     def notify_stop(self, stop_data: LoopStopData) -> None:
@@ -50,6 +52,18 @@ class RedisStreamObserver(ILoopObserver):
 
     def publish_stop(self) -> None:
         self._publish({"type": "stop", "data": {"final_step": self.final_step or 0}})
+
+    def publish_status(self, status: str) -> None:
+        """Job-lifecycle transition (running / success / failure / cancelled).
+        The API WS closes on a terminal status — this should be the last frame."""
+        self._publish({"type": "status", "data": {"status": status}})
+
+    def publish_build(self, status: str, error: str | None = None) -> None:
+        """Dev-image build event. status: started | success | failed."""
+        data: dict = {"status": status}
+        if error is not None:
+            data["error"] = error
+        self._publish({"type": "build", "data": data})
 
     def _publish(self, msg: dict) -> None:
         js = json.dumps(msg, separators=(",", ":"))

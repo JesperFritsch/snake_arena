@@ -27,6 +27,8 @@ interface Props {
   onTabSelect: (id: number) => void;
   onTabClose: (id: number) => void;
   onOpenMatch: (job: TestMatchJob, newTab: boolean) => void;
+  onMatchStatus: (jobId: number, status: string) => void;
+  onBuildStatus: (status: string) => void;
 }
 
 export function MatchViewer({
@@ -36,6 +38,8 @@ export function MatchViewer({
   onTabSelect,
   onTabClose,
   onOpenMatch,
+  onMatchStatus,
+  onBuildStatus,
 }: Props) {
   const api = useApi();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -139,15 +143,16 @@ export function MatchViewer({
         </div>
       );
     }
-    if (activeJob.status === "queued") {
-      return (
-        <div className="empty">
-          <span className="big">queued</span>
-          <span style={{ maxWidth: 300 }}>Waiting for the test runner…</span>
-        </div>
-      );
-    }
-    return <SimPlayer job={activeJob} onConsoleLog={setConsoleLog} />;
+    // Mount SimPlayer for queued/running jobs too — it owns the WebSocket that
+    // drives status updates, so it must connect even before the match starts.
+    return (
+      <SimPlayer
+        job={activeJob}
+        onConsoleLog={setConsoleLog}
+        onJobStatus={(s) => onMatchStatus(activeJob.id, s)}
+        onBuildStatus={onBuildStatus}
+      />
+    );
   })();
 
   // ── Console content ───────────────────────────────────────────────────────

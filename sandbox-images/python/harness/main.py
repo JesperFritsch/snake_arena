@@ -11,10 +11,15 @@ import numpy as np
 from concurrent import futures
 from google.protobuf.json_format import MessageToDict
 
-from harness.usercode.snake import Snake
-# This is provided by the user
 from harness.stubs import sim_interface_pb2
 from harness.stubs import sim_interface_pb2_grpc
+
+# The user's code lives in usercode/. Put it on sys.path so their files can
+# import each other naturally, as if the
+# project ran from that directory. Done after the harness's own imports so
+# those modules are already loaded and can't be shadowed by a user file.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "usercode"))
+from snake import Snake  # user's entry module: defines class Snake
 
 def env_init_to_dict(msg):
     d = MessageToDict(msg, preserving_proto_field_name=True)
@@ -94,7 +99,10 @@ def serve():
         server.start()
         server.wait_for_termination()
     finally:
-        server.stop(0)
+        try:
+            server.stop(0)
+        except:
+            pass
 
 
 if __name__ == '__main__':

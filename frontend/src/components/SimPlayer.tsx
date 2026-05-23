@@ -17,11 +17,20 @@ const MS_PER_STEP_1X = 100;
 interface Props {
   job: TestMatchJob;
   onConsoleLog?: (log: string | null) => void;
+  onJobStatus?: (status: string) => void;   // running / success / failure
+  onBuildStatus?: (status: string) => void;  // building / ready / failed
 }
 
 type Status = "connecting" | "live" | "loading" | "ended" | "failed" | "error";
 
-export function SimPlayer({ job, onConsoleLog }: Props) {
+// build event (orchestrator) -> project.dev_build_status pill value
+const BUILD_EVENT_TO_PILL: Record<string, string> = {
+  started: "building",
+  success: "ready",
+  failed: "failed",
+};
+
+export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Props) {
   const { getToken } = useAuth();
   const api = useApi();
   const canvasRef    = useRef<HTMLCanvasElement>(null);
@@ -94,6 +103,12 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
   const onConsoleLogRef = useRef(onConsoleLog);
   onConsoleLogRef.current = onConsoleLog;
 
+  const onJobStatusRef = useRef(onJobStatus);
+  onJobStatusRef.current = onJobStatus;
+
+  const onBuildStatusRef = useRef(onBuildStatus);
+  onBuildStatusRef.current = onBuildStatus;
+
   // ── Re-size whenever the container changes dimensions ────────────────────
   useEffect(() => {
     const wrap = containerRef.current;
@@ -158,6 +173,11 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
     }
   }, [api, resizeCanvas]);
 
+  // Stable ref so the WS handler can trigger a bundle load (on a snapshot that
+  // shows the match already finished) without depending on loadBundle.
+  const loadBundleRef = useRef(loadBundle);
+  loadBundleRef.current = loadBundle;
+
   // ── WebSocket for live matches ────────────────────────────────────────────
   const connectWs = useCallback((jobId: number) => {
     storeRef.current.reset();
@@ -179,7 +199,30 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
         const msg = JSON.parse(evt.data as string) as SimMessage;
         storeRef.current.addMessage(msg);
 
-        if (msg.type === "start") {
+        if (msg.type === "snapshot") {
+          // Current state on connect. Reflect build status; if already done,
+          // the live stream is over — fetch the bundle instead.
+          if (msg.data.build_status) onBuildStatusRef.current?.(msg.data.build_status);
+          if (["success", "failure", "cancelled"].includes(msg.data.job_status)) {
+            ws?.close();
+            if (msg.data.job_status === "failure") {
+              setStatus("failed");
+              setErrorMsg(msg.data.error ?? "match failed");
+            } else {
+              void loadBundleRef.current(jobId);
+            }
+          }
+        } else if (msg.type === "build") {
+          onBuildStatusRef.current?.(BUILD_EVENT_TO_PILL[msg.data.status]);
+          if (msg.data.status === "failed") {
+            setStatus("failed");
+            const err = msg.data.error ?? "build failed";
+            setErrorMsg(err);
+            onConsoleLogRef.current?.(err);
+          }
+        } else if (msg.type === "status") {
+          onJobStatusRef.current?.(msg.data.status);
+        } else if (msg.type === "start") {
           const d = msg.data.env_meta_data;
           gridSizeRef.current = { width: d.width, height: d.height };
           resizeCanvasRef.current();
@@ -195,10 +238,11 @@ export function SimPlayer({ job, onConsoleLog }: Props) {
           onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStepRef.current));
         } else if (msg.type === "stop") {
           setStatus("ended");
-          ws?.close();
+          // Keep the socket open for the terminal `status` frame; the server
+          // closes after it.
         } else if (msg.type === "error") {
           setStatus("failed");
-          setErrorMsg((msg as { type: "error"; data: { message: string } }).data.message);
+          setErrorMsg(msg.data.message);
         }
       };
 

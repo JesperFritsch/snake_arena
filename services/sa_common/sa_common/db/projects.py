@@ -226,6 +226,13 @@ def get_project_names(conn: Connection, project_ids: list[int]) -> dict[int, str
         return {row["id"]: row["name"] for row in cur.fetchall()}
 
 
+def project_name_exists(conn: Connection, name: str) -> bool:
+    """True if a project with this exact name already exists (names are global)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM projects WHERE name = %s", (name,))
+        return cur.fetchone() is not None
+
+
 def delete_project(conn: Connection, project_id: int) -> bool:
     """Delete a project row. Returns True if deleted, False if not found.
 
