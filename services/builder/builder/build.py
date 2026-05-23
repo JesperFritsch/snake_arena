@@ -102,10 +102,46 @@ def build_project(
     with get_conn(autocommit=True) as conn:
         if result.success:
             record_dev_build_success(conn, project_id, result.image_tag)
+            _gc_project_images(
+                registry_prefix=registry_prefix,
+                project_id=project_id,
+                keep={result.image_tag, project.submitted_image_tag},
+            )
         else:
             record_dev_build_failure(conn, project_id)
 
     return result
+
+
+def _gc_project_images(
+    registry_prefix: str, project_id: int, keep: set[str | None]
+) -> None:
+    """Reap a project's stale images after a successful build.
+
+    Removes every image tagged for this project except the ones in `keep`
+    (the current dev build and the current submitted image). This reclaims
+    superseded dev builds and old submitted images orphaned by a re-submit.
+    Matching is by the project-unique prefix `{registry_prefix}-{project_id}-`,
+    so sibling projects (and base images) are never touched.
+    """
+    prefix = f"{registry_prefix}-{project_id}-"
+    keep_repos = {t for t in keep if t}
+    try:
+        client = docker.from_env()
+        images = client.images.list()
+    except DockerException as e:
+        log.warning("image gc: docker unavailable: %s", e)
+        return
+    for img in images:
+        for tag in img.tags:                    # e.g. "snake-5-bot-ab12cd34:latest"
+            repo = tag.rsplit(":", 1)[0]        # strip the ":latest"
+            if repo.startswith(prefix) and repo not in keep_repos:
+                try:
+                    client.images.remove(tag, force=True)
+                    log.info("image gc removed %s", tag)
+                except DockerException as e:
+                    log.warning("image gc could not remove %s: %s", tag, e)
+                break  # this image is gone; move to the next one
 
 
 def _run_build(
@@ -141,7 +177,9 @@ def _run_build(
         for c in project.name.lower()
     ) or "unnamed"
     base_image = f"{registry_prefix}-base-{project.language}"
-    image_tag = f"{registry_prefix}-{project.user_id}-{safe_name}-{uuid.uuid4().hex[:8]}"
+    # project.id (not user_id) keys the tag so a project's images form a unique
+    # group that _gc_project_images can safely reap without touching siblings.
+    image_tag = f"{registry_prefix}-{project.id}-{safe_name}-{uuid.uuid4().hex[:8]}"
 
     try:
         client = docker.from_env()
