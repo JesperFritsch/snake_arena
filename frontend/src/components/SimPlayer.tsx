@@ -129,18 +129,61 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
   }, [currentStep, renderStep]);
 
   // ── Load bundle from file host (completed matches) ────────────────────────
+  const fetchBundleFiles = useCallback(async (jobId: number) => {
+    let urlResult: Awaited<ReturnType<typeof api.getTestMatchBundleUrl>>;
+    for (let i = 0; ; i++) {
+      try {
+        urlResult = await api.getTestMatchBundleUrl(jobId);
+        break;
+      } catch (e) {
+        if (i >= 8) throw e;
+        await new Promise((r) => setTimeout(r, 750));
+      }
+    }
+    const { url } = urlResult!;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(
+      resp.status === 404
+        ? "replay recording not found — it may have been deleted from storage"
+        : `failed to fetch replay (${resp.status})`,
+    );
+    return unzipSync(new Uint8Array(await resp.arrayBuffer()));
+  }, [api]);
+
+  // Called after a live WS stream ends — only loads highlights without
+  // resetting the store or rewinding playback.
+  const loadAnalysis = useCallback(async (jobId: number) => {
+    try {
+      const files = await fetchBundleFiles(jobId);
+      const analysisFile = files["analysis.json"];
+      if (!analysisFile) return;
+      const analysis = JSON.parse(new TextDecoder().decode(analysisFile)) as {
+        fatal_steps?: Record<string, number>;
+        traps_mapping?: Record<string, Array<{ trapped_ids: number[]; trapping_ids: number[] }>>;
+      };
+      const newHighlights: Highlight[] = [];
+      for (const [snakeId, step] of Object.entries(analysis.fatal_steps ?? {})) {
+        newHighlights.push({ step, kind: "death", snakeIdx: Number(snakeId) });
+      }
+      for (const [stepStr, trapInfos] of Object.entries(analysis.traps_mapping ?? {})) {
+        const step = Number(stepStr);
+        for (const trap of trapInfos) {
+          newHighlights.push({ step, kind: "trap", snakeIdx: trap.trapped_ids[0] ?? 0, trappingIdx: trap.trapping_ids[0] });
+        }
+      }
+      setHighlights(newHighlights);
+    } catch {
+      // highlights are non-critical
+    }
+  }, [fetchBundleFiles]);
+
+  const loadAnalysisRef = useRef(loadAnalysis);
+  loadAnalysisRef.current = loadAnalysis;
+
   const loadBundle = useCallback(async (jobId: number) => {
     setStatus("loading");
     try {
-      const { url } = await api.getTestMatchBundleUrl(jobId);
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(
-        resp.status === 404
-          ? "replay recording not found — it may have been deleted from storage"
-          : `failed to fetch replay (${resp.status})`,
-      );
-      const buf   = await resp.arrayBuffer();
-      const files = unzipSync(new Uint8Array(buf));
+      const files = await fetchBundleFiles(jobId);
       const replayText = new TextDecoder().decode(files["replay.json"]);
       // replay.json is JSONL — one {type,data} message per line.
       const messages: SimMessage[] = replayText
@@ -200,7 +243,7 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
       setErrorMsg(e instanceof Error ? e.message : "failed to load bundle");
       setStatus("error");
     }
-  }, [api, resizeCanvas]);
+  }, [fetchBundleFiles, resizeCanvas]);
 
   // Stable ref so the WS handler can trigger a bundle load (on a snapshot that
   // shows the match already finished) without depending on loadBundle.
@@ -252,6 +295,9 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
           }
         } else if (msg.type === "status") {
           onJobStatusRef.current?.(msg.data.status);
+          if (msg.data.status === "success") {
+            void loadAnalysisRef.current(jobId);
+          }
         } else if (msg.type === "start") {
           const d = msg.data.env_meta_data;
           gridSizeRef.current = { width: d.width, height: d.height };
@@ -268,8 +314,6 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
           onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStepRef.current));
         } else if (msg.type === "stop") {
           setStatus("ended");
-          // Keep the socket open for the terminal `status` frame; the server
-          // closes after it.
         } else if (msg.type === "error") {
           setStatus("failed");
           setErrorMsg(msg.data.message);
