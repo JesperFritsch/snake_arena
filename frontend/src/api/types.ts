@@ -69,7 +69,7 @@ export interface TestMatchJob {
   finished_at: string | null;
   match_id: number | null;
   error: string | null;
-  bundle_path: string | null;
+  bundle_key: string | null;
   participant_names: string[];  // [player, opp1, opp2, ...] ordered by seat
 }
 
@@ -109,7 +109,7 @@ export interface MatchDetail {
   sim_args: Record<string, unknown>;
   started_at: string;
   finished_at: string | null;
-  replay_r2_key: string | null;
+  bundle_key: string | null;
   error: string | null;
   participants: ParticipantOut[];
 }

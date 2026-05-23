@@ -34,7 +34,7 @@ class TestMatchJob:
     finished_at: datetime | None
     match_id: int | None
     error: str | None
-    bundle_path: str | None
+    bundle_key: str | None
     # Populated by the API layer (join with projects); not stored in this table.
     participant_names: list[str] = field(default_factory=list)
 
@@ -42,7 +42,7 @@ class TestMatchJob:
 _JOB_COLUMNS = """
     id, status, player_project_id, opponent_project_ids, sim_args,
     requested_by, requested_at, started_at, finished_at, match_id, error,
-    bundle_path
+    bundle_key
 """
 
 
@@ -59,7 +59,7 @@ def _row_to_job(row: dict[str, Any]) -> TestMatchJob:
         finished_at=row["finished_at"],
         match_id=row["match_id"],
         error=row["error"],
-        bundle_path=row["bundle_path"],
+        bundle_key=row["bundle_key"],
     )
 
 
@@ -107,7 +107,7 @@ def claim_one_queued_test_job(conn: psycopg.Connection) -> TestMatchJob | None:
             RETURNING
                 j.id, j.status, j.player_project_id, j.opponent_project_ids,
                 j.sim_args, j.requested_by, j.requested_at, j.started_at,
-                j.finished_at, j.match_id, j.error, j.bundle_path
+                j.finished_at, j.match_id, j.error, j.bundle_key
             """
         )
         row = cur.fetchone()
@@ -118,17 +118,17 @@ def mark_test_job_success(
     conn: psycopg.Connection,
     job_id: int,
     match_id: int,
-    bundle_path: str | None = None,
+    bundle_key: str | None = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE test_match_jobs
             SET status = 'success', finished_at = NOW(), match_id = %s,
-                bundle_path = %s, error = NULL
+                bundle_key = %s, error = NULL
             WHERE id = %s
             """,
-            (match_id, bundle_path, job_id),
+            (match_id, bundle_key, job_id),
         )
 
 

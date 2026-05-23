@@ -23,10 +23,10 @@ import os
 import signal
 import sys
 import threading
-from pathlib import Path
 from typing import Any, Callable
 
 import psycopg
+from sa_common.bundler import bundler_from_env
 from sa_common.db.connection import get_conn
 
 from orchestrator.runner_daemon import (
@@ -53,34 +53,12 @@ def main() -> None:
         default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
         help="Docker image tag for the sim (env: ORCHESTRATOR_SIM_IMAGE)",
     )
-    p_match.add_argument(
-        "--artifacts-dir",
-        type=Path,
-        default=Path(os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts")),
-        help="Path to artifacts dir inside this container (env: ORCHESTRATOR_ARTIFACTS_DIR)",
-    )
-    p_match.add_argument(
-        "--artifacts-host-dir",
-        type=Path,
-        default=Path(os.environ.get("ARTIFACTS_HOST_DIR", os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts"))),
-        help="Path to artifacts dir on the Docker host, for volume-mounting into sim containers (env: ARTIFACTS_HOST_DIR)",
-    )
     _add_shared_args(p_match, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
 
     p_test = subparsers.add_parser("test-match", help="poll test_match_jobs and run dev test matches")
     p_test.add_argument(
         "--sim-image",
         default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
-    )
-    p_test.add_argument(
-        "--artifacts-dir",
-        type=Path,
-        default=Path(os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts")),
-    )
-    p_test.add_argument(
-        "--artifacts-host-dir",
-        type=Path,
-        default=Path(os.environ.get("ARTIFACTS_HOST_DIR", os.environ.get("ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts"))),
     )
     p_test.add_argument(
         "--redis-url",
@@ -111,8 +89,7 @@ def main() -> None:
             sys.exit(2)
         config = RunnerDaemonConfig(
             sim_image=args.sim_image,
-            artifacts_dir=args.artifacts_dir,
-            artifacts_host_dir=args.artifacts_host_dir,
+            bundler=bundler_from_env(),
             poll_interval_s=args.poll_interval,
         )
         run_one, run_forever = run_match_iteration, run_match_forever
@@ -123,8 +100,7 @@ def main() -> None:
             sys.exit(2)
         config = TestRunnerDaemonConfig(
             sim_image=args.sim_image,
-            artifacts_dir=args.artifacts_dir,
-            artifacts_host_dir=args.artifacts_host_dir,
+            bundler=bundler_from_env(),
             redis_url=args.redis_url,
             poll_interval_s=args.poll_interval,
             registry_prefix=args.registry_prefix,

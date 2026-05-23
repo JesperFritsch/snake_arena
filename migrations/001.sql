@@ -27,7 +27,7 @@ CREATE TABLE projects (
     -- Dev side: editor draft + most recent test build, all transient
     dev_code_archive       BYTEA,                            -- editor's current draft
     dev_image_tag          TEXT,                             -- last test build, overwritten each time
-    dev_build_status       TEXT,                             -- 'saved' | 'building' | 'ready' | 'failed' | NULL
+    dev_build_status       TEXT,                             -- 'saved'|'building'|'built'|'ready'|'crashed'|'failed'|NULL; 'ready' (validated by a test run) is the only submittable state
     dev_built_at           TIMESTAMPTZ,
 
     -- Submitted side: pinned for ranked matches, version-counted
@@ -78,7 +78,7 @@ CREATE TABLE matches (
     sim_args      JSONB NOT NULL,                             -- { mode, map_name, grid_width, grid_height, ... }
     started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     finished_at   TIMESTAMPTZ,
-    replay_r2_key TEXT,
+    bundle_key    TEXT,                                       -- bundler storage key, e.g. matches/{uuid}/bundle.zip
     error         TEXT,
     is_test       BOOLEAN NOT NULL DEFAULT FALSE              -- TRUE for user-initiated dev test runs
 );
@@ -130,7 +130,7 @@ CREATE TABLE test_match_jobs (
     finished_at          TIMESTAMPTZ,
     match_id             BIGINT REFERENCES matches(id),
     error                TEXT,
-    bundle_path          TEXT                                   -- relative path within ARTIFACTS_DIR, e.g. test-matches/{id}/bundle.zip
+    bundle_key           TEXT                                   -- bundler storage key, e.g. test-matches/{id}/bundle.zip
 );
 
 -- Indexes

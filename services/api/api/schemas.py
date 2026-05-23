@@ -101,6 +101,6 @@ class MatchDetail(BaseModel):
     sim_args: dict[str, Any]
     started_at: Any
     finished_at: Any | None
-    replay_r2_key: str | None
+    bundle_key: str | None
     error: str | None
     participants: list[ParticipantOut]

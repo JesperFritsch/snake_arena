@@ -19,6 +19,8 @@ Two atomic blocks per iteration:
 from __future__ import annotations
 
 import logging
+import shutil
+import tempfile
 import time
 import uuid
 import docker
@@ -32,6 +34,7 @@ import psycopg
 from runner.match import run_match
 from runner.router import router_from_env, Router
 from runner.match_results import build_participants
+from sa_common.bundler import IBundler
 from sa_common.db.match_jobs import (
     claim_one_queued_job,
     mark_job_failure,
@@ -41,7 +44,11 @@ from sa_common.db.matches import record_match_result
 from sa_common.db.connection import get_conn
 from sa_common.types import SimArgs
 
+from snake_sim.loop_observers.file_persist_observer import FilePersistObserver
+from snake_sim.analyze.scripts.run_analyzer import analyze
+
 from orchestrator.agents import SetupError, resolve_agents
+from orchestrator.bundle import assemble_bundle
 
 log = logging.getLogger(__name__)
 d_client = docker.from_env()
@@ -52,13 +59,11 @@ class RunnerDaemonConfig:
     def __init__(
         self,
         sim_image: str,
-        artifacts_dir: Path,
-        artifacts_host_dir: Path,
+        bundler: IBundler,
         poll_interval_s: float = 1.0,
     ):
         self.sim_image = sim_image
-        self.artifacts_dir = artifacts_dir          # path inside this container
-        self.artifacts_host_dir = artifacts_host_dir  # path on the Docker host
+        self.bundler = bundler
         self.poll_interval_s = poll_interval_s
 
 
@@ -77,6 +82,13 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
     match_uuid = f"match-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(timezone.utc)
 
+    bundle_key = f"matches/{match_uuid}/bundle.zip"
+    # Ephemeral working dir for the streamed replay; analyze() reads it, then it
+    # goes into the bundle. Only the bundle is durably stored (via the bundler).
+    work_dir = Path(tempfile.mkdtemp(prefix=f"match-{job.id}-"))
+    replay_path = work_dir / "replay.json"
+    file_observer = FilePersistObserver(store_dir=work_dir, filename="replay.json")
+
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
         setup = resolve_agents(conn, job.project_ids)
@@ -85,17 +97,24 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             sim_image=config.sim_image,
             agents=setup.specs,
             sim_args=sim_args,
-            artifacts_host_dir=config.artifacts_host_dir,
-            artifacts_local_dir=config.artifacts_dir,
             match_id=match_uuid,
             router=router,
             d_client=d_client,
+            extra_observers=[file_observer],
         )
 
-        # TODO: adopt the test-match pattern here — capture the replay in-process
-        # via a FilePersistObserver, then run analyze() and build the bundle in
-        # this daemon (run_match is pure execution and no longer analyzes).
-        # Until then ranked matches record participation best-effort (no analysis).
+        file_observer.close()  # flush the replay before reading it back
+
+        # Analyze the captured replay so participants get per-snake outcomes and
+        # the bundle carries analysis.json. Skip a zero-step match (analyze()
+        # can't build a result from no steps).
+        run_analysis = None
+        if result.success and replay_path.exists() and replay_path.stat().st_size > 0:
+            try:
+                run_analysis = analyze(replay_path)
+                result.run_analysis = run_analysis
+            except Exception:
+                log.warning("analysis failed for job id=%d", job.id, exc_info=True)
 
         participants = build_participants(
             result=result,
@@ -103,6 +122,16 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             version_by_agent_name=setup.version_by_name,
             seat_by_agent_name=setup.seat_by_name,
         )
+
+        # Ranked bundle has no dev-agent console, so no agent_logs.
+        saved_key: str | None = None
+        try:
+            bundle_bytes = assemble_bundle(replay_path, run_analysis)
+            config.bundler.put(bundle_key, bundle_bytes)
+            saved_key = bundle_key
+            log.info("stored bundle %s (%d bytes)", bundle_key, len(bundle_bytes))
+        except Exception:
+            log.warning("failed to store bundle for job id=%d", job.id, exc_info=True)
 
         # --- Atomic block 2: persist match + flip job status together ---
         with conn.transaction():
@@ -113,7 +142,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
                 sim_args=sim_args,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
-                replay_r2_key=str(result.replay_path) if result.replay_path else None,
+                bundle_key=saved_key,
                 error=result.error,
                 participants=participants,
             )
@@ -132,6 +161,13 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
         log.exception("job id=%d crashed during execution", job.id)
         with conn.transaction():
             mark_job_failure(conn, job.id, repr(e))
+
+    finally:
+        try:
+            file_observer.close()  # idempotent; ensures the writer thread is joined
+        except Exception:
+            pass
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     return True
 

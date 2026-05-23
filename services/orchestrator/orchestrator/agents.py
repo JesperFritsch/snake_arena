@@ -73,9 +73,13 @@ def resolve_test_agents(
     player = get_project_meta(conn, player_project_id)
     if player is None:
         raise SetupError(f"player project {player_project_id} not found")
-    if player.dev_build_status != "ready" or player.dev_image_tag is None:
+    # A compiled dev image is enough to RUN a test — that's what validates the
+    # build (promotes it to 'ready'). Requiring 'ready' here would be circular:
+    # the daemon just built the image (status 'built'), and it can only become
+    # 'ready' by actually running this match.
+    if player.dev_image_tag is None:
         raise SetupError(
-            f"player project {player_project_id} has no ready dev build"
+            f"player project {player_project_id} has no dev build"
         )
 
     name = "agent_0"

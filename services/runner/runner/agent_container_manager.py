@@ -217,5 +217,13 @@ class AgentContainerManager(ILoopObserver):
     def _kill_container(container: Container) -> None:
         try:
             container.kill()
-        except (APIError, NotFound) as e:
-            log.warning("failed to kill container %s: %s", container.name, e)
+        except NotFound:
+            pass  # already gone — goal state met
+        except APIError as e:
+            # 409 Conflict = "container is not running": it already exited, which
+            # is exactly what we wanted. Anything else is genuinely unexpected.
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 409:
+                log.debug("container %s already stopped", container.name)
+            else:
+                log.warning("failed to kill container %s: %s", container.name, e)

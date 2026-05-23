@@ -32,7 +32,8 @@ export interface SimStopData {
 }
 
 export type JobStatus = "queued" | "running" | "success" | "failure" | "cancelled";
-export type BuildEvent = "started" | "success" | "failed";
+// Mirrors dev_build_status: published live over the match channel.
+export type BuildEvent = "building" | "built" | "ready" | "crashed" | "failed";
 
 export type SimMessage =
   | { type: "snapshot"; data: { job_status: JobStatus | "unknown"; build_status: string | null; error: string | null } }

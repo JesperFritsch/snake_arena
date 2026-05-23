@@ -305,15 +305,17 @@ def submit(
     conn: Connection = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SubmitResult:
-    _owned_meta(conn, project_id, user)
+    meta = _owned_meta(conn, project_id, user)
     new_version = promote_to_submitted(conn, project_id)
     if new_version is None:
-        # Normal outcome, not an error: dev not ready, or code changed since
-        # the last test build. Tell the user to (re)test first.
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Test your project before submitting.",
-        )
+        # Normal outcome, not an error. Tailor the message to why it's blocked:
+        # a crashed build needs fixing; otherwise the dev image is missing or
+        # stale (code changed since the last test run).
+        if meta.dev_build_status == "crashed":
+            detail = "Your agent crashed before it could play. Fix it and run a test before submitting."
+        else:
+            detail = "Test your project before submitting."
+        raise HTTPException(status.HTTP_409_CONFLICT, detail)
     return SubmitResult(submitted_version=new_version)
 
 

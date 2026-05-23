@@ -7,17 +7,17 @@ Resulting matches are recorded with is_test=True so the leaderboard can
 exclude them.
 
 During each match a RedisStreamObserver publishes JSON frames to a Redis
-pub/sub channel (test-match:{job_id}) for live browser streaming, and saves
-a .json.gz replay file to artifacts_dir at the end.
+pub/sub channel (test-match:{job_id}) for live browser streaming. The replay
+is captured in-process to a temp dir, then assembled with the dev-agent logs
+and run analysis into a bundle zip stored via the configured IBundler.
 """
 from __future__ import annotations
 
-import io
-import json
 import logging
+import shutil
+import tempfile
 import time
 import uuid
-import zipfile
 import docker
 import redis
 
@@ -29,9 +29,14 @@ import psycopg
 
 from builder.build import build_project
 from runner.match import run_match
-from runner.router import router_from_env, Router
+from runner.router import router_from_env
 from runner.match_results import build_participants
-from sa_common.db.projects import get_project_meta
+from sa_common.bundler import IBundler
+from sa_common.db.projects import (
+    get_project_meta,
+    record_dev_build_validated,
+    record_dev_build_crashed,
+)
 from sa_common.db.test_match_jobs import (
     claim_one_queued_test_job,
     mark_test_job_failure,
@@ -45,6 +50,7 @@ from snake_sim.loop_observers.file_persist_observer import FilePersistObserver
 from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from orchestrator.agents import SetupError, resolve_test_agents
+from orchestrator.bundle import assemble_bundle
 from orchestrator.redis_observer import RedisStreamObserver
 
 log = logging.getLogger(__name__)
@@ -52,46 +58,18 @@ d_client = docker.from_env()
 router = router_from_env(d_client)
 
 
-def _build_bundle(
-    bundle_path: Path,
-    replay_path: Path,
-    dev_step_logs: list[str] | None,
-) -> bool:
-    """Zip the test-match artifacts (replay + dev-agent logs) into bundle_path.
-
-    Returns True if the bundle was written. analysis.json is a placeholder
-    until the frontend consumes run_analyzer output.
-    """
-    try:
-        bundle_path.parent.mkdir(parents=True, exist_ok=True)
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            if replay_path.exists():
-                zf.writestr("replay.json", replay_path.read_bytes())
-            zf.writestr("agent_logs.json", json.dumps({"0": dev_step_logs or []}).encode())
-            zf.writestr("analysis.json", b"{}")
-        bundle_path.write_bytes(buf.getvalue())
-        log.info("saved bundle to %s (%d bytes)", bundle_path, bundle_path.stat().st_size)
-        return True
-    except Exception:
-        log.warning("failed to save bundle to %s", bundle_path, exc_info=True)
-        return False
-
-
 class TestRunnerDaemonConfig:
     def __init__(
         self,
         sim_image: str,
-        artifacts_dir: Path,
-        artifacts_host_dir: Path,
+        bundler: IBundler,
         redis_url: str = "redis://localhost:6379",
         poll_interval_s: float = 1.0,
         registry_prefix: str = "snake",
         build_timeout_s: int = 60,
     ):
         self.sim_image = sim_image
-        self.artifacts_dir = artifacts_dir          # path inside this container
-        self.artifacts_host_dir = artifacts_host_dir  # path on the Docker host
+        self.bundler = bundler
         self.redis_url = redis_url
         self.poll_interval_s = poll_interval_s
         self.registry_prefix = registry_prefix
@@ -108,36 +86,54 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     match_uuid = f"test-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(timezone.utc)
 
-    job_dir = config.artifacts_dir / "test-matches" / str(job.id)
-    replay_path = job_dir / "replay.json"
-    bundle_relative = f"test-matches/{job.id}/bundle.zip"
-    bundle_abs = config.artifacts_dir / bundle_relative
+    bundle_key = f"test-matches/{job.id}/bundle.zip"
+    # Ephemeral working dir for the streamed replay; analyze() reads it, then it
+    # goes into the bundle. Only the bundle is durably stored (via the bundler).
+    work_dir = Path(tempfile.mkdtemp(prefix=f"test-match-{job.id}-"))
+    replay_path = work_dir / "replay.json"
 
     redis_client = redis.Redis.from_url(config.redis_url, socket_connect_timeout=5)
     observer = RedisStreamObserver(
         redis_client=redis_client,
         channel=f"test-match:{job.id}",
     )
-    # Captures the replay to job_dir/replay.json in-process (no volume mount,
-    # no sim-side recording). Created here so the finally block can close it.
-    file_observer = FilePersistObserver(store_dir=job_dir, filename="replay.json")
+    # Captures the replay to work_dir/replay.json in-process (no sim-side
+    # recording). Created here so the finally block can close it.
+    file_observer = FilePersistObserver(store_dir=work_dir, filename="replay.json")
 
-    terminal_status: str | None = None  # finally block always publishes this
+    terminal_status: str | None = None  # finally publishes this if not already done
+    published_terminal = False
+
+    def on_match_result(result) -> None:
+        # Fires inside run_match before its (slow) Docker teardown, so live
+        # viewers get the outcome immediately. If no steps streamed (agent
+        # crashed at startup), surface the captured log as the step-0 entry.
+        # The dev-build verdict goes out BEFORE the terminal status (the API
+        # closes the stream on terminal status), so the pill updates live.
+        nonlocal published_terminal
+        observer.publish_build("ready" if observer.dev_reached_start else "crashed")
+        if observer.step_count == 0 and result.dev_agent_step_logs:
+            observer.publish_step_log(0, result.dev_agent_step_logs[0])
+        observer.publish_stop()
+        observer.publish_status("success" if result.success else "failure")
+        published_terminal = True
 
     try:
         observer.publish_status("running")
         sim_args = SimArgs.model_validate(job.sim_args)
 
-        # Build the player's dev image if it isn't already ready.
+        # (Re)build the player's dev image unless a current-code image already
+        # exists. 'built'/'ready'/'crashed' all mean the current code compiled
+        # (a save resets status to 'saved'); anything else needs a build.
         player = get_project_meta(conn, job.player_project_id)
         if player is None:
             raise SetupError(f"player project {job.player_project_id} not found")
-        if player.dev_build_status != "ready":
+        if player.dev_build_status not in ("built", "ready", "crashed"):
             log.info(
                 "test job id=%d: player project %d needs build (status=%s)",
                 job.id, job.player_project_id, player.dev_build_status,
             )
-            observer.publish_build("started")
+            observer.publish_build("building")
             build_result = build_project(
                 project_id=job.player_project_id,
                 registry_prefix=config.registry_prefix,
@@ -150,41 +146,48 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                     detail = detail[-8000:]
                 observer.publish_build("failed", error=detail)
                 raise SetupError(f"build failed:\n{detail}")
-            observer.publish_build("success")
+            observer.publish_build("built")
 
         setup = resolve_test_agents(conn, job.player_project_id, job.opponent_project_ids)
+        # The dev agent is seat 0; tell the observer its DNS name so it can
+        # detect whether the dev (not an opponent) reached the match start.
+        observer.dev_name = setup.specs[0].name
 
         result = run_match(
             sim_image=config.sim_image,
             agents=setup.specs,
             sim_args=sim_args,
-            artifacts_host_dir=config.artifacts_host_dir,
-            artifacts_local_dir=config.artifacts_dir,
             match_id=match_uuid,
             router=router,
             d_client=d_client,
             extra_observers=[observer, file_observer],
             on_step_log=observer.publish_step_log,
+            on_result=on_match_result,
         )
 
         # Flush the in-process replay writer before reading the file back.
+        # (Live viewers already got stop/status via on_match_result.)
         file_observer.close()
 
-        # Per-step logs streamed live via on_step_log during the match. If no
-        # steps ran (agent crashed at startup / never connected — the sim may
-        # still have run with zero snakes), nothing was streamed, so surface the
-        # captured log as the single step-0 entry for live viewers.
-        if observer.step_count == 0 and result.dev_agent_step_logs:
-            observer.publish_step_log(0, result.dev_agent_step_logs[0])
-        observer.publish_stop()
+        # Persist the dev-build verdict: the build is submittable ('ready') only
+        # if the dev agent reached the match; otherwise it crashed/was killed
+        # before its first update ('crashed'). on_match_result already pushed
+        # this to live viewers; here we make it durable.
+        with conn.transaction():
+            if observer.dev_reached_start:
+                record_dev_build_validated(conn, job.player_project_id)
+            else:
+                record_dev_build_crashed(conn, job.player_project_id)
 
-        # Analyze the captured replay; populate result.run_analysis so
-        # build_participants can derive per-snake outcomes. Skip when the match
-        # had no steps (e.g. the agent never connected) — there's nothing to
-        # analyze and analyze() can't build a result from zero steps.
+        # Analyze the captured replay so build_participants can derive per-snake
+        # outcomes and the bundle carries analysis.json. Skip when the match had
+        # no steps (e.g. the agent never connected) — analyze() can't build a
+        # result from zero steps.
+        run_analysis = None
         if result.success and observer.step_count > 0 and replay_path.exists():
             try:
-                result.run_analysis = analyze(replay_path)
+                run_analysis = analyze(replay_path)
+                result.run_analysis = run_analysis
             except Exception:
                 log.warning("analysis failed for job id=%d", job.id, exc_info=True)
 
@@ -195,7 +198,16 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             seat_by_agent_name=setup.seat_by_name,
         )
 
-        saved_bundle = _build_bundle(bundle_abs, replay_path, result.dev_agent_step_logs)
+        saved_key: str | None = None
+        try:
+            bundle_bytes = assemble_bundle(
+                replay_path, run_analysis, dev_step_logs=result.dev_agent_step_logs or []
+            )
+            config.bundler.put(bundle_key, bundle_bytes)
+            saved_key = bundle_key
+            log.info("stored bundle %s (%d bytes)", bundle_key, len(bundle_bytes))
+        except Exception:
+            log.warning("failed to store bundle for job id=%d", job.id, exc_info=True)
 
         with conn.transaction():
             match_id = record_match_result(
@@ -205,7 +217,9 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 sim_args=sim_args,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
-                replay_r2_key=None,
+                # Test-match bundle is stored on the job row (bundle_key above),
+                # not the match row.
+                bundle_key=None,
                 error=result.error,
                 participants=participants,
                 is_test=True,
@@ -214,7 +228,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 conn,
                 job.id,
                 match_id,
-                bundle_path=bundle_relative if saved_bundle else None,
+                bundle_key=saved_key,
             )
 
         terminal_status = "success" if result.success else "failure"
@@ -233,9 +247,12 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         terminal_status = "failure"
 
     finally:
-        # Terminal status closes the WS for live viewers; always publish it.
+        # Terminal status closes the WS for live viewers. Normally on_match_result
+        # already published it (before teardown); this is the fallback for paths
+        # that never reached run_match (build failure, setup error, early crash).
         try:
-            observer.publish_status(terminal_status or "failure")
+            if not published_terminal:
+                observer.publish_status(terminal_status or "failure")
         except Exception:
             log.warning("failed to publish terminal status for job id=%d", job.id, exc_info=True)
         try:
@@ -246,6 +263,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             redis_client.close()
         except Exception:
             pass
+        shutil.rmtree(work_dir, ignore_errors=True)  # drop the ephemeral replay
 
     return True
 

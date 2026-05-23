@@ -18,17 +18,10 @@ interface Props {
   job: TestMatchJob;
   onConsoleLog?: (log: string | null) => void;
   onJobStatus?: (status: string) => void;   // running / success / failure
-  onBuildStatus?: (status: string) => void;  // building / ready / failed
+  onBuildStatus?: (status: string) => void;  // dev_build_status: building/built/ready/crashed/failed
 }
 
 type Status = "connecting" | "live" | "loading" | "ended" | "failed" | "error";
-
-// build event (orchestrator) -> project.dev_build_status pill value
-const BUILD_EVENT_TO_PILL: Record<string, string> = {
-  started: "building",
-  success: "ready",
-  failed: "failed",
-};
 
 export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Props) {
   const { getToken } = useAuth();
@@ -213,7 +206,8 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
             }
           }
         } else if (msg.type === "build") {
-          onBuildStatusRef.current?.(BUILD_EVENT_TO_PILL[msg.data.status]);
+          // data.status is the dev_build_status value directly.
+          onBuildStatusRef.current?.(msg.data.status);
           if (msg.data.status === "failed") {
             setStatus("failed");
             const err = msg.data.error ?? "build failed";

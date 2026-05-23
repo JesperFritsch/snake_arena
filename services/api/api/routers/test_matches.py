@@ -33,9 +33,9 @@ from sa_common.db.test_match_jobs import (
 from sa_common.db.users import User, get_or_create_user_by_clerk_id
 
 from api.auth import decode_token, get_current_user
+from api.bundler import get_bundler
 from api.db import get_db, get_pool
 from api.redis import get_redis
-from api.settings import Settings, get_settings
 from api.schemas import TestMatchCreate, PublicProjectSummary
 
 log = logging.getLogger(__name__)
@@ -121,17 +121,17 @@ def get_bundle_url(
     job_id: int,
     conn: Connection = Depends(get_db),
     user: User = Depends(get_current_user),
-    settings: Settings = Depends(get_settings),
 ) -> dict:
     """Return the URL the browser should fetch to download the match bundle."""
     job = get_test_job(conn, job_id)
     if job is None or job.requested_by != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
-    if job.status != "success" or not job.bundle_path:
+    if job.status != "success" or not job.bundle_key:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "bundle not available yet")
-    if not settings.replay_host:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "replay host not configured")
-    url = f"{settings.replay_host.rstrip('/')}/{job.bundle_path}"
+    try:
+        url = get_bundler().url(job.bundle_key)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     return {"url": url}
 
 

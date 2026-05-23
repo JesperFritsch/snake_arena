@@ -9,10 +9,7 @@ never runs a match itself.
 """
 from __future__ import annotations
 
-import functools
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
 from psycopg import Connection
 
 from sa_common.db.match_jobs import (
@@ -35,16 +32,11 @@ from sa_common.db.projects import get_project_meta
 from sa_common.db.users import User
 
 from api.auth import get_current_user
+from api.bundler import get_bundler
 from api.db import get_db
 from api.schemas import MatchDetail, MatchJobCreate, ParticipantOut
-from api.settings import Settings, load_settings
 
 router = APIRouter(tags=["matches"])
-
-
-@functools.lru_cache(maxsize=1)
-def _settings() -> Settings:
-    return load_settings()
 
 
 # ---- match jobs -----------------------------------------------------------
@@ -153,7 +145,7 @@ def get_match_detail(
         sim_args=match.sim_args,
         started_at=match.started_at,
         finished_at=match.finished_at,
-        replay_r2_key=match.replay_r2_key,
+        bundle_key=match.bundle_key,
         error=match.error,
         participants=[
             ParticipantOut(
@@ -171,44 +163,23 @@ def get_match_detail(
     )
 
 
-@router.get("/matches/{match_id}/replay")
-def get_match_replay(
+@router.get("/matches/{match_id}/bundle-url")
+def get_match_bundle_url(
     match_id: int,
     conn: Connection = Depends(get_db),
     _: User = Depends(get_current_user),
-) -> FileResponse:
-    """Serve a match's replay.
+) -> dict:
+    """Return the URL the browser should fetch for a ranked match's bundle.
 
-    Stable browser-facing contract: the frontend always GETs this path. Today
-    we stream the file off the shared replay volume. When replays move to R2,
-    the body of this handler becomes a 302 redirect to a presigned URL — the
-    URL the frontend uses (this endpoint) does not change.
-
-    `matches.replay_r2_key` is a store-agnostic object key: a path relative to
-    REPLAY_DIR on disk now, an R2 object key later.
-    """
+    Mirrors the test-match bundle endpoint: the bundler resolves the stored
+    key to a fetchable URL (file-server now, presigned R2 later)."""
     match = get_match(conn, match_id)
     if match is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "match not found")
-    if not match.replay_r2_key:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "match has no replay")
-
-    replay_dir = _settings().replay_dir
-    if replay_dir is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "replay storage not configured (REPLAY_DIR unset)",
-        )
-
-    # The key comes from our own DB, but resolve-and-contain anyway so a stray
-    # value can never escape the replay directory.
-    root = replay_dir.resolve()
-    path = (root / match.replay_r2_key).resolve()
-    if not path.is_relative_to(root) or not path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "replay file missing")
-
-    return FileResponse(
-        path,
-        media_type="application/octet-stream",
-        filename=f"{match.match_uuid}.run_proto",
-    )
+    if not match.bundle_key:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "match has no bundle")
+    try:
+        url = get_bundler().url(match.bundle_key)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return {"url": url}

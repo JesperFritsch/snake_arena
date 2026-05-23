@@ -39,7 +39,7 @@ class Match:
     sim_args: dict[str, Any]    # JSONB; reconstitute as SimArgs.model_validate() in callers
     started_at: datetime
     finished_at: datetime | None
-    replay_r2_key: str | None
+    bundle_key: str | None
     error: str | None
     is_test: bool = False
 
@@ -53,7 +53,7 @@ def _row_to_match(row: dict[str, Any]) -> Match:
         sim_args=row["sim_args"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
-        replay_r2_key=row["replay_r2_key"],
+        bundle_key=row["bundle_key"],
         error=row["error"],
         is_test=row["is_test"],
     )
@@ -62,7 +62,7 @@ def _row_to_match(row: dict[str, Any]) -> Match:
 _MATCH_COLUMNS = """
     id, match_uuid, status, mode, sim_args,
     started_at, finished_at,
-    replay_r2_key, error, is_test
+    bundle_key, error, is_test
 """
 
 
@@ -85,7 +85,7 @@ def record_match_result(
     sim_args: SimArgs,
     started_at: datetime,
     finished_at: datetime,
-    replay_r2_key: str | None,
+    bundle_key: str | None,
     error: str | None,
     participants: list[ParticipantRow],
     is_test: bool = False,
@@ -109,7 +109,7 @@ def record_match_result(
             INSERT INTO matches (
                 match_uuid, status, mode, sim_args,
                 started_at, finished_at,
-                replay_r2_key, error, is_test
+                bundle_key, error, is_test
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
@@ -121,7 +121,7 @@ def record_match_result(
                 Jsonb(sim_args.model_dump()),
                 started_at,
                 finished_at,
-                replay_r2_key,
+                bundle_key,
                 error,
                 is_test,
             ),

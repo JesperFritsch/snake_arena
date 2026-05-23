@@ -172,7 +172,6 @@ def run_match(
     sim_image: str,
     agents: list[AgentSpec],
     sim_args: SimArgs,
-    artifacts_host_dir: Path,
     *,
     router: Router,
     d_client: DockerClient,
@@ -182,23 +181,37 @@ def run_match(
     agent_pids_limit: int = 128,
     grpc_ready_timeout_s: int = 2,
     extra_observers: list[ILoopObserver] | None = None,
-    artifacts_local_dir: Path | None = None,
     on_step_log: Callable[[int, str], None] | None = None,
+    on_result: Callable[[MatchResult], None] | None = None,
 ) -> MatchResult:
     match_id = match_id or f"match-{uuid.uuid4().hex[:8]}"
-    # artifacts_local_dir is the path reachable by this process (inside the
-    # runner container). artifacts_host_dir is what the Docker daemon sees when
-    # mounting into the sim container. They differ when the runner is itself
-    # containerised with a bind-mounted artifacts volume.
-    local_dir = artifacts_local_dir or artifacts_host_dir
-    local_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(local_dir, 0o777)
-
-    replay_filename = f"{match_id}.run_proto"
-
     networks: list[Network] = []
     agent_containers: list[Container] = []
     sim_container: Container | None = None
+
+    def _finish(result: MatchResult) -> MatchResult:
+        # Fire on_result before the `finally` teardown so the caller can publish
+        # the outcome immediately — Docker network/container teardown is slow
+        # (~seconds) and shouldn't sit on the user-visible critical path.
+        if on_result is not None:
+            try:
+                on_result(result)
+            except Exception:
+                log.warning("on_result callback failed", exc_info=True)
+        return result
+
+    def _init_failure(error: str) -> MatchResult:
+        agent_logs = _collect_agent_logs(agent_containers)
+        dev_step_logs = (
+            _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
+            if agent_containers else None
+        )
+        return _finish(MatchResult(
+            success=False,
+            agent_logs=agent_logs,
+            dev_agent_step_logs=dev_step_logs,
+            error=error,
+        ))
 
 
     try:
@@ -240,24 +253,27 @@ def run_match(
                 target_to_container[target] = container
                 target_to_name[target] = agent.name
             except ImageNotFound:
-                return MatchResult(
+                return _finish(MatchResult(
                     success=False,
                     error=f"agent image not found: {agent.image}",
-                )
+                ))
 
         log.info("waiting for agents to be ready")
         if not _wait_for_agents_ready(agent_containers, timeout=grpc_ready_timeout_s):
-            agent_logs = _collect_agent_logs(agent_containers)
-            dev_step_logs = (
-                _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
-                if agent_containers else None
-            )
-            return MatchResult(
-                success=False,
-                agent_logs=agent_logs,
-                dev_agent_step_logs=dev_step_logs,
-                error="agents not ready within timeout",
-            )
+            return _init_failure("agents not ready within timeout")
+
+        # Fast-fail: an agent that crashed in its constructor was "running" during
+        # the readiness poll but exits right after. Re-check before paying the
+        # cost of starting the sim, so the failure (with its crash log) surfaces
+        # immediately instead of after a pointless empty match.
+        for c in agent_containers:
+            try:
+                c.reload()
+            except (NotFound, APIError):
+                return _init_failure("agent exited during startup")
+            if c.status in ("exited", "dead"):
+                log.info("agent %s crashed during startup — failing fast", c.name)
+                return _init_failure("agent exited during startup")
 
         # Notify all observers (cpu + extra) that containers are ready so they
         # can start monitoring from the very first gRPC init call.
@@ -341,13 +357,13 @@ def run_match(
             if agent_containers else None
         )
 
-        return MatchResult(
+        return _finish(MatchResult(
             success=exit_code == 0,
             sim_logs=sim_logs,
             agent_logs=agent_logs,
             tags_to_names=target_to_name,
             dev_agent_step_logs=dev_step_logs,
-        )
+        ))
 
     finally:
         _cleanup(

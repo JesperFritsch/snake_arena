@@ -280,19 +280,23 @@ def record_dev_build_start(conn: Connection, project_id: int) -> None:
 def record_dev_build_success(
     conn: Connection, project_id: int, dev_image_tag: str
 ) -> None:
-    """Record a successful dev build. Overwrites dev_image_tag.
+    """Record a successful COMPILE — the image exists but is not yet validated.
 
-    `dev_image_tag` should be unique per build (e.g. carry the build job id),
-    not a reused name. Submit copies this value onto the submitted side, and a
-    submitted version must keep pointing at the exact image it was promoted
-    from even after later test builds.
+    Status becomes 'built', NOT 'ready': a build that compiles may still crash
+    before it can play. Only a test run where the dev agent reaches the match
+    promotes it to 'ready' (see record_dev_build_validated). Submit requires
+    'ready', so a 'built' (un-validated) image cannot be submitted.
+
+    `dev_image_tag` should be unique per build (carry the build's uuid). Submit
+    copies it onto the submitted side, so a submitted version keeps pointing at
+    the exact image it was promoted from even after later test builds.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE projects
             SET dev_image_tag = %s,
-                dev_build_status = 'ready',
+                dev_build_status = 'built',
                 dev_built_at = NOW()
             WHERE id = %s
             """,
@@ -300,8 +304,28 @@ def record_dev_build_success(
         )
 
 
+def record_dev_build_validated(conn: Connection, project_id: int) -> None:
+    """The dev agent reached the match (survived construction + init + the
+    startup cpu/mem budget). The build is now submittable: status 'ready'."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE projects SET dev_build_status = 'ready' WHERE id = %s",
+            (project_id,),
+        )
+
+
+def record_dev_build_crashed(conn: Connection, project_id: int) -> None:
+    """The dev agent did not reach the match — it crashed or was killed (cpu/mem)
+    before the first update(). Status 'crashed': compiled but not submittable."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE projects SET dev_build_status = 'crashed' WHERE id = %s",
+            (project_id,),
+        )
+
+
 def record_dev_build_failure(conn: Connection, project_id: int) -> None:
-    """Record a failed dev build. Leaves dev_image_tag at its previous value
+    """Record a failed COMPILE. Leaves dev_image_tag at its previous value
     so an earlier successful build remains usable until the next success."""
     with conn.cursor() as cur:
         cur.execute(

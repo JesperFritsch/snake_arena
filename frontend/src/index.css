@@ -226,7 +226,8 @@ button {
 }
 .pill.building,
 .pill.running,
-.pill.queued {
+.pill.queued,
+.pill.built {
   color: var(--amber);
   border-color: rgba(245, 183, 64, 0.3);
 }
@@ -235,7 +236,8 @@ button {
   border-color: rgba(96, 165, 250, 0.3);
 }
 .pill.failed,
-.pill.failure {
+.pill.failure,
+.pill.crashed {
   color: var(--red);
   border-color: rgba(255, 93, 93, 0.3);
 }

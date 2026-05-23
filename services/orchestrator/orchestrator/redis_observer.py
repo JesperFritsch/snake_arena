@@ -27,13 +27,27 @@ log = logging.getLogger(__name__)
 
 
 class RedisStreamObserver(ILoopObserver):
-    def __init__(self, redis_client: redis.Redis, channel: str) -> None:
+    def __init__(self, redis_client: redis.Redis, channel: str, dev_name: str | None = None) -> None:
         self._redis = redis_client
         self._channel = channel
+        # The dev agent's DNS name (e.g. "agent_0"). snake_tags values are the
+        # targets ("agent_0:50051"), so we match on the host part. Snake ids are
+        # NOT reliable: the sim only numbers agents that connected, so a failed
+        # dev would let an opponent take id 0.
+        self.dev_name = dev_name
         self.final_step: int | None = None
         self.step_count = 0
+        # True once the dev agent makes it into the match start, i.e. it survived
+        # construction + init + the startup budget. This is the signal that the
+        # dev build is runnable (submittable).
+        self.dev_reached_start = False
 
     def notify_start(self, start_data: LoopStartData) -> None:
+        if self.dev_name is not None:
+            for tag in start_data.env_meta_data.snake_tags.values():
+                if tag.split(":", 1)[0] == self.dev_name:
+                    self.dev_reached_start = True
+                    break
         self._publish({"type": "start", "data": start_data.model_dump(mode="json")})
 
     def notify_step(self, step_data: LoopStepData) -> None:
