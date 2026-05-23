@@ -902,9 +902,16 @@ button {
   flex-shrink: 0;
 }
 
-.sim-scrubber {
+.sim-scrubber-col {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sim-scrubber {
+  width: 100%;
   accent-color: var(--accent);
   cursor: pointer;
 }
@@ -926,8 +933,62 @@ button {
 .sim-timeline {
   height: 6px;
   background: var(--bg-input);
-  border-top: 1px solid var(--border-soft);
-  flex-shrink: 0;
+  border-radius: 2px;
+  position: relative;
+}
+
+.sim-mark {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 4px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.sim-mark-death {
+  background: var(--red);
+  opacity: 0.9;
+}
+
+.sim-mark-trap {
+  background: var(--amber);
+  opacity: 0.85;
+}
+
+.sim-mark-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 9px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text);
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.sim-mark-tooltip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--border);
+}
+
+.sim-mark-tooltip-death {
+  border-top: 2px solid var(--red);
+}
+
+.sim-mark-tooltip-trap {
+  border-top: 2px solid var(--amber);
 }
 
 /* mobile: editor page switches to tabbed single-pane (rendered only on mobile) */

@@ -14,6 +14,13 @@ const BASE_WS_URL = (import.meta.env.VITE_API_BASE_URL ?? "")
 const SPEEDS = [1, 2, 4, 8];
 const MS_PER_STEP_1X = 100;
 
+interface Highlight {
+  step: number;
+  kind: "death" | "trap";
+  snakeIdx: number;
+  trappingIdx?: number; // only for trap kind
+}
+
 interface Props {
   job: TestMatchJob;
   onConsoleLog?: (log: string | null) => void;
@@ -42,6 +49,10 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
   const [playing, setPlaying]         = useState(false);
   const [speedIdx, setSpeedIdx]       = useState(0);
   const [errorMsg, setErrorMsg]       = useState("");
+  const [highlights, setHighlights]   = useState<Highlight[]>([]);
+  const [hoveredMark, setHoveredMark] = useState<Highlight | null>(null);
+  const highlightsRef = useRef<Highlight[]>([]);
+  highlightsRef.current = highlights;
 
   currentStepRef.current = currentStep;
   totalStepsRef.current  = totalSteps;
@@ -154,6 +165,31 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
           storeRef.current.addMessage({ type: "step_log", data: { step, log } });
         });
       }
+      const analysisFile = files["analysis.json"];
+      if (analysisFile) {
+        try {
+          const analysis = JSON.parse(new TextDecoder().decode(analysisFile)) as {
+            fatal_steps?: Record<string, number>;
+            traps_mapping?: Record<string, Array<{ trapped_ids: number[]; trapping_ids: number[] }>>;
+          };
+          const newHighlights: Highlight[] = [];
+          for (const [snakeId, step] of Object.entries(analysis.fatal_steps ?? {})) {
+            newHighlights.push({ step, kind: "death", snakeIdx: Number(snakeId) });
+          }
+          for (const [stepStr, trapInfos] of Object.entries(analysis.traps_mapping ?? {})) {
+            const step = Number(stepStr);
+            for (const trap of trapInfos) {
+              const snakeIdx = trap.trapped_ids[0] ?? 0;
+              const trappingIdx = trap.trapping_ids[0];
+              newHighlights.push({ step, kind: "trap", snakeIdx, trappingIdx });
+            }
+          }
+          setHighlights(newHighlights);
+        } catch (err) {
+          console.error("analysis.json parse error", err);
+        }
+      }
+
       setTotalSteps(storeRef.current.frameCount);
       setCurrentStep(0);
       setStatus("ended");
@@ -261,6 +297,7 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
     setCurrentStep(0);
     setPlaying(false);
     setErrorMsg("");
+    setHighlights([]);
     onConsoleLogRef.current?.(null);
 
     if (job.status === "failure") {
@@ -304,6 +341,32 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
     setPlaying(false);
   };
 
+  const handleTimelineClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (totalStepsRef.current <= 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const step = Math.round(ratio * (totalStepsRef.current - 1));
+    setCurrentStep(step);
+    setPlaying(false);
+  }, []);
+
+  const handleTimelineMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const total = totalStepsRef.current;
+    const hl = highlightsRef.current;
+    if (total <= 1 || hl.length === 0) { setHoveredMark(null); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const cursorStep = ((e.clientX - rect.left) / rect.width) * (total - 1);
+    // Snap to nearest mark within 3% of total steps (min 2 steps).
+    const threshold = Math.max(2, total * 0.03);
+    let best: Highlight | null = null;
+    let bestDist = Infinity;
+    for (const h of hl) {
+      const d = Math.abs(h.step - cursorStep);
+      if (d < bestDist) { bestDist = d; best = h; }
+    }
+    setHoveredMark(bestDist <= threshold ? best : null);
+  }, []);
+
   const togglePlay = () => {
     if (currentStep >= totalSteps - 1 && !playing) setCurrentStep(0);
     setPlaying((p) => !p);
@@ -314,6 +377,17 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
   const showControls = totalSteps > 0;
   const snakeLegend  = storeRef.current.startData?.snake_tags;
   const SNAKE_COLORS = ["#b8ff3c","#60a5fa","#f87171","#fb923c","#a78bfa","#34d399"];
+
+  const agentName = (idx: number) => {
+    const name = job.participant_names[idx] ?? `snake ${idx}`;
+    return idx === 0 ? `${name} (dev)` : name;
+  };
+  const markLabel = (h: Highlight) => {
+    if (h.kind === "death") return `${agentName(h.snakeIdx)} died · step ${h.step + 1}`;
+    if (h.trappingIdx !== undefined)
+      return `${agentName(h.snakeIdx)} trapped by ${agentName(h.trappingIdx)} · step ${h.step + 1}`;
+    return `${agentName(h.snakeIdx)} trapped · step ${h.step + 1}`;
+  };
 
   return (
     <div className="sim-player">
@@ -359,22 +433,46 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
           <button className="btn ghost sim-ctrl-btn" onClick={togglePlay}>
             {playing ? "⏸" : "▶"}
           </button>
-          <input
-            type="range"
-            className="sim-scrubber"
-            min={0}
-            max={Math.max(0, totalSteps - 1)}
-            value={currentStep}
-            onChange={handleScrub}
-          />
+          <div className="sim-scrubber-col">
+            <input
+              type="range"
+              className="sim-scrubber"
+              min={0}
+              max={Math.max(0, totalSteps - 1)}
+              value={currentStep}
+              onChange={handleScrub}
+            />
+            <div
+              className="sim-timeline"
+              aria-label="timeline"
+              onClick={totalSteps > 0 ? handleTimelineClick : undefined}
+              onMouseMove={totalSteps > 1 ? handleTimelineMouseMove : undefined}
+              onMouseLeave={() => setHoveredMark(null)}
+              style={totalSteps > 0 ? { cursor: "pointer" } : undefined}
+            >
+              {totalSteps > 1 && highlights.map((h, i) => (
+                <div
+                  key={i}
+                  className={`sim-mark sim-mark-${h.kind}`}
+                  style={{ left: `${(h.step / (totalSteps - 1)) * 100}%` }}
+                />
+              ))}
+              {hoveredMark && totalSteps > 1 && (
+                <div
+                  className={`sim-mark-tooltip sim-mark-tooltip-${hoveredMark.kind}`}
+                  style={{ left: `${(hoveredMark.step / (totalSteps - 1)) * 100}%` }}
+                >
+                  {markLabel(hoveredMark)}
+                </div>
+              )}
+            </div>
+          </div>
           <span className="sim-step-counter">{currentStep + 1} / {totalSteps}</span>
           <button className="btn ghost sim-ctrl-btn" onClick={cycleSpeed} title="playback speed">
             {speed}×
           </button>
         </div>
       )}
-
-      <div className="sim-timeline" aria-label="timeline" />
     </div>
   );
 }
