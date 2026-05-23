@@ -106,12 +106,21 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
 
     def on_match_result(result) -> None:
         # Fires inside run_match before its (slow) Docker teardown, so live
-        # viewers get the outcome immediately. If no steps streamed (agent
-        # crashed at startup), surface the captured log as the step-0 entry.
-        # The dev-build verdict goes out BEFORE the terminal status (the API
-        # closes the stream on terminal status), so the pill updates live.
+        # viewers get the outcome immediately. Persist + publish the dev-build
+        # verdict HERE (not after run_match returns) so it can't be skipped by a
+        # later exception (cleanup, analysis, bundling) — and it goes out before
+        # the terminal status, which the API uses to close the stream.
         nonlocal published_terminal
-        observer.publish_build("ready" if observer.dev_reached_start else "crashed")
+        verdict = "ready" if observer.dev_reached_start else "crashed"
+        try:
+            with conn.transaction():
+                if observer.dev_reached_start:
+                    record_dev_build_validated(conn, job.player_project_id)
+                else:
+                    record_dev_build_crashed(conn, job.player_project_id)
+        except Exception:
+            log.warning("failed to persist dev-build verdict for job id=%d", job.id, exc_info=True)
+        observer.publish_build(verdict)
         if observer.step_count == 0 and result.dev_agent_step_logs:
             observer.publish_step_log(0, result.dev_agent_step_logs[0])
         observer.publish_stop()
@@ -166,18 +175,9 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         )
 
         # Flush the in-process replay writer before reading the file back.
-        # (Live viewers already got stop/status via on_match_result.)
+        # (Live viewers already got the verdict + stop/status via on_match_result,
+        # and the dev-build verdict was persisted there too.)
         file_observer.close()
-
-        # Persist the dev-build verdict: the build is submittable ('ready') only
-        # if the dev agent reached the match; otherwise it crashed/was killed
-        # before its first update ('crashed'). on_match_result already pushed
-        # this to live viewers; here we make it durable.
-        with conn.transaction():
-            if observer.dev_reached_start:
-                record_dev_build_validated(conn, job.player_project_id)
-            else:
-                record_dev_build_crashed(conn, job.player_project_id)
 
         # Analyze the captured replay so build_participants can derive per-snake
         # outcomes and the bundle carries analysis.json. Skip when the match had

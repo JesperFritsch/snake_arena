@@ -188,6 +188,7 @@ def run_match(
     networks: list[Network] = []
     agent_containers: list[Container] = []
     sim_container: Container | None = None
+    # loop_observable: ILoopObservable | None = None
 
     def _finish(result: MatchResult) -> MatchResult:
         # Fire on_result before the `finally` teardown so the caller can publish
