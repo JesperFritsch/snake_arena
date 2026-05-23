@@ -34,7 +34,7 @@ from runner.router import Router
 log = logging.getLogger(__name__)
 
 _STEP_SEP = "---STEP_END---\n"  # printed by the agent harness after each update()
-_STEP_STDOUT_BUDGET = 2_000     # bytes per step chunk before truncation notice
+_STEP_STDOUT_BUDGET = 10_000     # bytes per step chunk before truncation notice
 _STARTUP_LOG_BUDGET = 16_000    # bytes kept when an agent crashes before any step
 _TRUNCATION_NOTICE = "\n[stdout truncated — output too long for this step]\n"
 
