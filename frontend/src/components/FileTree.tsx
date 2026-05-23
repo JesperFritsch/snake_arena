@@ -26,11 +26,10 @@ export function FileTree({
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
-  const [renaming, setRenaming] = useState<string | null>(null); // path being renamed
-  const [draft, setDraft] = useState("");                        // value for add OR rename
-  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number; isDir: boolean } | null>(null);
 
-  // Close the context menu on any outside interaction.
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -51,8 +50,6 @@ export function FileTree({
       return next;
     });
 
-  // Returns an error string, or null if the name is usable. `excludePath`
-  // skips one path (the file being renamed, so renaming to itself is fine).
   const validate = (value: string, excludePath?: string): string | null => {
     const v = value.trim();
     if (!v) return "name required";
@@ -65,11 +62,14 @@ export function FileTree({
     setRenaming(null);
     setDraft("");
   };
-  const startAdd = () => {
+
+  const startAdd = (prefix = "") => {
+    setMenu(null);
     setRenaming(null);
-    setDraft("");
+    setDraft(prefix ? prefix + "/" : "");
     setAdding(true);
   };
+
   const startRename = (path: string) => {
     setMenu(null);
     setAdding(false);
@@ -91,13 +91,19 @@ export function FileTree({
     cancelEdit();
   };
 
+  const openMenu = (e: React.MouseEvent, path: string, isDir: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ path, x: e.clientX, y: e.clientY, isDir });
+  };
+
   const editRow = (onCommit: () => void, pad: React.CSSProperties) => (
     <div className="tree-edit" style={pad}>
       <input
         className="input"
         autoFocus
         value={draft}
-        placeholder="src/util.py"
+        placeholder="path/to/file.rs"
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") onCommit();
@@ -116,9 +122,17 @@ export function FileTree({
         const isCollapsed = collapsed.has(node.path);
         return (
           <div key={"d:" + node.path}>
-            <div className="tree-row" style={pad} onClick={() => toggle(node.path)}>
+            <div
+              className="tree-row"
+              style={pad}
+              onClick={() => toggle(node.path)}
+              onContextMenu={editable ? (e) => openMenu(e, node.path, true) : undefined}
+            >
               <span className="twig">{isCollapsed ? "▸" : "▾"}</span>
               <span className="fname">{node.name}/</span>
+              {editable && (
+                <span className="kebab" title="Directory actions" onClick={(e) => openMenu(e, node.path, true)}>⋯</span>
+              )}
             </div>
             {!isCollapsed && render(node.children, depth + 1)}
           </div>
@@ -130,23 +144,18 @@ export function FileTree({
       }
 
       const isActive = node.path === activePath;
-      const openMenu = (e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setMenu({ path: node.path, x: e.clientX, y: e.clientY });
-      };
       return (
         <div
           key={"f:" + node.path}
           className={`tree-row ${isActive ? "active" : ""}`}
           style={pad}
           onClick={() => onOpen(node.path)}
-          onContextMenu={editable ? openMenu : undefined}
+          onContextMenu={editable ? (e) => openMenu(e, node.path, false) : undefined}
         >
           <span className="twig" />
           <span className={`fname ${dirtyPaths.has(node.path) ? "dirty" : ""}`}>{node.name}</span>
           {editable && (
-            <span className="kebab" title="File actions" onClick={openMenu}>⋯</span>
+            <span className="kebab" title="File actions" onClick={(e) => openMenu(e, node.path, false)}>⋯</span>
           )}
         </div>
       );
@@ -167,7 +176,7 @@ export function FileTree({
             (adding ? (
               editRow(commitAdd, { paddingLeft: 12 })
             ) : (
-              <button className="tree-add" onClick={startAdd}>+ New file</button>
+              <button className="tree-add" onClick={() => startAdd()}>+ New file</button>
             ))}
         </div>
       </div>
@@ -178,20 +187,26 @@ export function FileTree({
           style={{ left: menu.x, top: menu.y }}
           onClick={(e) => e.stopPropagation()}
         >
-          {onRenameFile && (
-            <button onClick={() => startRename(menu.path)}>Rename</button>
-          )}
-          {onDeleteFile && (
-            <button
-              className="danger"
-              onClick={() => {
-                const p = menu.path;
-                setMenu(null);
-                onDeleteFile(p);
-              }}
-            >
-              Delete
-            </button>
+          {menu.isDir ? (
+            <button onClick={() => startAdd(menu.path)}>New file here</button>
+          ) : (
+            <>
+              {onRenameFile && (
+                <button onClick={() => startRename(menu.path)}>Rename</button>
+              )}
+              {onDeleteFile && (
+                <button
+                  className="danger"
+                  onClick={() => {
+                    const p = menu.path;
+                    setMenu(null);
+                    onDeleteFile(p);
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+            </>
           )}
         </div>
       )}

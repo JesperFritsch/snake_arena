@@ -31,6 +31,7 @@ class LanguageManifest:
     name: str
     user_code_dest: str
     user_entry_file: str
+    build_cmd: str | None = None
 
 
 def _sandbox_images_dir() -> Path:
@@ -205,10 +206,10 @@ def _run_build(
                 f"{manifest.user_entry_file} not found in project '{project.name}'"
             )
 
-        (build_dir / "Dockerfile").write_text(
-            f"FROM {base_image}\n"
-            f"COPY . {manifest.user_code_dest}\n"
-        )
+        dockerfile = f"FROM {base_image}\nCOPY --chown=1000:1000 . {manifest.user_code_dest}\n"
+        if manifest.build_cmd:
+            dockerfile += f"RUN {manifest.build_cmd}\n"
+        (build_dir / "Dockerfile").write_text(dockerfile)
         (build_dir / ".dockerignore").write_text("Dockerfile\n.dockerignore\n")
 
         log.info("building %s from %s", image_tag, base_image)

@@ -29,12 +29,12 @@ class Snake:
         # which you can use to initialize any necessary state for your snake
         self.init_data = init_data
 
-    def update(self, env_step_data: dict) -> tuple[int, int] | None:
+    def update(self, env_step_data: dict) -> tuple[int, int]:
         # sim environment calls this method on every step of the simulation, 
         # providing your snake with necessary data about the current state of the environment, 
         # which you can use to decide which direction to move in
         # return a tuple representing the direction you want to move in 
-        # (e.g. (0, -1) for up, (0, 1) for down, (-1, 0) for left, (1, 0) for right), or return None to not move
+        # (e.g. (0, -1) for up, (0, 1) for down, (-1, 0) for left, (1, 0) for right)
         print("My ID: ", self.id)
         pprint.pprint(self.init_data)
         pprint.pprint(env_step_data)  # Example of using the provided environment data

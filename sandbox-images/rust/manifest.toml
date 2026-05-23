@@ -1,0 +1,5 @@
+[language]
+name = "rust"
+user_code_dest = "/app/harness/src/"
+user_entry_file = "snake.rs"
+build_cmd = "touch /app/harness/src/snake.rs && cd /app/harness && cargo build --release"
