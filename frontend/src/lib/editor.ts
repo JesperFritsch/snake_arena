@@ -2,6 +2,9 @@ import { python } from "@codemirror/lang-python";
 import { javascript } from "@codemirror/lang-javascript";
 import { cpp } from "@codemirror/lang-cpp";
 import { rust } from "@codemirror/lang-rust";
+import { java } from "@codemirror/lang-java";
+import { StreamLanguage } from "@codemirror/language";
+import { go } from "@codemirror/legacy-modes/mode/go";
 import type { Extension } from "@codemirror/state";
 import type { LanguageInfo, ProjectFile } from "../api/types";
 
@@ -33,6 +36,12 @@ export function languageFor(path: string): Extension[] {
       return [cpp()];
     case "rs":
       return [rust()];
+    case "go":
+      return [StreamLanguage.define(go)];
+    case "java":
+      return [java()];
+    case "toml":
+      return [];
     default:
       return [];
   }

@@ -11,9 +11,12 @@
   "dependencies": {
     "@clerk/clerk-react": "^5.22.0",
     "@codemirror/lang-cpp": "^6.0.2",
+    "@codemirror/lang-java": "^6.0.2",
     "@codemirror/lang-javascript": "^6.2.2",
     "@codemirror/lang-python": "^6.1.6",
     "@codemirror/lang-rust": "^6.0.1",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/legacy-modes": "^6.5.3",
     "@uiw/codemirror-theme-tokyo-night": "^4.23.7",
     "@uiw/react-codemirror": "^4.23.7",
     "fflate": "^0.8.3",

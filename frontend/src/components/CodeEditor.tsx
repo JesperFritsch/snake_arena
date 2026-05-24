@@ -1,6 +1,9 @@
 import CodeMirror from "@uiw/react-codemirror";
 import { tokyoNight } from "@uiw/codemirror-theme-tokyo-night";
+import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { languageFor } from "../lib/editor";
+
+const fallbackHighlight = syntaxHighlighting(defaultHighlightStyle, { fallback: true });
 
 interface Props {
   path: string | null;
@@ -24,7 +27,7 @@ export function CodeEditor({ path, value, readOnly, onChange }: Props) {
       <CodeMirror
         value={value}
         theme={tokyoNight}
-        extensions={languageFor(path)}
+        extensions={[...languageFor(path), fallbackHighlight]}
         readOnly={readOnly}
         onChange={onChange}
         height="100%"
