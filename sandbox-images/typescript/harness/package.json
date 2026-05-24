@@ -1,0 +1,13 @@
+{
+  "name": "harness",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.11.0",
+    "@grpc/proto-loader": "^0.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^20.0.0"
+  }
+}

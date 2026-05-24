@@ -1,0 +1,6 @@
+[language]
+name = "java"
+version = "Java 21"
+user_code_dest = "/app/harness/src/main/java/"
+user_entry_file = "Snake.java"
+build_cmd = "mvn -f /app/harness/pom.xml compile -o -q"

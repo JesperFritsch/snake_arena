@@ -1,0 +1,6 @@
+[language]
+name = "go"
+version = "1.23"
+user_code_dest = "/app/harness/"
+user_entry_file = "snake.go"
+build_cmd = "cd /app/harness && go build -o harness ."

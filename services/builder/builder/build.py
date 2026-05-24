@@ -32,6 +32,7 @@ class LanguageManifest:
     user_code_dest: str
     user_entry_file: str
     build_cmd: str | None = None
+    version: str | None = None
 
 
 def _sandbox_images_dir() -> Path:

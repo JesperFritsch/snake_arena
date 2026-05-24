@@ -2,6 +2,11 @@ syntax = "proto3";
 
 package snake_sim;
 
+option go_package = "harness/pb";
+option java_package = "snake_sim";
+option java_outer_classname = "SnakeSim";
+option java_multiple_files = false;
+
 message Coord {
     int32 x = 1;
     int32 y = 2;
