@@ -85,10 +85,14 @@ export function NewProjectDialog({ languages, onClose, onCreate }: Props) {
               autoFocus
               value={name}
               placeholder="my-snake"
+              maxLength={32}
               style={{ flex: 1 }}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") void create(); }}
             />
+            <span className="muted" style={{ fontSize: 11, marginLeft: 6, whiteSpace: "nowrap" }}>
+              {name.length}/32
+            </span>
           </div>
           <div style={{ fontSize: 11, minHeight: 16, marginTop: 4, marginLeft: 2 }}>
             {status.kind === "empty" && <span className="muted">must be unique across all users</span>}

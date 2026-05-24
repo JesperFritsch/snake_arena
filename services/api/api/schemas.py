@@ -42,7 +42,7 @@ class ProjectFiles(BaseModel):
 # ---- requests -------------------------------------------------------------
 
 class ProjectCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=32)
     language: str = Field(min_length=1, max_length=64)
     source: ProjectSource = "browser"
     # Required (non-empty) for browser projects; must be empty for
