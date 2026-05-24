@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useApi, ApiError } from "../api/client";
-import type { LanguageInfo } from "../api/types";
+import type { LanguageInfo, ProjectSource } from "../api/types";
 
 type NameStatus =
   | { kind: "empty" }
@@ -13,13 +13,14 @@ interface Props {
   languages: LanguageInfo[];
   onClose: () => void;
   /** Throws on failure (e.g. a raced duplicate); the dialog shows it inline. */
-  onCreate: (name: string, language: string) => Promise<void>;
+  onCreate: (name: string, language: string, source: ProjectSource) => Promise<void>;
 }
 
 export function NewProjectDialog({ languages, onClose, onCreate }: Props) {
   const api = useApi();
 
   const [name, setName] = useState("");
+  const [source, setSource] = useState<ProjectSource>("browser");
   const [language, setLanguage] = useState(languages[0]?.name ?? "");
   const [status, setStatus] = useState<NameStatus>({ kind: "empty" });
   const [busy, setBusy] = useState(false);
@@ -54,13 +55,14 @@ export function NewProjectDialog({ languages, onClose, onCreate }: Props) {
     };
   }, [name, api]);
 
-  const canCreate = status.kind === "available" && !!language && !busy;
+  const effectiveLang = source === "external_image" ? "image" : language;
+  const canCreate = status.kind === "available" && (source === "external_image" || !!language) && !busy;
 
   const create = async () => {
     if (!canCreate) return;
     setBusy(true);
     try {
-      await onCreate(name.trim(), language);
+      await onCreate(name.trim(), effectiveLang, source);
       onClose();
     } catch (e) {
       setStatus({ kind: "error", message: e instanceof ApiError ? e.detail : String(e) });
@@ -103,16 +105,43 @@ export function NewProjectDialog({ languages, onClose, onCreate }: Props) {
           </div>
 
           <div className="form-row" style={{ marginTop: 12 }}>
-            <label>Language</label>
-            <select className="select" value={language} onChange={(e) => setLanguage(e.target.value)}>
-              {languages.length === 0 && <option value="">no languages available</option>}
-              {languages.map((l) => (
-                <option key={l.name} value={l.name}>
-                  {l.name}{l.version ? ` (${l.version})` : ""}
-                </option>
-              ))}
-            </select>
+            <label>Type</label>
+            <div className="seg">
+              <button
+                className={source === "browser" ? "on" : ""}
+                onClick={() => setSource("browser")}
+              >
+                Online editor
+              </button>
+              <button
+                className={source === "external_image" ? "on" : ""}
+                onClick={() => setSource("external_image")}
+              >
+                Custom image
+              </button>
+            </div>
           </div>
+
+          {source === "browser" && (
+            <div className="form-row" style={{ marginTop: 8 }}>
+              <label>Language</label>
+              <select className="select" value={language} onChange={(e) => setLanguage(e.target.value)}>
+                {languages.length === 0 && <option value="">no languages available</option>}
+                {languages.map((l) => (
+                  <option key={l.name} value={l.name}>
+                    {l.name}{l.version ? ` (${l.version})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {source === "external_image" && (
+            <p className="muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              You'll upload a Docker image tarball after creating the project.
+              The image must implement the gRPC <code>RemoteSnake</code> interface on port 50051.
+            </p>
+          )}
         </div>
 
         <div className="modal-foot">

@@ -1566,6 +1566,7 @@ name = "snake-arena-api"
 version = "0.1.0"
 source = { editable = "services/api" }
 dependencies = [
+    { name = "docker" },
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
@@ -1580,6 +1581,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "docker", specifier = ">=7.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "psycopg-pool", specifier = ">=3.2" },

@@ -489,6 +489,8 @@ button {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-dim);
+  flex: 1;
+  overflow: auto;
 }
 .console .err {
   color: var(--red);
@@ -715,6 +717,43 @@ button {
 
 .mv-console {
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.exec-times-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.exec-times-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.exec-times-entry {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.exec-times-name {
+  color: var(--fg-muted);
+}
+
+.exec-times-ms {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
 }
 
 /* ---- match viewer tabs -------------------------------------------------- */
@@ -1021,4 +1060,87 @@ button {
   .tree-row .kebab {
     opacity: 1;
   }
+}
+
+/* ---- image upload panel -------------------------------------------------- */
+.upload-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 20px 0;
+}
+.upload-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.upload-step .step-num {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.upload-step p {
+  margin: 4px 0 0;
+}
+.code-block {
+  margin-top: 6px;
+  background: var(--bg2);
+  border-radius: 6px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.code-block code {
+  font-size: 12px;
+  color: var(--fg);
+}
+.dropzone {
+  margin-top: 20px;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 32px;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.dropzone:hover,
+.dropzone.drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.dropzone.busy {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ---- interface reference table ------------------------------------------- */
+.ref-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ref-table td {
+  padding: 8px 10px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.ref-table td:first-child {
+  white-space: nowrap;
+  color: var(--accent);
+  padding-right: 16px;
 }

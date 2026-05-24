@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { useApi, ApiError } from "../api/client";
-import type { LanguageInfo, ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
+import type { LanguageInfo, ProjectFile, ProjectMeta, ProjectSource, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
+import { ImageUploadPanel } from "../components/ImageUploadPanel";
 import { MatchViewer } from "../components/MatchViewer";
 import { TestDialog, loadTestSettings, saveTestSettings } from "../components/TestDialog";
 import type { TestSettings } from "../components/TestDialog";
@@ -227,7 +228,7 @@ export function EditorPage() {
 
   const handleTest = async () => {
     if (!meta) return;
-    if (dirty && !(await save())) return;
+    if (meta.source === "browser" && dirty && !(await save())) return;
     const saved = loadTestSettings(meta.id);
     if (saved) {
       try {
@@ -265,13 +266,13 @@ export function EditorPage() {
 
   const handleTestSettings = async () => {
     if (!meta) return;
-    if (dirty && !(await save())) return;
+    if (meta.source === "browser" && dirty && !(await save())) return;
     setTestDialogOpen(true);
   };
 
   const submit = async () => {
     if (!meta) return;
-    if (dirty && !(await save())) return;
+    if (meta.source === "browser" && dirty && !(await save())) return;
     setBusy("submit");
     try {
       const res = await api.submit(meta.id);
@@ -285,8 +286,8 @@ export function EditorPage() {
   };
 
   // Throws on failure so NewProjectDialog can surface it inline.
-  const createProject = async (name: string, language: string) => {
-    const created = await api.createProject({ name, language, source: "browser" });
+  const createProject = async (name: string, language: string, source: ProjectSource) => {
+    const created = await api.createProject({ name, language, source });
     const next = [created, ...projects];
     setProjects(next);
     await selectProject(created.id, next);
@@ -428,9 +429,11 @@ export function EditorPage() {
         </button>
       ) : (
         <>
-          <button className="btn" disabled={!meta || !dirty || busy === "save"} onClick={save}>
-            {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
-          </button>
+          {meta?.source === "browser" && (
+            <button className="btn" disabled={!meta || !dirty || busy === "save"} onClick={save}>
+              {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
+            </button>
+          )}
           <button
             className="btn primary"
             disabled={!meta || busy !== ""}
@@ -468,6 +471,7 @@ export function EditorPage() {
   const displayedFiles = viewMode === "submitted" ? submittedFiles : files;
   const displayedActivePath = viewMode === "submitted" ? submittedActivePath : activePath;
   const displayedActiveFile = displayedFiles.find((f) => f.path === displayedActivePath) ?? null;
+  const isExternalImage = meta?.source === "external_image";
 
   const treePane = (
     <FileTree
@@ -503,6 +507,10 @@ export function EditorPage() {
     </div>
   );
 
+  const uploadPane = meta ? (
+    <ImageUploadPanel meta={meta} languages={languages} onUploaded={setMeta} />
+  ) : null;
+
   return (
     <div className="panel">
       {testDialogOpen && meta && (
@@ -529,16 +537,19 @@ export function EditorPage() {
         <>
           <div className="mtabs panel-head">
             <div className="seg">
-              {(["files", "editor", "viewer"] as MobileTab[]).map((t) => (
+              {(isExternalImage
+                ? (["editor", "viewer"] as MobileTab[])
+                : (["files", "editor", "viewer"] as MobileTab[])
+              ).map((t) => (
                 <button key={t} className={mobileTab === t ? "on" : ""} onClick={() => setMobileTab(t)}>
-                  {t}
+                  {isExternalImage && t === "editor" ? "image" : t}
                 </button>
               ))}
             </div>
           </div>
           <div className="panel-body" style={{ overflow: "hidden" }}>
-            {mobileTab === "files" && treePane}
-            {mobileTab === "editor" && editorPane}
+            {!isExternalImage && mobileTab === "files" && treePane}
+            {isExternalImage && mobileTab === "editor" ? uploadPane : mobileTab === "editor" && editorPane}
             {mobileTab === "viewer" && (
               <MatchViewer
                 matchTabs={matchTabs}
@@ -557,13 +568,15 @@ export function EditorPage() {
         <div className="panel-body" style={{ overflow: "hidden" }}>
           <PanelGroup direction="horizontal">
             <Panel defaultSize={55} minSize={30}>
-              <PanelGroup direction="horizontal">
-                <Panel defaultSize={28} minSize={14} maxSize={50}>
-                  {treePane}
-                </Panel>
-                <PanelResizeHandle className="resize-handle" />
-                <Panel minSize={25}>{editorPane}</Panel>
-              </PanelGroup>
+              {isExternalImage ? uploadPane : (
+                <PanelGroup direction="horizontal">
+                  <Panel defaultSize={28} minSize={14} maxSize={50}>
+                    {treePane}
+                  </Panel>
+                  <PanelResizeHandle className="resize-handle" />
+                  <Panel minSize={25}>{editorPane}</Panel>
+                </PanelGroup>
+              )}
             </Panel>
             <PanelResizeHandle className="resize-handle" />
             <Panel ref={viewerPanelRef} defaultSize={45} minSize={20}>

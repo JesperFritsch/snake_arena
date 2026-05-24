@@ -18,8 +18,12 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import re
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import docker
+from docker.errors import DockerException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from psycopg import Connection
 
@@ -36,6 +40,8 @@ from sa_common.db.projects import (
     pack_files,
     project_name_exists,
     promote_to_submitted,
+    record_dev_build_start,
+    record_dev_build_success,
     restore_dev_from_submitted,
     save_dev_code,
     unpack_files,
@@ -58,6 +64,8 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 _MAX_FILES = 2000
 _MAX_DECODED_BYTES = 5 * 1024 * 1024   # total uncompressed payload
 _MAX_ARCHIVE_BYTES = 5 * 1024 * 1024   # matches the projects_*_code_size CHECKs
+_MAX_IMAGE_BYTES   = 500 * 1024 * 1024  # 500 MB cap for uploaded Docker tarballs
+_REGISTRY_PREFIX   = "snake"
 
 
 def _owned_meta(conn: Connection, project_id: int, user: User) -> ProjectMeta:
@@ -297,6 +305,70 @@ def download_dev_archive(
         headers={"Content-Disposition": f'attachment; filename="project-{project_id}-dev.tar.gz"'},
     )
 
+
+
+@router.post("/{project_id}/upload-image", response_model=ProjectMeta)
+async def upload_image(
+    project_id: int,
+    file: UploadFile,
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProjectMeta:
+    """Accept a docker-save tarball, load it, tag it as the dev image."""
+    meta = _owned_meta(conn, project_id, user)
+    if meta.source != "external_image":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "only external_image projects support image upload")
+
+    size = file.size or 0
+    if size > _MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"image too large (max {_MAX_IMAGE_BYTES // 1024 // 1024 // 1024} GB)",
+        )
+
+    try:
+        client = docker.from_env()
+    except DockerException as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"docker unavailable: {e}")
+
+    try:
+        loaded = client.images.load(file.file)
+    except DockerException as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"failed to load image: {e}")
+
+    if not loaded:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty file")
+
+    if not loaded:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no images found in tarball")
+
+    image = loaded[0]
+    safe_name = re.sub(r"[^a-z0-9._-]", "-", meta.name.lower()) or "unnamed"
+    image_tag = f"{_REGISTRY_PREFIX}-{project_id}-{safe_name}-{uuid.uuid4().hex[:8]}"
+    image.tag(image_tag)
+
+    # GC any old dev images for this project (keep new tag + submitted tag).
+    old_dev = meta.dev_image_tag
+    if old_dev and old_dev != image_tag:
+        prefix = f"{_REGISTRY_PREFIX}-{project_id}-"
+        keep = {image_tag, meta.submitted_image_tag}
+        try:
+            for img in client.images.list():
+                for t in img.tags:
+                    if t.rsplit(":", 1)[0].startswith(prefix) and t.rsplit(":", 1)[0] not in keep:
+                        try:
+                            client.images.remove(t, force=True)
+                        except DockerException:
+                            pass
+        except DockerException:
+            pass
+
+    record_dev_build_start(conn, project_id)
+    record_dev_build_success(conn, project_id, image_tag)
+
+    refreshed = get_project_meta(conn, project_id)
+    assert refreshed is not None
+    return refreshed
 
 
 @router.post("/{project_id}/submit", response_model=SubmitResult)

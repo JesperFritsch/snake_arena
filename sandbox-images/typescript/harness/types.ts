@@ -20,3 +20,11 @@ export interface EnvStepData {
   snakes: Record<number, SnakeRep>;
   food_locations: Coord[];
 }
+
+export interface SnakeInterface {
+  setId(id: number): void;
+  setStartLength(n: number): void;
+  setStartPosition(pos: Coord): void;
+  setInitData(data: EnvInitData): void;
+  update(data: EnvStepData): [number, number];
+}

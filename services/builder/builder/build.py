@@ -86,6 +86,15 @@ def build_project(
     with get_conn(autocommit=True) as conn:
         record_dev_build_start(conn, project_id)
 
+    if project.source == "external_image":
+        # External-image projects are never built here; their dev_image_tag is
+        # set by the upload-image API endpoint.
+        return BuildResult(
+            success=False,
+            duration_s=time.monotonic() - start,
+            error="external_image project: upload an image via the UI instead of building from source",
+        )
+
     try:
         result = _run_build(
             project=project,

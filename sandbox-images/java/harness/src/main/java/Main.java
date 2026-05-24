@@ -14,7 +14,7 @@ import java.util.Map;
 
 public class Main extends RemoteSnakeGrpc.RemoteSnakeImplBase {
 
-    private final Snake snake = new Snake();
+    private final SnakeInterface snake = new Snake();
     private int height, width;
     private String dtype = "int32";
 

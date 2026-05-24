@@ -16,6 +16,8 @@ class MatchResult:
     # Per-step stdout chunks for the dev agent (seat 0), split on the harness
     # step separator. Used to build the test-match console view.
     dev_agent_step_logs: list[str] | None = None
+    # Per-step CPU times (ms) keyed by snake_id. snake_id → [ms per step].
+    exec_times: dict[int, list[float]] | None = None
     error: str | None = None
 
 

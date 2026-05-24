@@ -1,6 +1,2 @@
-bitarray==3.8.1
 grpcio==1.80.0
 grpcio-tools==1.80.0
-networkx==3.6.1
-numpy==2.4.3
-protobuf==6.33.6

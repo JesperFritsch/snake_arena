@@ -3,7 +3,8 @@ import logging
 import threading
 import time
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
@@ -50,6 +51,7 @@ class AgentContainerManager(ILoopObserver):
         initial_budget_seconds: float = 1.0,
         startup_budget_seconds: float = 5.0,
         poll_interval_s: float = 0.01,
+        on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
     ):
         super().__init__()
         self._name_to_container = snake_name_to_container
@@ -57,8 +59,10 @@ class AgentContainerManager(ILoopObserver):
         self._initial_extra_ns = int(initial_budget_seconds * 1e9)
         self._startup_budget_ns = int(startup_budget_seconds * 1e9)
         self._poll_interval_s = poll_interval_s
+        self._on_exec_times = on_exec_times
 
         self._trackers: dict[int, _AgentTracker] = {}
+        self._exec_times_ms: dict[int, list[float]] = {}  # snake_id → [ms per step]
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -126,6 +130,7 @@ class AgentContainerManager(ILoopObserver):
             self._thread.start()
 
     def notify_step(self, data: LoopStepData):
+        step_times: dict[int, float] = {}
         with self._lock:
             for snake_id, tracker in self._trackers.items():
                 if tracker.killed:
@@ -136,10 +141,24 @@ class AgentContainerManager(ILoopObserver):
                     self._kill_container(tracker.container)
                     continue
                 current = self._read_cpu_ns(tracker.container)
+                print(f"DEBUG: snake_id={snake_id}, current_cpu_ns={current}, last_cpu_ns={tracker.last_cpu_ns}, step_budget_ns={tracker.step_budget_ns}")
                 if current < 0:
                     continue
+                delta_ms = max(0.0, (current - tracker.last_cpu_ns) / 1e6)
+                step_times[snake_id] = delta_ms
+                self._exec_times_ms.setdefault(snake_id, []).append(delta_ms)
                 tracker.last_cpu_ns = current
                 tracker.step_budget_ns = self._per_step_budget_ns
+        if step_times and self._on_exec_times is not None:
+            try:
+                self._on_exec_times(data.step, step_times)
+            except Exception:
+                log.warning("on_exec_times callback failed", exc_info=True)
+
+    def get_exec_times(self) -> dict[int, list[float]]:
+        """Return accumulated per-step CPU times (ms) keyed by snake_id."""
+        with self._lock:
+            return {k: list(v) for k, v in self._exec_times_ms.items()}
 
     def notify_stop(self, data: LoopStopData):
         self._shutdown()

@@ -22,6 +22,7 @@ def assemble_bundle(
     replay_path: Path,
     run_analysis: RunAnalysis | None,
     dev_step_logs: list[str] | None = None,
+    exec_times: dict[int, list[float]] | None = None,
 ) -> bytes:
     analysis_obj = run_analysis.to_dict() if run_analysis is not None else {}
     buf = io.BytesIO()
@@ -31,4 +32,7 @@ def assemble_bundle(
         zf.writestr("analysis.json", json.dumps(analysis_obj).encode())
         if dev_step_logs is not None:
             zf.writestr("agent_logs.json", json.dumps({"0": dev_step_logs}).encode())
+        if exec_times is not None:
+            # String-keyed for JSON compatibility.
+            zf.writestr("exec_times.json", json.dumps({str(k): v for k, v in exec_times.items()}).encode())
     return buf.getvalue()

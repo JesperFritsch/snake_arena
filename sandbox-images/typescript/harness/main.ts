@@ -3,8 +3,8 @@ process.env.GRPC_VERBOSITY = 'ERROR';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import * as path from 'path';
-import { Snake } from './usercode/snake';
-import type { Coord, EnvInitData, EnvStepData } from './types';
+import { createSnake } from './usercode/snake';
+import type { Coord, EnvInitData, EnvStepData, SnakeInterface } from './types';
 
 const packageDef = protoLoader.loadSync(
   path.join(__dirname, '..', '..', 'proto', 'sim_interface.proto'),
@@ -12,7 +12,7 @@ const packageDef = protoLoader.loadSync(
 );
 const { snake_sim } = grpc.loadPackageDefinition(packageDef) as any;
 
-const snake = new Snake();
+const snake: SnakeInterface = createSnake();
 let height = 0, width = 0, dtype = 'int32';
 
 function bytesToGrid(raw: Buffer | Uint8Array, h: number, w: number, dt: string): number[][] {

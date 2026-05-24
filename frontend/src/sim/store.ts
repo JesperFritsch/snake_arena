@@ -21,6 +21,8 @@ export class SimStore {
   private finalStep: number | null = null;
   annotations: Annotation[] = [];
   private agentLogs: Record<string, string[]> | null = null;
+  // exec_times[step] = { "snakeId": ms }
+  private execTimesPerStep: Record<string, number>[] = [];
 
   /** Renderable frames: frame 0 is the start state, then one per step. */
   get frameCount(): number {
@@ -50,6 +52,9 @@ export class SimStore {
         chunks[msg.data.step] = msg.data.log;
         break;
       }
+      case "exec_time":
+        this.execTimesPerStep[msg.data.step] = msg.data.times;
+        break;
     }
   }
 
@@ -58,6 +63,11 @@ export class SimStore {
     const chunks = this.agentLogs?.["0"];
     if (!chunks) return null;
     return chunks[stepIndex] ?? null;
+  }
+
+  /** Returns per-snake CPU times (ms) for the given step, or null if unavailable. */
+  getExecTimes(stepIndex: number): Record<string, number> | null {
+    return this.execTimesPerStep[stepIndex] ?? null;
   }
 
   /** Reconstruct the rendered state at a frame. Frame 0 is the start state
@@ -88,6 +98,7 @@ export class SimStore {
     this.finalStep = null;
     this.annotations = [];
     this.agentLogs = null;
+    this.execTimesPerStep = [];
   }
 }
 

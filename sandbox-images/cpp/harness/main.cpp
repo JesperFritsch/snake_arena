@@ -1,5 +1,6 @@
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -8,7 +9,7 @@
 
 #include "sim_interface.grpc.pb.h"
 #include "sim_interface.pb.h"
-#include "snake.hpp"
+#include "snake_base.hpp"
 #include "types.hpp"
 
 // Proto message aliases to avoid ambiguity with identically-named user types.
@@ -52,7 +53,7 @@ static std::vector<std::vector<int>> bytes_to_grid(
 
 class SnakeServiceImpl final : public snake_sim::RemoteSnake::Service {
     std::mutex mu_;
-    Snake snake_;
+    std::unique_ptr<SnakeBase> snake_{SnakeBase::create()};
     int height_ = 0, width_ = 0;
     std::string dtype_;
 
@@ -61,7 +62,7 @@ public:
                        snake_sim::Empty*) override
     {
         std::lock_guard<std::mutex> lock(mu_);
-        snake_.set_id(req->id());
+        snake_->set_id(req->id());
         return grpc::Status::OK;
     }
 
@@ -69,7 +70,7 @@ public:
                                 snake_sim::Empty*) override
     {
         std::lock_guard<std::mutex> lock(mu_);
-        snake_.set_start_length(req->length());
+        snake_->set_start_length(req->length());
         return grpc::Status::OK;
     }
 
@@ -78,7 +79,7 @@ public:
     {
         std::lock_guard<std::mutex> lock(mu_);
         const auto& c = req->start_position();
-        snake_.set_start_position({c.x(), c.y()});
+        snake_->set_start_position({c.x(), c.y()});
         return grpc::Status::OK;
     }
 
@@ -106,7 +107,7 @@ public:
             init.start_positions[k] = {c.x(), c.y()};
 
         init.base_map = bytes_to_grid(req->base_map(), height_, width_, dtype_);
-        snake_.set_init_data(std::move(init));
+        snake_->set_init_data(std::move(init));
         return grpc::Status::OK;
     }
 
@@ -125,7 +126,7 @@ public:
                     step.snakes[k] = {s.is_alive(), s.length()};
                 for (const auto& c : env.food_locations())
                     step.food_locations.push_back({c.x(), c.y()});
-                dir = snake_.update(std::move(step));
+                dir = snake_->update(std::move(step));
             }
             std::cout << "---STEP_END---\n" << std::flush;
             snake_sim::UpdateResponse resp;

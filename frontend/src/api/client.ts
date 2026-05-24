@@ -12,7 +12,7 @@ import type {
   UserOut,
 } from "./types";
 
-const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+export const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export class ApiError extends Error {
   constructor(
@@ -73,6 +73,9 @@ export interface ApiClient {
   getProject(id: number): Promise<ProjectMeta>;
   getFiles(id: number): Promise<ProjectFiles>;
   saveFiles(id: number, files: ProjectFiles): Promise<ProjectMeta>;
+  uploadProjectImage(projectId: number, file: File): Promise<ProjectMeta>;
+  downloadProto(): Promise<void>;
+  downloadHarness(language: string): Promise<void>;
   submit(id: number): Promise<SubmitResult>;
   deleteProject(id: number): Promise<void>;
   getSubmittedFiles(id: number): Promise<ProjectFiles>;
@@ -81,6 +84,43 @@ export interface ApiClient {
   enqueueTestMatch(body: TestMatchCreate): Promise<TestMatchJob>;
   listTestMatchJobs(projectId: number, limit?: number): Promise<TestMatchJob[]>;
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
+}
+
+async function downloadBlob(getToken: TokenGetter, path: string, filename: string): Promise<void> {
+  const token = await getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BASE_URL}${path}`, { headers });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const d = await res.json(); detail = d?.detail ?? detail; } catch { /* */ }
+    throw new ApiError(res.status, detail);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function uploadFile<T>(getToken: TokenGetter, path: string, file: File): Promise<T> {
+  const token = await getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE_URL}${path}`, { method: "POST", headers, body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
+    } catch { /* non-JSON */ }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
 }
 
 /** React hook returning an API client bound to the current Clerk session. */
@@ -99,6 +139,11 @@ export function useApi(): ApiClient {
       getProject: (id) => request(g, "GET", `/projects/${id}`),
       getFiles: (id) => request(g, "GET", `/projects/${id}/files`),
       saveFiles: (id, files) => request(g, "PUT", `/projects/${id}/files`, files),
+      uploadProjectImage: (projectId, file) =>
+        uploadFile<ProjectMeta>(g, `/projects/${projectId}/upload-image`, file),
+      downloadProto: () => downloadBlob(g, "/download/proto", "sim_interface.proto"),
+      downloadHarness: (language) =>
+        downloadBlob(g, `/download/harness/${language}`, `snake-harness-${language}.zip`),
       submit: (id) => request(g, "POST", `/projects/${id}/submit`),
       deleteProject: (id) => request(g, "DELETE", `/projects/${id}`),
       getSubmittedFiles: (id) => request(g, "GET", `/projects/${id}/files/submitted`),

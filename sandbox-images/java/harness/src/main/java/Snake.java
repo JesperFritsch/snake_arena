@@ -16,7 +16,7 @@
 //   { 1,  0} = right   {-1,  0} = left
 //   { 0,  1} = down    { 0, -1} = up
 
-public class Snake {
+public class Snake implements SnakeInterface {
     private int id;
     private EnvInitData initData;
 

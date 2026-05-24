@@ -36,14 +36,15 @@ export type JobStatus = "queued" | "running" | "success" | "failure" | "cancelle
 export type BuildEvent = "building" | "built" | "ready" | "crashed" | "failed";
 
 export type SimMessage =
-  | { type: "snapshot"; data: { job_status: JobStatus | "unknown"; build_status: string | null; error: string | null } }
-  | { type: "build";    data: { status: BuildEvent; error?: string } }
-  | { type: "status";   data: { status: JobStatus } }
-  | { type: "start";    data: { env_meta_data: SimStartData } }
-  | { type: "step";     data: SimStepData }
-  | { type: "stop";     data: SimStopData }
-  | { type: "step_log"; data: { step: number; log: string } }
-  | { type: "error";    data: { message: string } };
+  | { type: "snapshot";  data: { job_status: JobStatus | "unknown"; build_status: string | null; error: string | null } }
+  | { type: "build";     data: { status: BuildEvent; error?: string } }
+  | { type: "status";    data: { status: JobStatus } }
+  | { type: "start";     data: { env_meta_data: SimStartData } }
+  | { type: "step";      data: SimStepData }
+  | { type: "stop";      data: SimStopData }
+  | { type: "step_log";  data: { step: number; log: string } }
+  | { type: "exec_time"; data: { step: number; times: Record<string, number> } }
+  | { type: "error";     data: { message: string } };
 
 // Reconstructed per-step state used by the renderer.
 export interface SnakeState {

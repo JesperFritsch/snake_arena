@@ -5,6 +5,7 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 
 mod snake;
+mod snake_trait;
 mod types;
 
 pub mod snake_sim {
@@ -18,7 +19,7 @@ use snake_sim::{
 };
 
 struct SnakeState {
-    snake: snake::Snake,
+    snake: Box<dyn snake_trait::SnakeTrait>,
     height: i32,
     width: i32,
     dtype: String,
@@ -32,7 +33,7 @@ impl SnakeService {
     fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(SnakeState {
-                snake: snake::Snake::new(),
+                snake: snake::new_snake(),
                 height: 0,
                 width: 0,
                 dtype: String::new(),

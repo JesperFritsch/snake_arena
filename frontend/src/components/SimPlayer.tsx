@@ -24,13 +24,14 @@ interface Highlight {
 interface Props {
   job: TestMatchJob;
   onConsoleLog?: (log: string | null) => void;
+  onExecTimes?: (times: Record<string, number> | null) => void;
   onJobStatus?: (status: string) => void;   // running / success / failure
   onBuildStatus?: (status: string) => void;  // dev_build_status: building/built/ready/crashed/failed
 }
 
 type Status = "connecting" | "live" | "loading" | "ended" | "failed" | "error";
 
-export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Props) {
+export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuildStatus }: Props) {
   const { getToken } = useAuth();
   const api = useApi();
   const canvasRef    = useRef<HTMLCanvasElement>(null);
@@ -107,6 +108,9 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
   const onConsoleLogRef = useRef(onConsoleLog);
   onConsoleLogRef.current = onConsoleLog;
 
+  const onExecTimesRef = useRef(onExecTimes);
+  onExecTimesRef.current = onExecTimes;
+
   const onJobStatusRef = useRef(onJobStatus);
   onJobStatusRef.current = onJobStatus;
 
@@ -122,10 +126,11 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
     return () => obs.disconnect();
   }, [resizeCanvas]);
 
-  // ── Render and update console whenever current step changes ──────────────
+  // ── Render and update console/exec-times whenever current step changes ────
   useEffect(() => {
     renderStep(currentStep);
     onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStep));
+    onExecTimesRef.current?.(storeRef.current.getExecTimes(currentStep));
   }, [currentStep, renderStep]);
 
   // ── Load bundle from file host (completed matches) ────────────────────────
@@ -208,6 +213,18 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
           storeRef.current.addMessage({ type: "step_log", data: { step, log } });
         });
       }
+      const execTimesFile = files["exec_times.json"];
+      if (execTimesFile) {
+        const execTimesData = JSON.parse(new TextDecoder().decode(execTimesFile)) as Record<string, number[]>;
+        const stepCount = Math.max(0, ...Object.values(execTimesData).map((a) => a.length));
+        for (let step = 0; step < stepCount; step++) {
+          const times: Record<string, number> = {};
+          for (const [snakeId, arr] of Object.entries(execTimesData)) {
+            if (arr[step] !== undefined) times[snakeId] = arr[step];
+          }
+          storeRef.current.addMessage({ type: "exec_time", data: { step, times } });
+        }
+      }
       const analysisFile = files["analysis.json"];
       if (analysisFile) {
         try {
@@ -239,6 +256,7 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
       setPlaying(true);
       resizeCanvas(); // sizes canvas correctly + renders frame 0
       onConsoleLogRef.current?.(storeRef.current.getDevLogs(0));
+      onExecTimesRef.current?.(storeRef.current.getExecTimes(0));
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : "failed to load bundle");
       setStatus("error");
@@ -312,6 +330,8 @@ export function SimPlayer({ job, onConsoleLog, onJobStatus, onBuildStatus }: Pro
         } else if (msg.type === "step_log") {
           // Step log arrived — refresh the console for the current step.
           onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStepRef.current));
+        } else if (msg.type === "exec_time") {
+          onExecTimesRef.current?.(storeRef.current.getExecTimes(currentStepRef.current));
         } else if (msg.type === "stop") {
           setStatus("ended");
         } else if (msg.type === "error") {

@@ -182,6 +182,7 @@ def run_match(
     grpc_ready_timeout_s: int = 2,
     extra_observers: list[ILoopObserver] | None = None,
     on_step_log: Callable[[int, str], None] | None = None,
+    on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
     on_result: Callable[[MatchResult], None] | None = None,
 ) -> MatchResult:
     match_id = match_id or f"match-{uuid.uuid4().hex[:8]}"
@@ -285,6 +286,7 @@ def run_match(
             initial_budget_seconds=0.2,
             startup_budget_seconds=0.2,
             poll_interval_s=0.01,
+            on_exec_times=on_exec_times,
         )
         cpu_observer.set_agent_containers(seat_to_container)
         for obs in (extra_observers or []):
@@ -357,13 +359,13 @@ def run_match(
             _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
             if agent_containers else None
         )
-
         return _finish(MatchResult(
             success=exit_code == 0,
             sim_logs=sim_logs,
             agent_logs=agent_logs,
             tags_to_names=target_to_name,
             dev_agent_step_logs=dev_step_logs,
+            exec_times=cpu_observer.get_exec_times(),
         ))
 
     finally:

@@ -64,6 +64,10 @@ class RedisStreamObserver(ILoopObserver):
         """Live, per-step dev-agent stdout (called from the runner's streamer)."""
         self._publish({"type": "step_log", "data": {"step": step, "log": text}})
 
+    def publish_exec_time(self, step: int, times: dict[int, float]) -> None:
+        """Per-step container CPU time (ms) keyed by snake_id."""
+        self._publish({"type": "exec_time", "data": {"step": step, "times": times}})
+
     def publish_stop(self) -> None:
         self._publish({"type": "stop", "data": {"final_step": self.final_step or 0}})
 

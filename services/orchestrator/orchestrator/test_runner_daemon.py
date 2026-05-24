@@ -171,6 +171,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             d_client=d_client,
             extra_observers=[observer, file_observer],
             on_step_log=observer.publish_step_log,
+            on_exec_times=observer.publish_exec_time,
             on_result=on_match_result,
         )
 
@@ -201,7 +202,9 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         saved_key: str | None = None
         try:
             bundle_bytes = assemble_bundle(
-                replay_path, run_analysis, dev_step_logs=result.dev_agent_step_logs or []
+                replay_path, run_analysis,
+                dev_step_logs=result.dev_agent_step_logs or [],
+                exec_times=result.exec_times,
             )
             config.bundler.put(bundle_key, bundle_bytes)
             saved_key = bundle_key

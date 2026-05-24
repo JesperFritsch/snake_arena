@@ -1,41 +1,45 @@
-
-import pprint
+# set_id(id)               — called once; your integer ID in this game
+# set_start_length(n)      — called once; initial body length
+# set_start_position(pos)  — called once; initial head position as (x, y)
+# set_init_data(data)      — called once; full environment metadata (see below)
+#
+# init_data keys:
+#   height, width          — grid dimensions
+#   free_value             — cell value for empty space
+#   blocked_value          — cell value for walls
+#   food_value             — cell value for food
+#   snake_tags[id]         — display name for each snake
+#   snake_values[id]       — {'head_value': int, 'body_value': int}
+#   start_positions[id]    — {'x': int, 'y': int} starting head position
+#   base_map[row][col]     — static map (walls/free cells); row 0 is top
+#
+# update(data) — called every step; return (dx, dy) to move:
+#   (1, 0) right   (-1, 0) left   (0, 1) down   (0, -1) up
+#
+# data keys:
+#   map[row][col]          — current grid (walls + snakes + food)
+#   snakes[id]             — {'is_alive': bool, 'length': int}
+#   food_locations         — list of {'x': int, 'y': int}
 
 
 class Snake:
     def __init__(self):
-        # Initialize any necessary variables or state for your snake here
         self.id = None
-        self.start_length = None
-        self.start_position = None
         self.init_data = None
 
     def set_id(self, id: int):
-        # sim environment calls this method to set the snake's ID, which you can use to identify your snake in the environment
         self.id = id
 
     def set_start_length(self, length: int):
-        # sim environment calls this method to set the snake's starting length, 
-        # which you can use to initialize any necessary state for your snake
-        self.start_length = length
+        pass
 
-    def set_start_position(self, start_coord: tuple[int, int]):
-        # sim environment calls this method to set the snake's starting position, 
-        # which you can use to initialize any necessary state for your snake
-        self.start_position = start_coord
+    def set_start_position(self, pos: tuple[int, int]):
+        pass
 
-    def set_init_data(self, init_data: dict):
-        # sim environment calls this method to provide your snake with necessary metadata about the environment, 
-        # which you can use to initialize any necessary state for your snake
-        self.init_data = init_data
+    def set_init_data(self, data: dict):
+        self.init_data = data
 
-    def update(self, env_step_data: dict) -> tuple[int, int]:
-        # sim environment calls this method on every step of the simulation, 
-        # providing your snake with necessary data about the current state of the environment, 
-        # which you can use to decide which direction to move in
-        # return a tuple representing the direction you want to move in 
-        # (e.g. (0, -1) for up, (0, 1) for down, (-1, 0) for left, (1, 0) for right)
-        print("My ID: ", self.id)
-        pprint.pprint(self.init_data)
-        pprint.pprint(env_step_data)  # Example of using the provided environment data
-        return (0, 1)  # example: always move down
+    def update(self, data: dict) -> tuple[int, int]:
+        print(f"step! grid={self.init_data['height']}x{self.init_data['width']}"
+              f" food={len(data['food_locations'])}")
+        return (0, 1)  # always move down — replace with your logic

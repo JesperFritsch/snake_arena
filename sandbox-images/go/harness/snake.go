@@ -2,7 +2,7 @@ package main
 
 type Snake struct{}
 
-func NewSnake() *Snake { return &Snake{} }
+func NewSnake() SnakePlayer { return &Snake{} }
 
 func (s *Snake) SetId(_ int32)            {}
 func (s *Snake) SetStartLength(_ int32)   {}

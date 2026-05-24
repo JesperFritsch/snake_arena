@@ -51,6 +51,7 @@ export function MatchViewer({
   const [historyJobs, setHistoryJobs]   = useState<TestMatchJob[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [consoleLog, setConsoleLog]     = useState<string | null>(null);
+  const [execTimes, setExecTimes]       = useState<Record<string, number> | null>(null);
 
   const activeJob = matchTabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -123,9 +124,10 @@ export function MatchViewer({
     setHistoryJobs([]);
   }, [projectId]);
 
-  // Reset console when the active tab changes.
+  // Reset console and exec times when the active tab changes.
   useEffect(() => {
     setConsoleLog(null);
+    setExecTimes(null);
   }, [activeTabId]);
 
   // ── Player content ────────────────────────────────────────────────────────
@@ -149,6 +151,7 @@ export function MatchViewer({
       <SimPlayer
         job={activeJob}
         onConsoleLog={setConsoleLog}
+        onExecTimes={setExecTimes}
         onJobStatus={(s) => onMatchStatus(activeJob.id, s)}
         onBuildStatus={onBuildStatus}
       />
@@ -264,6 +267,22 @@ export function MatchViewer({
           className="mv-pane mv-console"
           style={{ flex: 1 - splitRatio }}
         >
+          {execTimes && (
+            <div className="exec-times-bar">
+              <span className="exec-times-label">Step CPU time</span>
+              {Object.entries(execTimes).map(([id, ms]) => {
+                const seat = Number(id);
+                const name = activeJob?.participant_names[seat] ?? `snake ${seat}`;
+                const label = seat === 0 ? `${name} (dev)` : name;
+                return (
+                  <span key={id} className="exec-times-entry">
+                    <span className="exec-times-name">{label}</span>
+                    <span className="exec-times-ms">{ms.toFixed(1)}ms</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
           <div className="console">{consoleContent}</div>
         </div>
       </div>

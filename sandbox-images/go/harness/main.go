@@ -18,7 +18,7 @@ import (
 type snakeServer struct {
 	pb.UnimplementedRemoteSnakeServer
 	mu     sync.Mutex
-	snake  *Snake
+	snake  SnakePlayer
 	height int32
 	width  int32
 	dtype  string
