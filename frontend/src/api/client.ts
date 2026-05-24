@@ -1,6 +1,7 @@
 import { useAuth } from "@clerk/clerk-react";
 import { useMemo } from "react";
 import type {
+  LanguageInfo,
   ProjectCreate,
   ProjectFiles,
   ProjectMeta,
@@ -64,7 +65,7 @@ async function request<T>(
 }
 
 export interface ApiClient {
-  getLanguages(): Promise<string[]>;
+  getLanguages(): Promise<LanguageInfo[]>;
   me(): Promise<UserOut>;
   listProjects(): Promise<ProjectMeta[]>;
   createProject(body: ProjectCreate): Promise<ProjectMeta>;

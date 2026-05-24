@@ -1,5 +1,6 @@
 [language]
 name = "cpp"
+version = "C++17"
 user_code_dest = "/app/harness/"
 user_entry_file = "snake.cpp"
 build_cmd = "touch /app/harness/snake.cpp && cd /app/harness && g++ -std=c++17 -O2 -I. -c snake.cpp -o snake.o && g++ -o harness sim_interface.pb.o sim_interface.grpc.pb.o main.o snake.o $(pkg-config --libs grpc++ protobuf)"

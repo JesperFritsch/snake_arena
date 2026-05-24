@@ -3,7 +3,13 @@ import { javascript } from "@codemirror/lang-javascript";
 import { cpp } from "@codemirror/lang-cpp";
 import { rust } from "@codemirror/lang-rust";
 import type { Extension } from "@codemirror/state";
-import type { ProjectFile } from "../api/types";
+import type { LanguageInfo, ProjectFile } from "../api/types";
+
+/** Format a language name with its version, e.g. "python (3.12)". */
+export function fmtLang(name: string, languages: LanguageInfo[]): string {
+  const version = languages.find((l) => l.name === name)?.version;
+  return version ? `${name} (${version})` : name;
+}
 
 /** Pick a CodeMirror language extension from a file path. */
 export function languageFor(path: string): Extension[] {

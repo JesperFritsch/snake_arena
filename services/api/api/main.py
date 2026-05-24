@@ -59,12 +59,30 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/languages", tags=["meta"])
-    def list_languages(settings: Settings = Depends(get_settings)) -> list[str]:
-        """Return the language keys that have starter templates available."""
-        d = settings.templates_dir
-        if not d.is_dir():
+    def list_languages(settings: Settings = Depends(get_settings)) -> list[dict]:
+        """Return languages that have starter templates, with name and version."""
+        import tomllib
+        templates_dir = settings.templates_dir
+        sandbox_dir = settings.sandbox_images_dir
+        if not templates_dir.is_dir():
             return []
-        return sorted(p.name for p in d.iterdir() if p.is_dir())
+        # Build version map keyed by manifest `name`, not directory name,
+        # so sandbox-images/js/ with name="javascript" resolves correctly.
+        version_map: dict[str, str] = {}
+        if sandbox_dir.is_dir():
+            for manifest_path in sandbox_dir.glob("*/manifest.toml"):
+                try:
+                    with open(manifest_path, "rb") as f:
+                        data = tomllib.load(f).get("language", {})
+                    if (name := data.get("name")) and (ver := data.get("version")):
+                        version_map[name] = ver
+                except Exception:
+                    pass
+        return [
+            {"name": p.name, "version": version_map.get(p.name)}
+            for p in sorted(templates_dir.iterdir())
+            if p.is_dir()
+        ]
 
     app.include_router(users.router)
     app.include_router(projects.router)

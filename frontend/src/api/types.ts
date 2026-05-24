@@ -1,6 +1,11 @@
 // Mirrors the wire shapes in services/api/api/schemas.py and the sa_common
 // dataclasses FastAPI serialises directly. Keep in sync with the backend.
 
+export interface LanguageInfo {
+  name: string;
+  version: string | null;
+}
+
 export type FileEncoding = "utf-8" | "base64";
 
 export interface ProjectFile {

@@ -14,7 +14,9 @@ done
 
 for lang in "${LANGUAGES[@]}"; do
     dockerfile="sandbox-images/${lang}/Dockerfile"
-    tag="${REGISTRY}-base-${lang}"
+    manifest="sandbox-images/${lang}/manifest.toml"
+    name="$(grep '^name' "$manifest" | head -1 | sed 's/.*= *"\(.*\)"/\1/')"
+    tag="${REGISTRY}-base-${name}"
 
     echo "==> building ${tag}"
     docker build -f "$dockerfile" -t "$tag" .

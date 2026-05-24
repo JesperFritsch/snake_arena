@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useApi, ApiError } from "../api/client";
+import type { LanguageInfo } from "../api/types";
 
 type NameStatus =
   | { kind: "empty" }
@@ -9,7 +10,7 @@ type NameStatus =
   | { kind: "error"; message: string };
 
 interface Props {
-  languages: string[];
+  languages: LanguageInfo[];
   onClose: () => void;
   /** Throws on failure (e.g. a raced duplicate); the dialog shows it inline. */
   onCreate: (name: string, language: string) => Promise<void>;
@@ -19,13 +20,13 @@ export function NewProjectDialog({ languages, onClose, onCreate }: Props) {
   const api = useApi();
 
   const [name, setName] = useState("");
-  const [language, setLanguage] = useState(languages[0] ?? "");
+  const [language, setLanguage] = useState(languages[0]?.name ?? "");
   const [status, setStatus] = useState<NameStatus>({ kind: "empty" });
   const [busy, setBusy] = useState(false);
 
   // Default the language once the list is available.
   useEffect(() => {
-    if (!language && languages.length) setLanguage(languages[0]);
+    if (!language && languages.length) setLanguage(languages[0].name);
   }, [languages, language]);
 
   // Debounced availability check as the user types (names are globally unique).
@@ -102,7 +103,9 @@ export function NewProjectDialog({ languages, onClose, onCreate }: Props) {
             <select className="select" value={language} onChange={(e) => setLanguage(e.target.value)}>
               {languages.length === 0 && <option value="">no languages available</option>}
               {languages.map((l) => (
-                <option key={l} value={l}>{l}</option>
+                <option key={l.name} value={l.name}>
+                  {l.name}{l.version ? ` (${l.version})` : ""}
+                </option>
               ))}
             </select>
           </div>

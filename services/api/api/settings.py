@@ -38,6 +38,7 @@ class Settings:
     # {replay_host}/{bundle_path} and the browser fetches directly.
     replay_host: str | None = None
     templates_dir: Path = Path("templates")
+    sandbox_images_dir: Path = Path("sandbox-images")
     redis_url: str = "redis://localhost:6379"
     pool_min_size: int = 1
     pool_max_size: int = 8
@@ -69,6 +70,7 @@ def load_settings() -> Settings:
         cors_origins=_split_csv(os.environ.get("CORS_ORIGINS")),
         replay_host=os.environ.get("REPLAY_HOST") or None,
         templates_dir=Path(os.environ.get("TEMPLATES_DIR", "code_templates")).resolve(),
+        sandbox_images_dir=Path(os.environ.get("SANDBOX_IMAGES_DIR", "sandbox-images")).resolve(),
         redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379"),
         pool_min_size=int(os.environ.get("DB_POOL_MIN_SIZE", "1")),
         pool_max_size=int(os.environ.get("DB_POOL_MAX_SIZE", "8")),

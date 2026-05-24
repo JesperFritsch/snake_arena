@@ -1,4 +1,5 @@
 [language]
 name = "python"
+version = "3.12"
 user_code_dest = "/app/harness/usercode/"
 user_entry_file = "snake.py"

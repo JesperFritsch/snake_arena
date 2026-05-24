@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useApi, ApiError } from "../api/client";
-import type { ProjectMeta, PublicProjectSummary } from "../api/types";
+import type { LanguageInfo, ProjectMeta, PublicProjectSummary } from "../api/types";
+import { fmtLang } from "../lib/editor";
 import { useToast } from "./Toast";
 
 const MAX_OPPONENTS = 4;
@@ -28,11 +29,12 @@ const DEFAULT_SETTINGS: TestSettings = { food: 3, gridWidth: "", gridHeight: "",
 interface Props {
   project: ProjectMeta;
   initialSettings: TestSettings | null;
+  languages: LanguageInfo[];
   onClose: () => void;
   onRun: (settings: TestSettings) => Promise<void>;
 }
 
-export function TestDialog({ project, initialSettings, onClose, onRun }: Props) {
+export function TestDialog({ project, initialSettings, languages, onClose, onRun }: Props) {
   const api = useApi();
   const { push } = useToast();
 
@@ -118,7 +120,7 @@ export function TestDialog({ project, initialSettings, onClose, onRun }: Props) 
                       onChange={() => toggle(p.id)}
                     />
                     <span className="check-name">{p.name}</span>
-                    <span className="muted">{p.user_display_name} · {p.language} · v{p.submitted_version}</span>
+                    <span className="muted">{p.user_display_name} · {fmtLang(p.language, languages)} · v{p.submitted_version}</span>
                   </label>
                 );
               })}

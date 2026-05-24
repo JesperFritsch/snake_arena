@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { useApi, ApiError } from "../api/client";
-import type { ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
+import type { LanguageInfo, ProjectFile, ProjectMeta, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
 import { MatchViewer } from "../components/MatchViewer";
@@ -9,6 +9,7 @@ import { TestDialog, loadTestSettings, saveTestSettings } from "../components/Te
 import type { TestSettings } from "../components/TestDialog";
 import { NewProjectDialog } from "../components/NewProjectDialog";
 import { useIsMobile } from "../lib/useIsMobile";
+import { fmtLang } from "../lib/editor";
 import { useToast } from "../components/Toast";
 
 const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "cancelled"]);
@@ -25,7 +26,7 @@ export function EditorPage() {
   const api = useApi();
   const { push } = useToast();
 
-  const [languages, setLanguages] = useState<string[]>([]);
+  const [languages, setLanguages] = useState<LanguageInfo[]>([]);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
   const [meta, setMeta] = useState<ProjectMeta | null>(null);
   const [files, setFiles] = useState<ProjectFile[]>([]);
@@ -362,7 +363,7 @@ export function EditorPage() {
         {projects.length === 0 && <option value="">No projects</option>}
         {projects.map((p) => (
           <option key={p.id} value={p.id}>
-            {p.name} · {p.language}
+            {p.name} · {fmtLang(p.language, languages)}
           </option>
         ))}
       </select>
@@ -508,6 +509,7 @@ export function EditorPage() {
         <TestDialog
           project={meta}
           initialSettings={loadTestSettings(meta.id)}
+          languages={languages}
           onClose={() => setTestDialogOpen(false)}
           onRun={runTestMatch}
         />
