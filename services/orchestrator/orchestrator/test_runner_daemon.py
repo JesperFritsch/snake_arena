@@ -123,6 +123,15 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         observer.publish_build(verdict)
         if observer.step_count == 0 and result.dev_agent_step_logs:
             observer.publish_step_log(0, result.dev_agent_step_logs[0])
+        # Live viewers don't reload `agent_logs.json` after the match ends,
+        # so the kill banner (added to dev_agent_step_logs at end-of-match by
+        # the runner) wouldn't reach them otherwise. Re-publish the entry
+        # carrying the banner as a step_log so it lands in the store at the
+        # right step index. Idempotent with the line above for startup kills.
+        for step, log_text in enumerate(result.dev_agent_step_logs or []):
+            if log_text and log_text.startswith("=== Agent killed"):
+                observer.publish_step_log(step, log_text)
+                break
         observer.publish_stop()
 
     try:

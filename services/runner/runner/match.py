@@ -85,6 +85,21 @@ def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str
             f"{max_ms:.0f} ms of saved credit allowed). The agent stayed under "
             f"the per-step cap but its average over time was too high. ===\n"
         )
+    if kill_reason == "wall_clock":
+        return (
+            "=== Agent killed: did not respond within the per-step wall-clock "
+            "budget while using essentially no CPU. The agent appears to be "
+            "sleeping or blocked on I/O instead of computing — don't sleep. ===\n"
+        )
+    if kill_reason == "sustained_wall":
+        step_ms = budgets.get("wall_accumulating_step_seconds", 0) * 1000
+        max_ms = budgets.get("wall_accumulating_max_seconds", 0) * 1000
+        return (
+            f"=== Agent killed: exceeded the sustained wall-clock budget "
+            f"(non-CPU wall time grew faster than {step_ms:.0f} ms/step; "
+            f"up to {max_ms:.0f} ms of saved credit allowed). The agent kept "
+            f"sleeping just under the per-step wall-clock limit. ===\n"
+        )
     if kill_reason == "startup_cpu":
         ms = budgets.get("startup_seconds", 0) * 1000
         return (
@@ -320,12 +335,23 @@ def run_match(
             per_step_budget_seconds=0.05,
             initial_budget_seconds=0.2,
             startup_budget_seconds=0.2,
-            # Accumulating long-run rate: bank grows 10ms/step (vs 50ms per-step
-            # cap), starts at per_step_budget, capped at 500ms. Catches agents
-            # that stay under the per-step cap but average above the long-run
-            # rate.
+            # CPU accumulating long-run rate: bank grows 10ms/step (vs 50ms
+            # per-step cap), starts at per_step_budget, capped at 500ms.
+            # Catches agents that stay under the per-step cap but average
+            # above the long-run rate.
             accumulating_step_seconds=0.01,
             accumulating_max_seconds=0.5,
+            # Per-step wall-clock guard: catches agents that block on sleep
+            # / I/O. The effective budget is computed adaptively from
+            # observed contention each poll iteration (see manager docstring).
+            # Defaults: safety×3, hard floor 1s.
+            # Sustained-wall budget: bounds long-run "sleep just under the
+            # per-step threshold" abuse. Bank grows 50ms/step, starts at
+            # 500ms, capped at 1s. Strict — a 1.4s/step sleeper drains it
+            # in a single step.
+            wall_accumulating_step_seconds=0.05,
+            wall_accumulating_initial_seconds=0.5,
+            wall_accumulating_max_seconds=1.0,
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
         )
@@ -402,16 +428,29 @@ def run_match(
             if agent_containers else None
         )
         # If the dev agent was killed by a budget violation, surface that to
-        # the console so the user doesn't read the empty step log and assume
-        # their code crashed for unknown reasons. A startup-phase kill may
-        # have no stdout at all, so the banner becomes the entire console.
+        # the console so the user doesn't read an empty log and assume their
+        # code crashed for unknown reasons. The banner must land at the step
+        # *where the kill happened*, not at the last step the harness emitted
+        # a separator for — a sleeper that never reaches its first print
+        # would otherwise put the banner on the previous step.
         if agent_containers:
             note = _budget_kill_note(cpu_observer.get_kill_reason(0), cpu_observer.get_budgets())
             if note:
-                if dev_step_logs:
-                    dev_step_logs[-1] = note + dev_step_logs[-1]
+                # kill_step = number of notify_step events the dev agent
+                # survived. Equivalently, the index of the step it died on.
+                kill_step = len(cpu_observer.get_exec_times().get(0, []))
+                if dev_step_logs is None:
+                    dev_step_logs = []
+                # Pad with empty chunks up to kill_step if the harness emitted
+                # fewer separators than completed steps (defensive).
+                while len(dev_step_logs) < kill_step:
+                    dev_step_logs.append("")
+                if len(dev_step_logs) == kill_step:
+                    # No partial stdout on the kill step — add a new entry.
+                    dev_step_logs.append(note)
                 else:
-                    dev_step_logs = [note]
+                    # Partial stdout exists on the kill step — prepend.
+                    dev_step_logs[kill_step] = note + dev_step_logs[kill_step]
         return _finish(MatchResult(
             success=exit_code == 0,
             sim_logs=sim_logs,

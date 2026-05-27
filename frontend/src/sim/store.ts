@@ -57,11 +57,27 @@ export class SimStore {
     }
   }
 
-  /** Returns seat 0's stdout chunk for the given step, or null if unavailable. */
+  /** Returns seat 0's stdout chunk for the given step, or null if unavailable.
+   *
+   * If the agent was killed by a budget violation, the runner prepends a
+   * banner starting with "=== Agent killed" to the step where it died.
+   * That step is usually before the replay's final step (the match keeps
+   * going with the surviving opponents), so a user navigating to the end
+   * of the replay would otherwise see "no output for this step" with no
+   * indication of *why* the agent stopped producing output. To keep the
+   * banner visible, fall back to the most recent banner-prefixed entry
+   * whenever the current step has no log of its own. */
   getDevLogs(stepIndex: number): string | null {
     const chunks = this.agentLogs?.["0"];
     if (!chunks) return null;
-    return chunks[stepIndex] ?? null;
+    const direct = chunks[stepIndex];
+    if (direct) return direct;
+    const lookbackStart = Math.min(stepIndex, chunks.length - 1);
+    for (let i = lookbackStart; i >= 0; i--) {
+      const log = chunks[i];
+      if (log && log.includes("=== Agent killed")) return log;
+    }
+    return null;
   }
 
   /** Returns per-snake CPU times (ms) for the given step, or null if unavailable. */

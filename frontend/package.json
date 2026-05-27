@@ -2,6 +2,8 @@
   "name": "snake-arena-frontend",
   "private": true,
   "version": "0.1.0",
+  "license": "AGPL-3.0-or-later",
+  "author": "Jesper Fritsch",
   "type": "module",
   "scripts": {
     "dev": "vite",

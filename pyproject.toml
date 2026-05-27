@@ -2,6 +2,8 @@
 name = "snake-arena"
 version = "0.0.0"
 requires-python = ">=3.12"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Jesper Fritsch" }]
 dependencies = []
 
 
