@@ -41,6 +41,7 @@ from sa_common.db.test_match_jobs import (
     claim_one_queued_test_job,
     mark_test_job_failure,
     mark_test_job_success,
+    prune_unpinned_test_jobs,
 )
 from sa_common.db.matches import record_match_result
 from sa_common.db.connection import get_conn
@@ -106,11 +107,10 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
 
     def on_match_result(result) -> None:
         # Fires inside run_match before its (slow) Docker teardown, so live
-        # viewers get the outcome immediately. Persist + publish the dev-build
-        # verdict HERE (not after run_match returns) so it can't be skipped by a
-        # later exception (cleanup, analysis, bundling) — and it goes out before
-        # the terminal status, which the API uses to close the stream.
-        nonlocal published_terminal
+        # viewers get the build verdict + stop signal immediately. The terminal
+        # `status` event is held until after the DB transaction below, so the
+        # frontend's history refresh on "success" always sees the row in a
+        # terminal state.
         verdict = "ready" if observer.dev_reached_start else "crashed"
         try:
             with conn.transaction():
@@ -124,8 +124,6 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         if observer.step_count == 0 and result.dev_agent_step_logs:
             observer.publish_step_log(0, result.dev_agent_step_logs[0])
         observer.publish_stop()
-        observer.publish_status("success" if result.success else "failure")
-        published_terminal = True
 
     try:
         observer.publish_status("running")
@@ -205,6 +203,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 replay_path, run_analysis,
                 dev_step_logs=result.dev_agent_step_logs or [],
                 exec_times=result.exec_times,
+                budgets=result.budgets,
             )
             config.bundler.put(bundle_key, bundle_bytes)
             saved_key = bundle_key
@@ -233,26 +232,50 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 match_id,
                 bundle_key=saved_key,
             )
+            pruned_keys = prune_unpinned_test_jobs(conn, job.player_project_id)
+        for key in pruned_keys:
+            try:
+                config.bundler.delete(key)
+            except Exception:
+                log.warning("failed to delete pruned bundle %s", key, exc_info=True)
 
         terminal_status = "success" if result.success else "failure"
+        # Publish terminal status only after the DB row is in a terminal state +
+        # prune has run, so the frontend's history refresh sees the new job.
+        observer.publish_status(terminal_status)
+        published_terminal = True
         log.info("test job id=%d done (match_id=%d)", job.id, match_id)
 
     except SetupError as e:
         log.warning("test job id=%d setup failed: %s", job.id, e)
+        pruned_keys: list[str] = []
         with conn.transaction():
             mark_test_job_failure(conn, job.id, f"setup: {e}")
+            pruned_keys = prune_unpinned_test_jobs(conn, job.player_project_id)
+        for key in pruned_keys:
+            try:
+                config.bundler.delete(key)
+            except Exception:
+                log.warning("failed to delete pruned bundle %s", key, exc_info=True)
         terminal_status = "failure"
 
     except Exception as e:
         log.exception("test job id=%d crashed during execution", job.id)
+        pruned_keys = []
         with conn.transaction():
             mark_test_job_failure(conn, job.id, repr(e))
+            pruned_keys = prune_unpinned_test_jobs(conn, job.player_project_id)
+        for key in pruned_keys:
+            try:
+                config.bundler.delete(key)
+            except Exception:
+                log.warning("failed to delete pruned bundle %s", key, exc_info=True)
         terminal_status = "failure"
 
     finally:
-        # Terminal status closes the WS for live viewers. Normally on_match_result
-        # already published it (before teardown); this is the fallback for paths
-        # that never reached run_match (build failure, setup error, early crash).
+        # Terminal status closes the WS for live viewers. The success path
+        # publishes it directly after the DB transaction; this is the fallback
+        # for paths that never got there (build failure, setup error, crash).
         try:
             if not published_terminal:
                 observer.publish_status(terminal_status or "failure")

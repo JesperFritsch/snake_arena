@@ -18,6 +18,9 @@ class MatchResult:
     dev_agent_step_logs: list[str] | None = None
     # Per-step CPU times (ms) keyed by snake_id. snake_id → [ms per step].
     exec_times: dict[int, list[float]] | None = None
+    # CPU budget config (seconds) that was in force for this match. Lets a
+    # bundle reader reconstruct what counted as "over budget".
+    budgets: dict[str, float] | None = None
     error: str | None = None
 
 

@@ -83,6 +83,8 @@ export interface ApiClient {
   listOpponents(): Promise<PublicProjectSummary[]>;
   enqueueTestMatch(body: TestMatchCreate): Promise<TestMatchJob>;
   listTestMatchJobs(projectId: number, limit?: number): Promise<TestMatchJob[]>;
+  pinTestMatch(jobId: number, pinned: boolean): Promise<TestMatchJob>;
+  cancelTestMatch(jobId: number): Promise<void>;
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
 }
 
@@ -152,6 +154,10 @@ export function useApi(): ApiClient {
       enqueueTestMatch: (body) => request(g, "POST", "/test-matches", body),
       listTestMatchJobs: (projectId, limit = 10) =>
         request(g, "GET", `/test-matches?player_project_id=${projectId}&limit=${limit}`),
+      pinTestMatch: (jobId, pinned) =>
+        request(g, "PATCH", `/test-matches/${jobId}/pin`, { pinned }),
+      cancelTestMatch: (jobId) =>
+        request(g, "POST", `/test-matches/${jobId}/cancel`),
       getTestMatchBundleUrl: (jobId) =>
         request(g, "GET", `/test-matches/${jobId}/bundle-url`),
     };

@@ -15,10 +15,16 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from sa_common.db.projects import ProjectSource
 from sa_common.types import SimArgs
+
+
+# Test matches run in the browser preview, so the grid is capped to keep
+# replays small and renderable.
+TEST_MATCH_MIN_GRID = 5
+TEST_MATCH_MAX_GRID = 20
 
 
 # ---- project files (the wire form of project code) ------------------------
@@ -59,6 +65,18 @@ class TestMatchCreate(BaseModel):
     player_project_id: int
     opponent_project_ids: list[int] = Field(default_factory=list, max_length=4)
     sim_args: SimArgs
+
+    @model_validator(mode="after")
+    def _cap_grid(self) -> "TestMatchCreate":
+        dims = (self.sim_args.grid_width, self.sim_args.grid_height)
+        if any(d is not None for d in dims):
+            for d in dims:
+                if d is None or d < TEST_MATCH_MIN_GRID or d > TEST_MATCH_MAX_GRID:
+                    raise ValueError(
+                        f"grid_width and grid_height must be between "
+                        f"{TEST_MATCH_MIN_GRID} and {TEST_MATCH_MAX_GRID}"
+                    )
+        return self
 
 
 # ---- responses ------------------------------------------------------------

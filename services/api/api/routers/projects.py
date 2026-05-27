@@ -47,9 +47,11 @@ from sa_common.db.projects import (
     unpack_files,
     read_template_files,
 )
+from sa_common.db.test_match_jobs import get_bundle_keys_for_project
 from sa_common.db.users import User
 
 from api.auth import get_current_user
+from api.bundler import get_bundler
 from api.db import get_db
 from api.schemas import (
     ProjectCreate,
@@ -398,4 +400,11 @@ def delete(
     user: User = Depends(get_current_user),
 ) -> None:
     _owned_meta(conn, project_id, user)  # 404 if not found or not owned
+    bundle_keys = get_bundle_keys_for_project(conn, project_id)
     delete_project(conn, project_id)
+    bundler = get_bundler()
+    for key in bundle_keys:
+        try:
+            bundler.delete(key)
+        except Exception:
+            pass  # storage cleanup is best-effort; project row is already gone

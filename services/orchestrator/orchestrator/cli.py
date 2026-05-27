@@ -39,6 +39,7 @@ from orchestrator.test_runner_daemon import (
     run_forever as run_test_forever,
     run_one_iteration as run_test_iteration,
 )
+from sa_common.db.test_match_jobs import reset_stale_running_jobs
 
 
 def main() -> None:
@@ -111,6 +112,10 @@ def main() -> None:
     else:
         # argparse `required=True` should prevent this
         raise RuntimeError(f"unknown command: {args.command}")
+
+    if args.command == "test-match":
+        with get_conn(autocommit=True) as conn:
+            reset_stale_running_jobs(conn)
 
     if args.once:
         _run_once(config, run_one, log)

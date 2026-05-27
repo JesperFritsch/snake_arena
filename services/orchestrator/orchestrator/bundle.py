@@ -7,6 +7,8 @@ IBundler. Contents:
   analysis.json   – run_analyzer output ({} if analysis didn't run)
   agent_logs.json – dev-agent per-step stdout (test matches only; omitted when
                     there's no dev agent, e.g. ranked matches)
+  exec_times.json – per-snake per-step CPU times in ms (test matches only)
+  budgets.json    – CPU budget config (seconds) that was in force for this run
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ def assemble_bundle(
     run_analysis: RunAnalysis | None,
     dev_step_logs: list[str] | None = None,
     exec_times: dict[int, list[float]] | None = None,
+    budgets: dict[str, float] | None = None,
 ) -> bytes:
     analysis_obj = run_analysis.to_dict() if run_analysis is not None else {}
     buf = io.BytesIO()
@@ -35,4 +38,6 @@ def assemble_bundle(
         if exec_times is not None:
             # String-keyed for JSON compatibility.
             zf.writestr("exec_times.json", json.dumps({str(k): v for k, v in exec_times.items()}).encode())
+        if budgets is not None:
+            zf.writestr("budgets.json", json.dumps(budgets).encode())
     return buf.getvalue()

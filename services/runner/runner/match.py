@@ -66,6 +66,41 @@ def _tail_log(text: str, budget: int = _STARTUP_LOG_BUDGET) -> str:
     return "[earlier output truncated]\n" + b[-budget:].decode(errors="replace")
 
 
+def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str | None:
+    """Human-readable banner explaining why the dev agent was killed,
+    prepended to the dev agent's last step log. Returns None for kills that
+    don't need a banner (clean exit, snake-died-in-game)."""
+    if kill_reason == "per_step":
+        ms = budgets.get("per_step_seconds", 0) * 1000
+        return (
+            f"=== Agent killed: exceeded the per-step CPU budget "
+            f"(~{ms:.0f} ms in one step). ===\n"
+        )
+    if kill_reason == "sustained":
+        step_ms = budgets.get("accumulating_step_seconds", 0) * 1000
+        max_ms = budgets.get("accumulating_max_seconds", 0) * 1000
+        return (
+            f"=== Agent killed: exceeded the sustained CPU budget "
+            f"(long-run average above {step_ms:.0f} ms/step; up to "
+            f"{max_ms:.0f} ms of saved credit allowed). The agent stayed under "
+            f"the per-step cap but its average over time was too high. ===\n"
+        )
+    if kill_reason == "startup_cpu":
+        ms = budgets.get("startup_seconds", 0) * 1000
+        return (
+            f"=== Agent killed during startup: exceeded the startup CPU "
+            f"budget (~{ms:.0f} ms). Agent constructor + gRPC init must "
+            f"finish within this window. ===\n"
+        )
+    if kill_reason == "init_failure":
+        return (
+            "=== Agent killed during startup: did not respond to the sim's "
+            "gRPC init within the wall-clock timeout. The agent either "
+            "crashed before connecting or took too long to be ready. ===\n"
+        )
+    return None
+
+
 def _dev_step_logs(dev_text: str) -> list[str] | None:
     """Dev-agent (seat 0) console logs. If the agent took steps, split into
     per-frame chunks. If it crashed before the first update (no separators),
@@ -285,6 +320,12 @@ def run_match(
             per_step_budget_seconds=0.05,
             initial_budget_seconds=0.2,
             startup_budget_seconds=0.2,
+            # Accumulating long-run rate: bank grows 10ms/step (vs 50ms per-step
+            # cap), starts at per_step_budget, capped at 500ms. Catches agents
+            # that stay under the per-step cap but average above the long-run
+            # rate.
+            accumulating_step_seconds=0.01,
+            accumulating_max_seconds=0.5,
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
         )
@@ -360,6 +401,17 @@ def run_match(
             _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
             if agent_containers else None
         )
+        # If the dev agent was killed by a budget violation, surface that to
+        # the console so the user doesn't read the empty step log and assume
+        # their code crashed for unknown reasons. A startup-phase kill may
+        # have no stdout at all, so the banner becomes the entire console.
+        if agent_containers:
+            note = _budget_kill_note(cpu_observer.get_kill_reason(0), cpu_observer.get_budgets())
+            if note:
+                if dev_step_logs:
+                    dev_step_logs[-1] = note + dev_step_logs[-1]
+                else:
+                    dev_step_logs = [note]
         return _finish(MatchResult(
             success=exit_code == 0,
             sim_logs=sim_logs,
@@ -367,6 +419,7 @@ def run_match(
             tags_to_names=target_to_name,
             dev_agent_step_logs=dev_step_logs,
             exec_times=cpu_observer.get_exec_times(),
+            budgets=cpu_observer.get_budgets(),
         ))
 
     finally:

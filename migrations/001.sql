@@ -130,7 +130,8 @@ CREATE TABLE test_match_jobs (
     finished_at          TIMESTAMPTZ,
     match_id             BIGINT REFERENCES matches(id),
     error                TEXT,
-    bundle_key           TEXT                                   -- bundler storage key, e.g. test-matches/{id}/bundle.zip
+    bundle_key           TEXT,                                  -- bundler storage key, e.g. test-matches/{id}/bundle.zip
+    pinned               BOOLEAN NOT NULL DEFAULT FALSE          -- kept regardless of retention pruning
 );
 
 -- Indexes

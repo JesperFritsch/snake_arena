@@ -126,7 +126,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
         # Ranked bundle has no dev-agent console, so no agent_logs.
         saved_key: str | None = None
         try:
-            bundle_bytes = assemble_bundle(replay_path, run_analysis)
+            bundle_bytes = assemble_bundle(replay_path, run_analysis, budgets=result.budgets)
             config.bundler.put(bundle_key, bundle_bytes)
             saved_key = bundle_key
             log.info("stored bundle %s (%d bytes)", bundle_key, len(bundle_bytes))

@@ -4,6 +4,8 @@ import { useApi } from "../api/client";
 import { SimPlayer } from "./SimPlayer";
 
 const WIDE_THRESHOLD = 520;
+const MAX_PINNED = 9;
+const TERMINAL = new Set(["success", "failure", "cancelled"]);
 
 const STATUS_CLASS: Record<string, string> = {
   success: "ready",
@@ -20,6 +22,11 @@ function formatAgo(iso: string): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
+function matchLabel(job: TestMatchJob): string {
+  if (job.status === "queued" || job.status === "running") return "#?";
+  return `#${job.match_number ?? job.id}`;
+}
+
 interface Props {
   matchTabs: TestMatchJob[];
   activeTabId: number | null;
@@ -29,6 +36,8 @@ interface Props {
   onOpenMatch: (job: TestMatchJob, newTab: boolean) => void;
   onMatchStatus: (jobId: number, status: string) => void;
   onBuildStatus: (status: string) => void;
+  onJobPinChange?: (job: TestMatchJob) => void;
+  onJobsRefreshed?: (jobs: TestMatchJob[]) => void;
 }
 
 export function MatchViewer({
@@ -40,6 +49,8 @@ export function MatchViewer({
   onOpenMatch,
   onMatchStatus,
   onBuildStatus,
+  onJobPinChange,
+  onJobsRefreshed,
 }: Props) {
   const api = useApi();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -50,10 +61,13 @@ export function MatchViewer({
   const [showHistory, setShowHistory]   = useState(false);
   const [historyJobs, setHistoryJobs]   = useState<TestMatchJob[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [pinBusy, setPinBusy]           = useState<number | null>(null);
+  const [cancelBusy, setCancelBusy]     = useState(false);
   const [consoleLog, setConsoleLog]     = useState<string | null>(null);
   const [execTimes, setExecTimes]       = useState<Record<string, number> | null>(null);
 
   const activeJob = matchTabs.find((t) => t.id === activeTabId) ?? null;
+  const pinnedCount = historyJobs.filter((j) => j.pinned).length;
 
   // ── Watch container width ─────────────────────────────────────────────────
   useEffect(() => {
@@ -109,7 +123,7 @@ export function MatchViewer({
     setShowHistory(true);
     setHistoryLoading(true);
     try {
-      const jobs = await api.listTestMatchJobs(projectId);
+      const jobs = await api.listTestMatchJobs(projectId, 50);
       setHistoryJobs(jobs);
     } catch {
       setHistoryJobs([]);
@@ -129,6 +143,70 @@ export function MatchViewer({
     setConsoleLog(null);
     setExecTimes(null);
   }, [activeTabId]);
+
+  // ── History refresh on terminal status ───────────────────────────────────
+  const handleJobStatus = useCallback((jobId: number, newStatus: string) => {
+    onMatchStatus(jobId, newStatus);
+    if (!TERMINAL.has(newStatus) || !projectId) return;
+    api.listTestMatchJobs(projectId, 50).then((freshJobs) => {
+      setHistoryJobs(freshJobs);
+      onJobsRefreshed?.(freshJobs);
+    }).catch(() => {});
+  }, [onMatchStatus, projectId, api, onJobsRefreshed]);
+
+  // Close tabs whose jobs were just pruned from history. Tracks the previous
+  // history snapshot so we close *only* tabs that disappeared in this refresh
+  // — not tabs whose jobs were never in `historyJobs` to begin with (e.g. a
+  // tab for the just-completed match before its first appearance in history).
+  const prevHistoryIdsRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    const newIds = new Set(historyJobs.map((j) => j.id));
+    const prevIds = prevHistoryIdsRef.current;
+    prevHistoryIdsRef.current = newIds;
+    for (const tab of matchTabs) {
+      if (prevIds.has(tab.id) && !newIds.has(tab.id)) {
+        onTabClose(tab.id);
+      }
+    }
+  }, [historyJobs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Cancel queued job ─────────────────────────────────────────────────────
+  const handleCancel = async () => {
+    if (!activeJob || cancelBusy) return;
+    setCancelBusy(true);
+    try {
+      await api.cancelTestMatch(activeJob.id);
+      onMatchStatus(activeJob.id, "cancelled");
+    } catch {
+      // already started or gone — status update will arrive via WS anyway
+    } finally {
+      setCancelBusy(false);
+    }
+  };
+
+  // ── Pin toggle ────────────────────────────────────────────────────────────
+  const handlePinToggle = async (job: TestMatchJob) => {
+    if (pinBusy !== null) return;
+    const newPinned = !job.pinned;
+    if (newPinned && pinnedCount >= MAX_PINNED) return;
+    setPinBusy(job.id);
+    try {
+      const updated = await api.pinTestMatch(job.id, newPinned);
+      setHistoryJobs((prev) => {
+        const next = prev.map((j) => (j.id === updated.id ? updated : j));
+        // Re-sort: pinned first, then by recency
+        return [...next].sort((a, b) => {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+          return new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime();
+        });
+      });
+      onJobPinChange?.(updated);
+    } catch {
+      // silent — API returns 422 if limit is hit
+    } finally {
+      setPinBusy(null);
+    }
+  };
 
   // ── Player content ────────────────────────────────────────────────────────
   const playerContent = (() => {
@@ -152,7 +230,7 @@ export function MatchViewer({
         job={activeJob}
         onConsoleLog={setConsoleLog}
         onExecTimes={setExecTimes}
-        onJobStatus={(s) => onMatchStatus(activeJob.id, s)}
+        onJobStatus={(s) => handleJobStatus(activeJob.id, s)}
         onBuildStatus={onBuildStatus}
       />
     );
@@ -170,6 +248,10 @@ export function MatchViewer({
     consoleContent = <span className="muted">no output for this step</span>;
   }
 
+  // Split history into pinned/unpinned sections for the panel
+  const pinnedJobs   = historyJobs.filter((j) => j.pinned);
+  const unpinnedJobs = historyJobs.filter((j) => !j.pinned);
+
   return (
     <div className="panel" ref={containerRef}>
       <div className="panel-head">
@@ -181,6 +263,15 @@ export function MatchViewer({
           </span>
         )}
         <span className="spacer" />
+        {activeJob?.status === "queued" && (
+          <button
+            className="btn ghost danger"
+            disabled={cancelBusy}
+            onClick={handleCancel}
+          >
+            {cancelBusy ? "Cancelling…" : "Cancel"}
+          </button>
+        )}
         {projectId && (
           <button
             className="btn ghost"
@@ -195,32 +286,44 @@ export function MatchViewer({
 
       {showHistory && (
         <div className="mv-history-panel">
-          <div className="mv-history-title">Past runs</div>
           {historyLoading && <div className="mv-history-empty">Loading…</div>}
           {!historyLoading && historyJobs.length === 0 && (
             <div className="mv-history-empty">No runs yet.</div>
           )}
-          {historyJobs.map((job) => (
-            <div key={job.id} className="mv-history-row">
-              <span className={`dot ${STATUS_CLASS[job.status] ?? ""}`} style={{ flexShrink: 0 }} />
-              <span className="mv-history-id">#{job.id}</span>
-              <span className="mv-history-time muted">{formatAgo(job.requested_at)}</span>
-              <button
-                className="btn ghost mv-history-btn"
-                title="Open in this tab"
-                onClick={() => { onOpenMatch(job, false); setShowHistory(false); }}
-              >
-                Open
-              </button>
-              <button
-                className="btn ghost mv-history-btn"
-                title="Open in new tab"
-                onClick={() => { onOpenMatch(job, true); setShowHistory(false); }}
-              >
-                + Tab
-              </button>
-            </div>
-          ))}
+
+          {!historyLoading && pinnedJobs.length > 0 && (
+            <>
+              <div className="mv-history-section-label">Pinned</div>
+              {pinnedJobs.map((job) => (
+                <HistoryRow
+                  key={job.id}
+                  job={job}
+                  pinBusy={pinBusy}
+                  canPin={pinnedCount < MAX_PINNED}
+                  onOpen={(newTab) => { onOpenMatch(job, newTab); setShowHistory(false); }}
+                  onPinToggle={() => handlePinToggle(job)}
+                />
+              ))}
+            </>
+          )}
+
+          {!historyLoading && unpinnedJobs.length > 0 && (
+            <>
+              {pinnedJobs.length > 0 && (
+                <div className="mv-history-section-label">Recent</div>
+              )}
+              {unpinnedJobs.map((job) => (
+                <HistoryRow
+                  key={job.id}
+                  job={job}
+                  pinBusy={pinBusy}
+                  canPin={pinnedCount < MAX_PINNED}
+                  onOpen={(newTab) => { onOpenMatch(job, newTab); setShowHistory(false); }}
+                  onPinToggle={() => handlePinToggle(job)}
+                />
+              ))}
+            </>
+          )}
         </div>
       )}
 
@@ -234,7 +337,8 @@ export function MatchViewer({
               onClick={() => onTabSelect(tab.id)}
             >
               <span className={`dot ${STATUS_CLASS[tab.status] ?? ""}`} />
-              <span>#{tab.id}</span>
+              <span>{matchLabel(tab)}</span>
+              {tab.pinned && <span className="mv-tab-pin" title="Pinned">·</span>}
               <span
                 className="mv-tab-close"
                 role="button"
@@ -286,6 +390,52 @@ export function MatchViewer({
           <div className="console">{consoleContent}</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── HistoryRow ────────────────────────────────────────────────────────────────
+
+interface HistoryRowProps {
+  job: TestMatchJob;
+  pinBusy: number | null;
+  canPin: boolean;
+  onOpen: (newTab: boolean) => void;
+  onPinToggle: () => void;
+}
+
+function HistoryRow({ job, pinBusy, canPin, onOpen, onPinToggle }: HistoryRowProps) {
+  const busy = pinBusy === job.id;
+  const pinDisabled = busy || (!job.pinned && !canPin);
+
+  return (
+    <div className={`mv-history-row${job.pinned ? " pinned" : ""}`}>
+      <span className={`dot ${STATUS_CLASS[job.status] ?? ""}`} style={{ flexShrink: 0 }} />
+      <span className="mv-history-id">{`#${job.match_number ?? job.id}`}</span>
+      <span className="mv-history-runid">{job.id}</span>
+      <span className="mv-history-time muted">{formatAgo(job.requested_at)}</span>
+      <button
+        className="btn ghost mv-history-btn"
+        title="Open in this tab"
+        onClick={() => onOpen(false)}
+      >
+        Open
+      </button>
+      <button
+        className="btn ghost mv-history-btn"
+        title="Open in new tab"
+        onClick={() => onOpen(true)}
+      >
+        + Tab
+      </button>
+      <button
+        className={`btn ghost mv-history-btn mv-pin-btn${job.pinned ? " active" : ""}`}
+        title={job.pinned ? "Unpin" : pinDisabled ? `Max ${MAX_PINNED} pinned` : "Pin"}
+        disabled={pinDisabled}
+        onClick={onPinToggle}
+      >
+        {busy ? "…" : job.pinned ? "unpin" : "pin"}
+      </button>
     </div>
   );
 }

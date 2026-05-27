@@ -171,14 +171,37 @@ export function EditorPage() {
   };
 
   const onTestMatchEnqueued = (job: TestMatchJob) => {
-    setMatchTabs((prev) =>
-      prev.some((t) => t.id === job.id) ? prev : [...prev, job],
-    );
+    setMatchTabs((prev) => {
+      if (prev.some((t) => t.id === job.id)) return prev;
+      // Recycle the active tab only when it shows the previous most-recent
+      // match (match_number === new - 1). Reviewing an older run shouldn't
+      // get clobbered — that opens a new tab instead.
+      const active = prev.find((t) => t.id === activeTabId);
+      const replaceActive =
+        active &&
+        TERMINAL.has(active.status) &&
+        job.match_number != null &&
+        active.match_number != null &&
+        active.match_number === job.match_number - 1;
+      if (replaceActive) {
+        return prev.map((t) => (t.id === active!.id ? job : t));
+      }
+      return [...prev, job];
+    });
     setActiveTabId(job.id);
     setMobileTab("viewer");
-    push(`Test match #${job.id} queued.`);
+    push(`Test match ${job.match_number != null ? `#${job.match_number}` : `#${job.id}`} queued.`);
     viewerPanelRef.current?.resize(52);
   };
+
+  const onJobPinChange = (job: TestMatchJob) => {
+    setMatchTabs((prev) => prev.map((t) => (t.id === job.id ? job : t)));
+  };
+
+  const onJobsRefreshed = useCallback((freshJobs: TestMatchJob[]) => {
+    const byId = new Map(freshJobs.map((j) => [j.id, j]));
+    setMatchTabs((prev) => prev.map((t) => byId.get(t.id) ?? t));
+  }, []);
 
   const onTabSelect = (id: number) => setActiveTabId(id);
 
@@ -230,18 +253,23 @@ export function EditorPage() {
     if (!meta) return;
     if (meta.source === "browser" && dirty && !(await save())) return;
     const saved = loadTestSettings(meta.id);
-    if (saved) {
-      try {
-        await runTestMatch(saved);
-      } catch {
-        // Toast already shown by runTestMatch. Clear saved opponent IDs so a
-        // repeated Test click doesn't hit the same error (e.g. after a DB
-        // reset where saved IDs no longer refer to submitted projects).
+    if (!saved) {
+      setTestDialogOpen(true);
+      return;
+    }
+    try {
+      await runTestMatch(saved);
+    } catch (e) {
+      // Toast already shown by runTestMatch. Only fall back into the settings
+      // dialog when the failure is settings-related (stale opponent IDs after
+      // a project was deleted / DB reset). Other errors — e.g. 409 because a
+      // match is already queued — should not pop the dialog.
+      const staleOpponent =
+        e instanceof ApiError && e.status === 404 && /opponent/i.test(e.detail);
+      if (staleOpponent) {
         saveTestSettings(meta.id, { ...saved, opponentIds: [] });
         setTestDialogOpen(true);
       }
-    } else {
-      setTestDialogOpen(true);
     }
   };
 
@@ -560,6 +588,8 @@ export function EditorPage() {
                 onOpenMatch={onOpenMatch}
                 onMatchStatus={onMatchStatus}
                 onBuildStatus={onBuildStatus}
+                onJobPinChange={onJobPinChange}
+                onJobsRefreshed={onJobsRefreshed}
               />
             )}
           </div>
@@ -589,6 +619,8 @@ export function EditorPage() {
                 onOpenMatch={onOpenMatch}
                 onMatchStatus={onMatchStatus}
                 onBuildStatus={onBuildStatus}
+                onJobPinChange={onJobPinChange}
+                onJobsRefreshed={onJobsRefreshed}
               />
             </Panel>
           </PanelGroup>

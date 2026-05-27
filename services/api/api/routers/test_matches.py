@@ -21,13 +21,18 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from pydantic import BaseModel
 from psycopg import Connection
 
 from sa_common.db.projects import get_project_meta, get_project_names, list_all_submitted
 from sa_common.db.test_match_jobs import (
+    cancel_queued_test_job,
+    count_pinned_test_jobs,
+    count_active_test_jobs_for_project,
     enqueue_test_match_job,
     get_test_job,
     list_test_jobs_for_project,
+    set_pinned,
     TestMatchJob,
 )
 from sa_common.db.users import User, get_or_create_user_by_clerk_id
@@ -92,6 +97,12 @@ def enqueue(
                 f"opponent project {opp_id} not found or has no submitted version",
             )
 
+    if count_active_test_jobs_for_project(conn, body.player_project_id) > 0:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "project already has a queued test match",
+        )
+
     job_id = enqueue_test_match_job(
         conn,
         player_project_id=body.player_project_id,
@@ -133,6 +144,50 @@ def get_bundle_url(
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     return {"url": url}
+
+
+class _PinUpdate(BaseModel):
+    pinned: bool
+
+
+_MAX_PINNED = 9
+
+
+@router.patch("/{job_id}/pin", response_model=TestMatchJob)
+def update_pin(
+    job_id: int,
+    body: _PinUpdate,
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TestMatchJob:
+    """Pin or unpin a test match job. At most 9 jobs per project may be pinned."""
+    job = get_test_job(conn, job_id)
+    if job is None or job.requested_by != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
+    if body.pinned and not job.pinned:
+        count = count_pinned_test_jobs(conn, job.player_project_id)
+        if count >= _MAX_PINNED:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"cannot pin more than {_MAX_PINNED} matches per project",
+            )
+    set_pinned(conn, job_id, body.pinned)
+    updated = get_test_job(conn, job_id)
+    assert updated is not None
+    return _add_names(conn, updated)
+
+
+@router.post("/{job_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_job(
+    job_id: int,
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> None:
+    """Cancel a queued test match. No-op if it has already started."""
+    job = get_test_job(conn, job_id)
+    if job is None or job.requested_by != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
+    cancel_queued_test_job(conn, job_id)
 
 
 @router.websocket("/{job_id}/ws")

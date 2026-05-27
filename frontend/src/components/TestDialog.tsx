@@ -5,6 +5,8 @@ import { fmtLang } from "../lib/editor";
 import { useToast } from "./Toast";
 
 const MAX_OPPONENTS = 4;
+const MIN_GRID = 5;
+const MAX_GRID = 20;
 
 export interface TestSettings {
   food: number;
@@ -73,6 +75,10 @@ export function TestDialog({ project, initialSettings, languages, onClose, onRun
     const hasH = gridHeight !== "" && !isNaN(h);
     if (hasW !== hasH) {
       push("Provide both grid width and height, or leave both empty.", "error");
+      return;
+    }
+    if (hasW && hasH && (w < MIN_GRID || h < MIN_GRID || w > MAX_GRID || h > MAX_GRID)) {
+      push(`Grid must be between ${MIN_GRID}×${MIN_GRID} and ${MAX_GRID}×${MAX_GRID}.`, "error");
       return;
     }
     const settings: TestSettings = {
@@ -158,7 +164,8 @@ export function TestDialog({ project, initialSettings, languages, onClose, onRun
               type="number"
               placeholder="width"
               value={gridWidth}
-              min={5}
+              min={MIN_GRID}
+              max={MAX_GRID}
               style={{ width: 80 }}
               onChange={(e) => setGridWidth(e.target.value)}
             />
@@ -168,11 +175,14 @@ export function TestDialog({ project, initialSettings, languages, onClose, onRun
               type="number"
               placeholder="height"
               value={gridHeight}
-              min={5}
+              min={MIN_GRID}
+              max={MAX_GRID}
               style={{ width: 80 }}
               onChange={(e) => setGridHeight(e.target.value)}
             />
-            <span className="muted" style={{ fontSize: 11 }}>leave empty for sim default</span>
+            <span className="muted" style={{ fontSize: 11 }}>
+              {MIN_GRID}–{MAX_GRID}; empty for sim default
+            </span>
           </div>
         </div>
 

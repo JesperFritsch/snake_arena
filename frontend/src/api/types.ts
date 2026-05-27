@@ -75,7 +75,9 @@ export interface TestMatchJob {
   match_id: number | null;
   error: string | null;
   bundle_key: string | null;
+  pinned: boolean;
   participant_names: string[];  // [player, opp1, opp2, ...] ordered by seat
+  match_number: number | null;  // project-relative sequence number (1 = oldest)
 }
 
 export interface TestMatchCreate {

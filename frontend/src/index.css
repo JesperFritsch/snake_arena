@@ -837,11 +837,43 @@ button {
 
 .mv-history-id { font-family: monospace; min-width: 40px; }
 
+.mv-history-runid {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+  min-width: 32px;
+}
+
 .mv-history-time { flex: 1; font-size: 12px; }
 
 .mv-history-btn {
   padding: 2px 7px;
   font-size: 12px;
+}
+
+.mv-pin-btn.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.mv-history-row.pinned {
+  border-left: 2px solid var(--accent-dim);
+  padding-left: 10px;
+}
+
+.mv-history-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  padding: 6px 12px 2px;
+}
+
+.mv-tab-pin {
+  color: var(--accent);
+  font-size: 10px;
+  margin-left: -2px;
 }
 
 /* ---- sim player --------------------------------------------------------- */

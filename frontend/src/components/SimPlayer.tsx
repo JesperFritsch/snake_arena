@@ -370,6 +370,12 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
       return;
     }
 
+    if (job.status === "cancelled") {
+      setErrorMsg("test match was cancelled");
+      setStatus("failed");
+      return;
+    }
+
     if (job.status === "queued" || job.status === "running") {
       return connectWs(job.id);
     }
