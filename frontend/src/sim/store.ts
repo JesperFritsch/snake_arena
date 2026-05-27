@@ -21,7 +21,6 @@ export class SimStore {
   private finalStep: number | null = null;
   annotations: Annotation[] = [];
   private agentLogs: Record<string, string[]> | null = null;
-  // exec_times[step] = { "snakeId": ms }
   private execTimesPerStep: Record<string, number>[] = [];
 
   /** Renderable frames: frame 0 is the start state, then one per step. */

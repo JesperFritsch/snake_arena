@@ -135,13 +135,7 @@ class AgentContainerManager(ILoopObserver):
             for snake_id, tracker in self._trackers.items():
                 if tracker.killed:
                     continue
-                if not data.alive_states.get(snake_id, False):
-                    log.info("snake %s (%s) is dead — killing container", snake_id, tracker.name)
-                    tracker.killed = True
-                    self._kill_container(tracker.container)
-                    continue
                 current = self._read_cpu_ns(tracker.container)
-                print(f"DEBUG: snake_id={snake_id}, current_cpu_ns={current}, last_cpu_ns={tracker.last_cpu_ns}, step_budget_ns={tracker.step_budget_ns}")
                 if current < 0:
                     continue
                 delta_ms = max(0.0, (current - tracker.last_cpu_ns) / 1e6)
@@ -149,6 +143,10 @@ class AgentContainerManager(ILoopObserver):
                 self._exec_times_ms.setdefault(snake_id, []).append(delta_ms)
                 tracker.last_cpu_ns = current
                 tracker.step_budget_ns = self._per_step_budget_ns
+                if not data.alive_states.get(snake_id, False):
+                    log.info("snake %s (%s) is dead — killing container", snake_id, tracker.name)
+                    tracker.killed = True
+                    self._kill_container(tracker.container)
         if step_times and self._on_exec_times is not None:
             try:
                 self._on_exec_times(data.step, step_times)

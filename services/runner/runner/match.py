@@ -189,7 +189,7 @@ def run_match(
     networks: list[Network] = []
     agent_containers: list[Container] = []
     sim_container: Container | None = None
-    # loop_observable: ILoopObservable | None = None
+    loop_observable: ILoopObservable | None = None
 
     def _finish(result: MatchResult) -> MatchResult:
         # Fire on_result before the `finally` teardown so the caller can publish
@@ -242,7 +242,7 @@ def run_match(
                     remove=False,
                     # runtime="runsc",
                     read_only=True,
-                    tmpfs={"/tmp": "size=64m"},
+                    tmpfs={"/tmp": "size=64m", "/netty-native": "size=16m,exec"},
                     mem_limit=agent_mem_limit,
                     memswap_limit=agent_mem_limit,
                     nano_cpus=int(agent_cpus * 1_000_000_000),
@@ -309,12 +309,13 @@ def run_match(
             "--ext-targets", *targets,
             "--ext-conn-timeout", "0.05",   # time to ESTABLISH the gRPC channel (agent boot)
             "--ext-init-timeout", "0.05",  # per-call deadline once connected (50ms)
-            # "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
+            "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
             "--no-render",
             "--no-record",
             "--snake-count", "0",  # don't run any inproc snakes
             "--socket-observer", observable_addr,
             "--log-dir", "/tmp",
+            "--log-level", "DEBUG",
             *sim_args.to_args(),
         ]
 

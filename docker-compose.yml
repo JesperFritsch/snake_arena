@@ -25,6 +25,7 @@ services:
       context: .
       dockerfile: Dockerfile.orchestrator
     command: ["test-match", "--sim-image", "snake-sim"]
+    cgroup: host
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
@@ -32,6 +33,7 @@ services:
       ORCHESTRATOR_ARTIFACTS_DIR: /artifacts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - ./sim-artifacts:/artifacts
     depends_on:
       - postgres

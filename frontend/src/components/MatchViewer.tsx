@@ -277,7 +277,7 @@ export function MatchViewer({
                 return (
                   <span key={id} className="exec-times-entry">
                     <span className="exec-times-name">{label}</span>
-                    <span className="exec-times-ms">{ms.toFixed(1)}ms</span>
+                    <span className="exec-times-ms">{ms.toFixed(3)}ms</span>
                   </span>
                 );
               })}
