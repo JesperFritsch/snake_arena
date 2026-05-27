@@ -242,7 +242,7 @@ def run_match(
                     remove=False,
                     # runtime="runsc",
                     read_only=True,
-                    tmpfs={"/tmp": "size=64m", "/netty-native": "size=16m,exec"},
+                    tmpfs={"/tmp": "size=64m"},
                     mem_limit=agent_mem_limit,
                     memswap_limit=agent_mem_limit,
                     nano_cpus=int(agent_cpus * 1_000_000_000),
@@ -307,8 +307,8 @@ def run_match(
         full_sim_args = [
             "compute",
             "--ext-targets", *targets,
-            "--ext-conn-timeout", "0.05",   # time to ESTABLISH the gRPC channel (agent boot)
-            "--ext-init-timeout", "0.05",  # per-call deadline once connected (50ms)
+            "--ext-conn-timeout", "1.0",    # time to ESTABLISH the gRPC channel (agent boot)
+            "--ext-init-timeout", "0.05",   # per-call deadline once connected
             "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
             "--no-render",
             "--no-record",
@@ -326,19 +326,19 @@ def run_match(
 
         log.info("starting sim with args: %s", full_sim_args)
 
-        sim_container = d_client.containers.run(
+        # Create the sim container without starting it, connect it to all agent
+        # networks first, then start — avoids a race where the sim resolves
+        # agent hostnames before Docker has wired up the network routes.
+        sim_container = d_client.containers.create(
             sim_image,
             command=full_sim_args,
             network=sim_net.name,
             name=f"{match_id}-sim",
-            detach=True,
-            remove=False,
             mem_limit="2g",
         )
-
-        # attach sim to each agent network so it can reach every agent
         for net in networks[:-1]:
             net.connect(sim_container)
+        sim_container.start()
 
         try:
             ex_result = sim_container.wait()

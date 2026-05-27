@@ -23,9 +23,9 @@ COPY sandbox-images/java/harness/src/ ./harness/src/
 # Full build: generate proto sources, compile everything, copy deps to target/dependency/
 RUN cd /app/harness && mvn package -DskipTests -q
 
-RUN chown -R ubuntu:ubuntu /app && mkdir -p /netty-native && chown ubuntu:ubuntu /netty-native
+RUN chown -R ubuntu:ubuntu /app
 
 USER ubuntu
 
 EXPOSE 50051
-ENTRYPOINT ["java", "-Dio.grpc.netty.shaded.io.netty.native.workdir=/netty-native", "-cp", "/app/harness/target/classes:/app/harness/target/dependency/*", "Main"]
+ENTRYPOINT ["java", "-Dio.grpc.netty.shaded.io.netty.transport.noNative=true", "-cp", "/app/harness/target/classes:/app/harness/target/dependency/*", "Main"]
