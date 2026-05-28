@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.db import close_pool, init_pool
 from api.redis import close_redis, init_redis
-from api.routers import users, matches, projects, test_matches, download
+from api.routers import users, matches, modes, projects, test_matches, download, leaderboard
 from api.settings import load_settings, get_settings, Settings
 
 log = logging.getLogger(__name__)
@@ -87,8 +87,10 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(projects.router)
     app.include_router(matches.router)
+    app.include_router(modes.router)
     app.include_router(test_matches.router)
     app.include_router(download.router)
+    app.include_router(leaderboard.router)
     return app
 
 

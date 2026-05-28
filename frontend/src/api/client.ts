@@ -2,10 +2,14 @@ import { useAuth } from "@clerk/clerk-react";
 import { useMemo } from "react";
 import type {
   LanguageInfo,
+  LeaderboardEntry,
+  Mode,
+  OverallLeaderboardEntry,
   ProjectCreate,
   ProjectFiles,
   ProjectMeta,
   PublicProjectSummary,
+  RankedMatchSummary,
   SubmitResult,
   TestMatchCreate,
   TestMatchJob,
@@ -67,6 +71,9 @@ async function request<T>(
 export interface ApiClient {
   getLanguages(): Promise<LanguageInfo[]>;
   me(): Promise<UserOut>;
+  getModes(): Promise<Mode[]>;
+  getModeLeaderboard(modeSlug: string, limit?: number): Promise<LeaderboardEntry[]>;
+  getOverallLeaderboard(limit?: number): Promise<OverallLeaderboardEntry[]>;
   listProjects(): Promise<ProjectMeta[]>;
   createProject(body: ProjectCreate): Promise<ProjectMeta>;
   checkNameAvailable(name: string): Promise<{ available: boolean; reason?: string }>;
@@ -86,6 +93,8 @@ export interface ApiClient {
   pinTestMatch(jobId: number, pinned: boolean): Promise<TestMatchJob>;
   cancelTestMatch(jobId: number): Promise<void>;
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
+  listProjectRankedMatches(projectId: number, limit?: number): Promise<RankedMatchSummary[]>;
+  getMatchBundleUrl(matchId: number): Promise<{ url: string }>;
 }
 
 async function downloadBlob(getToken: TokenGetter, path: string, filename: string): Promise<void> {
@@ -134,6 +143,11 @@ export function useApi(): ApiClient {
     return {
       getLanguages: () => request(g, "GET", "/languages"),
       me: () => request(g, "GET", "/me"),
+      getModes: () => request(g, "GET", "/modes"),
+      getModeLeaderboard: (modeSlug, limit = 100) =>
+        request(g, "GET", `/leaderboard?mode=${encodeURIComponent(modeSlug)}&limit=${limit}`),
+      getOverallLeaderboard: (limit = 100) =>
+        request(g, "GET", `/leaderboard/overall?limit=${limit}`),
       listProjects: () => request(g, "GET", "/projects"),
       createProject: (body) => request(g, "POST", "/projects", body),
       checkNameAvailable: (name) =>
@@ -160,6 +174,10 @@ export function useApi(): ApiClient {
         request(g, "POST", `/test-matches/${jobId}/cancel`),
       getTestMatchBundleUrl: (jobId) =>
         request(g, "GET", `/test-matches/${jobId}/bundle-url`),
+      listProjectRankedMatches: (projectId, limit = 20) =>
+        request(g, "GET", `/matches/for-project?project_id=${projectId}&limit=${limit}`),
+      getMatchBundleUrl: (matchId) =>
+        request(g, "GET", `/matches/${matchId}/bundle-url`),
     };
   }, [getToken]);
 }

@@ -120,3 +120,60 @@ export interface MatchDetail {
   error: string | null;
   participants: ParticipantOut[];
 }
+
+export interface RankedMatchParticipant {
+  seat: number;
+  project_id: number;
+  project_name: string;
+  final_length: number | null;
+  survival_rank: number | null;
+  metrics: Record<string, unknown>;
+}
+
+export interface RankedMatchSummary {
+  id: number;
+  match_uuid: string;
+  status: string;
+  mode_id: number | null;
+  started_at: string;
+  finished_at: string | null;
+  bundle_key: string | null;
+  participants: RankedMatchParticipant[];
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  project_id: number;
+  project_name: string;
+  language: string;
+  user_display_name: string;
+  matches_played: number;
+  avg_score: number;
+  best_score: number;
+  avg_rank: number;
+  avg_length: number | null;
+}
+
+export interface OverallLeaderboardEntry {
+  rank: number;
+  project_id: number;
+  project_name: string;
+  language: string;
+  user_display_name: string;
+  overall_score: number;
+  total_matches: number;
+  modes_played: number;
+}
+
+export interface Mode {
+  id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  participant_count: number;
+  sim_args: Record<string, unknown>;
+  map_slug: string | null;
+  budget_ms: number;
+  target_matches_per_version: number;
+  enabled: boolean;
+}

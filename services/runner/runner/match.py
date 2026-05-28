@@ -226,6 +226,7 @@ def run_match(
     router: Router,
     d_client: DockerClient,
     match_id: str,
+    per_step_budget_seconds: float,        # per-step CPU budget enforced by the cgroup observer
     agent_mem_limit: str = "512m",
     agent_cpus: float = 1.0,
     agent_pids_limit: int = 128,
@@ -331,7 +332,7 @@ def run_match(
         seat_to_container = {i: c for i, c in enumerate(agent_containers)}
         cpu_observer = AgentContainerManager(
             snake_name_to_container=target_to_container,
-            per_step_budget_seconds=0.05,
+            per_step_budget_seconds=per_step_budget_seconds,
             initial_budget_seconds=0.2,
             startup_budget_seconds=0.2,
             # CPU accumulating long-run rate: bank grows 10ms/step (vs 50ms

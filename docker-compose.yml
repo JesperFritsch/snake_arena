@@ -1,4 +1,21 @@
 # docker-compose.yml at the repo root
+#
+# Bundle storage:
+#   Orchestrator services PUT/GET bundles over HTTP to the file-server
+#   (nginx WebDAV at /upload/). No shared volume needed between services.
+#   The file-server owns /srv/files and serves it as static files.
+#
+# REPLAY_HOST is only needed by the API (url() -> browser-accessible URL).
+# It is not set here — the API service wires it in its own env.
+
+x-vol-docker-sock: &vol-docker-sock /var/run/docker.sock:/var/run/docker.sock
+x-vol-cgroup:      &vol-cgroup      /sys/fs/cgroup:/sys/fs/cgroup:ro
+
+x-bundler-env: &bundler-env
+  BUNDLER_BACKEND:   http
+  BUNDLE_UPLOAD_URL: http://file-server/upload
+  BUNDLE_READ_URL:   http://file-server
+
 services:
   postgres:
     image: postgres:16
@@ -9,7 +26,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "127.0.0.1:5432:5432"     # localhost only, not exposed
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./pg-data:/var/lib/postgresql/data
 
@@ -18,36 +35,82 @@ services:
     container_name: snake-arena-redis
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6379:6379"     # localhost only
+      - "127.0.0.1:6379:6379"
 
-  runner:
+  # Runs test matches triggered by users in the browser.
+  test-runner:
     build:
       context: .
       dockerfile: Dockerfile.orchestrator
     command: ["test-match", "--sim-image", "snake-sim"]
     cgroup: host
     environment:
+      <<: *bundler-env
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
-      # Where the bundler writes match bundles; served by the file-server.
-      ORCHESTRATOR_ARTIFACTS_DIR: /artifacts
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
-      - ./sim-artifacts:/artifacts
+      - *vol-docker-sock
+      - *vol-cgroup
     depends_on:
       - postgres
       - redis
+      - file-server
     restart: unless-stopped
 
+  # Runs ranked multiplayer matches enqueued by the scheduler.
+  match-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    command: ["match", "--sim-image", "snake-sim"]
+    cgroup: host
+    environment:
+      <<: *bundler-env
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - *vol-docker-sock
+      - *vol-cgroup
+    depends_on:
+      - postgres
+      - file-server
+    restart: unless-stopped
+
+  # Reads completed ranked match bundles and writes scores into match_participants.
+  scorer:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    command: ["scorer"]
+    environment:
+      <<: *bundler-env
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      - postgres
+      - file-server
+    restart: unless-stopped
+
+  # Enqueues ranked match jobs for submitted agents.
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    command: ["scheduler"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Serves bundle zips as static files and accepts uploads via WebDAV PUT.
   file-server:
     image: nginx:alpine
     container_name: snake-arena-files
     restart: unless-stopped
+    # Pre-create top-level bucket dirs so create_full_put_path only needs to
+    # create one level deep (the per-job/match subdirectory).
+    command: ["/bin/sh", "-c", "mkdir -p /srv/files/matches /srv/files/test-matches && chown -R nginx:nginx /srv/files && exec nginx -g 'daemon off;'"]
     volumes:
-      - ./sim-artifacts:/srv/files:ro
+      - ./sim-artifacts:/srv/files
       - ./nginx-files.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "127.0.0.1:8081:80"
-
-# sim-artifacts is a bind mount (./sim-artifacts) — no named volume needed

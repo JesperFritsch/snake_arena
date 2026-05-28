@@ -1,11 +1,9 @@
 # services/sa_common/sa_common/db/matches.py
-"""DB layer for matches and match_participants — writes and reads.
+"""DB layer for matches and match_participants.
 
-record_match_result accepts data already shaped for the schema and writes
-it; any transformation from raw MatchResult/SimAnalysis to participant
-rows lives outside this module (see runner.match_results).
-
-Note: enqueue_match_job and other queue operations live in match_jobs.py.
+A match belongs to at most one mode (mode_id NULL = test match). The scorer
+uses a lease (scoring_started_at + scored_at) so a transient bundler failure
+doesn't permanently un-score a match. See docs/09_ranking_system.md.
 """
 from __future__ import annotations
 
@@ -22,21 +20,30 @@ from psycopg.types.json import Jsonb
 
 from sa_common.db.connection import get_conn
 from sa_common.types import ParticipantRow, SimArgs
+from sa_common.scoring import ParticipantScore
 
 log = logging.getLogger(__name__)
 
 
 MATCH_STATUSES = ("success", "failure")
-MATCH_MODES = ("multiplayer", "solo")
+
+# Scorer claim lease: how long after scoring_started_at without a scored_at
+# before another worker can re-claim the row. Survives crashed workers.
+SCORE_LEASE_INTERVAL = "5 minutes"
+
+# Cap on retries — after this many transient failures, the scorer gives up
+# and the row needs manual intervention. Prevents hot-loop on permanent
+# failures (e.g. deleted bundle) in the event-driven (no-poll) daemon.
+MAX_SCORING_ATTEMPTS = 3
 
 
 @dataclass(slots=True)
 class Match:
     id: int
     match_uuid: str
-    status: str    # 'success' | 'failure'
-    mode: str      # 'multiplayer' | 'solo'
-    sim_args: dict[str, Any]    # JSONB; reconstitute as SimArgs.model_validate() in callers
+    status: str
+    mode_id: int | None
+    sim_args: dict[str, Any]
     started_at: datetime
     finished_at: datetime | None
     bundle_key: str | None
@@ -49,7 +56,7 @@ def _row_to_match(row: dict[str, Any]) -> Match:
         id=row["id"],
         match_uuid=row["match_uuid"],
         status=row["status"],
-        mode=row["mode"],
+        mode_id=row["mode_id"],
         sim_args=row["sim_args"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
@@ -60,7 +67,7 @@ def _row_to_match(row: dict[str, Any]) -> Match:
 
 
 _MATCH_COLUMNS = """
-    id, match_uuid, status, mode, sim_args,
+    id, match_uuid, status, mode_id, sim_args,
     started_at, finished_at,
     bundle_key, error, is_test
 """
@@ -82,6 +89,7 @@ def record_match_result(
     *,
     match_uuid: str,
     status: str,
+    mode_id: int | None,
     sim_args: SimArgs,
     started_at: datetime,
     finished_at: datetime,
@@ -90,24 +98,12 @@ def record_match_result(
     participants: list[ParticipantRow],
     is_test: bool = False,
 ) -> int:
-    """Persist a match and its participants.
-
-    Caller is responsible for shaping `participants` correctly — this
-    function does no inference, no rank computation, no name lookups.
-
-    Each participant's (project_id, project_version) is the durable
-    reference to "which version of which agent played." submitted_version
-    is captured at dispatch time, so a project being re-submitted between
-    dispatch and recording does not affect the recorded version.
-
-    Returns:
-        matches.id
-    """
+    """Persist a match and its participants. Returns matches.id."""
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO matches (
-                match_uuid, status, mode, sim_args,
+                match_uuid, status, mode_id, sim_args,
                 started_at, finished_at,
                 bundle_key, error, is_test
             )
@@ -117,7 +113,7 @@ def record_match_result(
             (
                 match_uuid,
                 status,
-                "multiplayer" if len(participants) > 1 else "solo",
+                mode_id,
                 Jsonb(sim_args.model_dump()),
                 started_at,
                 finished_at,
@@ -171,9 +167,7 @@ def get_match(conn: psycopg.Connection, match_id: int) -> Match | None:
             (match_id,),
         )
         row = cur.fetchone()
-        if row is None:
-            return None
-        return _row_to_match(row)
+        return _row_to_match(row) if row else None
 
 
 def get_match_by_uuid(conn: psycopg.Connection, match_uuid: str) -> Match | None:
@@ -183,27 +177,25 @@ def get_match_by_uuid(conn: psycopg.Connection, match_uuid: str) -> Match | None
             (match_uuid,),
         )
         row = cur.fetchone()
-        if row is None:
-            return None
-        return _row_to_match(row)
+        return _row_to_match(row) if row else None
 
 
 def list_matches(
     conn: psycopg.Connection,
     status: str | None = None,
-    mode: str | None = None,
+    mode_id: int | None = None,
     is_test: bool | None = None,
     limit: int = 20,
 ) -> list[Match]:
-    """List matches, newest first. Optionally filter by status, mode, and/or is_test."""
+    """List matches, newest first. Optional filters."""
     where_clauses: list[str] = []
     params: list[Any] = []
     if status is not None:
         where_clauses.append("status = %s")
         params.append(status)
-    if mode is not None:
-        where_clauses.append("mode = %s")
-        params.append(mode)
+    if mode_id is not None:
+        where_clauses.append("mode_id = %s")
+        params.append(mode_id)
     if is_test is not None:
         where_clauses.append("is_test = %s")
         params.append(is_test)
@@ -224,7 +216,7 @@ def list_matches(
 
 
 def get_match_participants(
-    conn: psycopg.Connection, match_id: int
+    conn: psycopg.Connection, match_id: int,
 ) -> list[ParticipantRow]:
     """Return all participants of a match, ordered by seat."""
     with conn.cursor(row_factory=dict_row) as cur:
@@ -238,6 +230,214 @@ def get_match_participants(
             (match_id,),
         )
         return [ParticipantRow(**row) for row in cur.fetchall()]
+
+
+# --------------------------------------------------------------------------
+# Scorer lease — claim is revertable so transient failures don't drop matches.
+# --------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class ScoreClaim:
+    match_id: int
+    mode_id: int | None
+    bundle_key: str
+
+
+def claim_unscored_match(conn: psycopg.Connection) -> ScoreClaim | None:
+    """Atomically lease one unscored *ranked* success match for scoring.
+
+    Only ranked matches (mode_id IS NOT NULL) are eligible; test matches are
+    scored synchronously by test_runner_daemon at run time so they don't
+    race with bundle pruning.
+
+    Picks up rows that are either unclaimed (scoring_started_at IS NULL) or
+    whose lease has expired (older than SCORE_LEASE_INTERVAL).
+
+    The caller MUST call release_score_lease() on failure, or mark_match_scored()
+    on success. Returns None if nothing to score.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            WITH next AS (
+                SELECT id
+                FROM matches
+                WHERE status = 'success'
+                  AND mode_id IS NOT NULL
+                  AND scored_at IS NULL
+                  AND bundle_key IS NOT NULL
+                  AND scoring_attempts < {MAX_SCORING_ATTEMPTS}
+                  AND (scoring_started_at IS NULL
+                       OR scoring_started_at < NOW() - INTERVAL '{SCORE_LEASE_INTERVAL}')
+                ORDER BY finished_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE matches
+            SET scoring_started_at = NOW()
+            FROM next
+            WHERE matches.id = next.id
+            RETURNING matches.id, matches.mode_id, matches.bundle_key
+            """
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return ScoreClaim(
+            match_id=row["id"],
+            mode_id=row["mode_id"],
+            bundle_key=row["bundle_key"],
+        )
+
+
+def release_score_lease(conn: psycopg.Connection, match_id: int) -> None:
+    """Clear scoring_started_at and bump scoring_attempts.
+
+    Called on transient failure (bundler error, etc.). Bumping attempts gives
+    up after MAX_SCORING_ATTEMPTS so a permanent failure can't hot-loop the
+    scorer — important now that the daemon is purely event-driven.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE matches "
+            "SET scoring_started_at = NULL, "
+            "    scoring_attempts = scoring_attempts + 1 "
+            "WHERE id = %s AND scored_at IS NULL",
+            (match_id,),
+        )
+
+
+def mark_match_scored(conn: psycopg.Connection, match_id: int) -> None:
+    """Mark a match as successfully scored. Final terminal state."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE matches SET scored_at = NOW() WHERE id = %s",
+            (match_id,),
+        )
+
+
+def reset_stale_score_leases(conn: psycopg.Connection) -> int:
+    """Daemon startup hook: clear leases older than the lease interval.
+
+    Returns the number of rows reset. Useful when a scorer worker died mid-job
+    before the lease would have expired on its own.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE matches
+            SET scoring_started_at = NULL
+            WHERE scored_at IS NULL
+              AND scoring_started_at IS NOT NULL
+              AND scoring_started_at < NOW() - INTERVAL '{SCORE_LEASE_INTERVAL}'
+            """
+        )
+        return cur.rowcount
+
+
+def record_participant_scores(
+    conn: psycopg.Connection,
+    match_id: int,
+    scores: list[ParticipantScore],
+) -> None:
+    """Write computed scores into match_participants.metrics."""
+    with conn.cursor() as cur:
+        for s in scores:
+            cur.execute(
+                """
+                UPDATE match_participants
+                SET metrics = %s
+                WHERE match_id = %s AND seat = %s
+                """,
+                (Jsonb(s.to_metrics()), match_id, s.seat),
+            )
+
+
+# --------------------------------------------------------------------------
+# Match-history reads (used by the leaderboard "click a project" view).
+# --------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class MatchParticipantSummary:
+    seat: int
+    project_id: int
+    project_name: str
+    final_length: int | None
+    survival_rank: int | None
+    metrics: dict[str, Any]
+
+
+@dataclass(slots=True)
+class MatchSummaryRow:
+    id: int
+    match_uuid: str
+    status: str
+    mode_id: int | None
+    started_at: datetime
+    finished_at: datetime | None
+    bundle_key: str | None
+    participants: list[MatchParticipantSummary]
+
+
+def list_ranked_matches_for_project(
+    conn: psycopg.Connection,
+    project_id: int,
+    limit: int = 20,
+) -> list[MatchSummaryRow]:
+    """Return the N most recent ranked successful matches the project played in.
+
+    Each match includes all participants with their project names.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT
+                m.id, m.match_uuid, m.status, m.mode_id,
+                m.started_at, m.finished_at, m.bundle_key,
+                mp.seat, mp.project_id, mp.final_length, mp.survival_rank, mp.metrics,
+                p.name AS project_name
+            FROM (
+                SELECT m2.id
+                FROM matches m2
+                JOIN match_participants mp2
+                    ON mp2.match_id = m2.id AND mp2.project_id = %s
+                WHERE m2.is_test = FALSE
+                  AND m2.status = 'success'
+                ORDER BY m2.id DESC
+                LIMIT %s
+            ) sub
+            JOIN matches m ON m.id = sub.id
+            JOIN match_participants mp ON mp.match_id = m.id
+            JOIN projects p ON p.id = mp.project_id
+            ORDER BY m.started_at DESC, mp.seat ASC
+            """,
+            (project_id, limit),
+        )
+        matches: dict[int, MatchSummaryRow] = {}
+        for row in cur.fetchall():
+            mid = row["id"]
+            if mid not in matches:
+                matches[mid] = MatchSummaryRow(
+                    id=mid,
+                    match_uuid=row["match_uuid"],
+                    status=row["status"],
+                    mode_id=row["mode_id"],
+                    started_at=row["started_at"],
+                    finished_at=row["finished_at"],
+                    bundle_key=row["bundle_key"],
+                    participants=[],
+                )
+            matches[mid].participants.append(
+                MatchParticipantSummary(
+                    seat=row["seat"],
+                    project_id=row["project_id"],
+                    project_name=row["project_name"],
+                    final_length=row["final_length"],
+                    survival_rank=row["survival_rank"],
+                    metrics=row["metrics"],
+                )
+            )
+        return list(matches.values())
 
 
 def count_matches_by_status(conn: psycopg.Connection) -> dict[str, int]:
@@ -255,11 +455,10 @@ def count_matches_by_status(conn: psycopg.Connection) -> dict[str, int]:
 # --------------------------------------------------------------------------
 
 def _format_match_line(match: Match) -> str:
-    """One-line summary of a match for `list` output."""
     parts = [
         f"[{match.id:>4}]",
         f"{match.status:<7}",
-        f"{match.mode:<11}",
+        f"mode={match.mode_id if match.mode_id is not None else 'test':<5}",
         f"uuid={match.match_uuid}",
         f"started={match.started_at:%Y-%m-%d %H:%M:%S}",
     ]
@@ -273,7 +472,6 @@ def _format_match_line(match: Match) -> str:
 
 
 def _format_participant_line(p: ParticipantRow) -> str:
-    """One-line summary of a participant for `participants` output."""
     parts = [
         f"seat={p.seat}",
         f"project={p.project_id}.v{p.project_version}",
@@ -293,34 +491,19 @@ def cli(argv) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # get
     get_parser = subparsers.add_parser("get", help="show one match by id or uuid")
     get_id_group = get_parser.add_mutually_exclusive_group(required=True)
     get_id_group.add_argument("--id", type=int, dest="match_id")
     get_id_group.add_argument("--uuid", dest="match_uuid")
 
-    # list
     list_parser = subparsers.add_parser("list", help="list recent matches")
-    list_parser.add_argument(
-        "--status", choices=MATCH_STATUSES, default=None,
-        help="filter by status",
-    )
-    list_parser.add_argument(
-        "--mode", choices=MATCH_MODES, default=None,
-        help="filter by mode",
-    )
-    list_parser.add_argument(
-        "--limit", type=int, default=20,
-        help="max rows to show (default: 20)",
-    )
+    list_parser.add_argument("--status", choices=MATCH_STATUSES, default=None)
+    list_parser.add_argument("--mode-id", type=int, default=None)
+    list_parser.add_argument("--limit", type=int, default=20)
 
-    # counts
     subparsers.add_parser("counts", help="counts by status")
 
-    # participants
-    parts_parser = subparsers.add_parser(
-        "participants", help="show participants of a match"
-    )
+    parts_parser = subparsers.add_parser("participants", help="show participants of a match")
     parts_id_group = parts_parser.add_mutually_exclusive_group(required=True)
     parts_id_group.add_argument("--id", type=int, dest="match_id")
     parts_id_group.add_argument("--uuid", dest="match_uuid")
@@ -346,21 +529,22 @@ def main():
     with get_conn(autocommit=False) as conn:
         with conn.transaction():
             if args.command == "get":
-                result = _resolve_match(conn, args)
+                match = _resolve_match(conn, args)
+                result = _format_match_line(match)
 
             elif args.command == "list":
                 matches = list_matches(
-                    conn, status=args.status, mode=args.mode, limit=args.limit
+                    conn, status=args.status, mode_id=args.mode_id, limit=args.limit,
                 )
-                if not matches:
-                    result = "(no matches)"
-                else:
-                    result = "\n".join(_format_match_line(m) for m in matches)
+                result = (
+                    "\n".join(_format_match_line(m) for m in matches)
+                    if matches else "(no matches)"
+                )
 
             elif args.command == "counts":
                 counts = count_matches_by_status(conn)
                 total = sum(counts.values())
-                lines = [f"{status:>9}: {count:>5}" for status, count in counts.items()]
+                lines = [f"{s:>9}: {c:>5}" for s, c in counts.items()]
                 lines.append(f"{'total':>9}: {total:>5}")
                 result = "\n".join(lines)
 
@@ -369,7 +553,7 @@ def main():
                 rows = get_match_participants(conn, match.id)
                 header = (
                     f"match {match.id} ({match.match_uuid}) — "
-                    f"{match.status}, {match.mode}"
+                    f"{match.status}, mode_id={match.mode_id}"
                 )
                 if not rows:
                     result = f"{header}\n(no participants)"

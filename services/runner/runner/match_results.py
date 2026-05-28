@@ -86,7 +86,7 @@ def build_participants(
                 seat=seat,
                 project_id=project_by_agent_name[agent_name],
                 project_version=version_by_agent_name[agent_name],
-                final_length=None,  # TODO: pull from analysis once API confirmed
+                final_length=result.final_lengths.get(sid) if result.final_lengths else None,
                 fatal_step=fatal_steps.get(sid),
                 survival_rank=rank_of_snake[sid],
                 killed_by_budget=kill_reason in _BUDGET_KILL_REASONS,

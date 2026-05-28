@@ -41,6 +41,7 @@ from sa_common.db.match_jobs import (
     mark_job_success,
 )
 from sa_common.db.matches import record_match_result
+from sa_common.db.modes import get_mode
 from sa_common.db.connection import get_conn
 from sa_common.types import SimArgs
 
@@ -49,10 +50,10 @@ from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from orchestrator.agents import SetupError, resolve_agents
 from orchestrator.bundle import assemble_bundle
+from orchestrator.replay import extract_final_lengths
 
 log = logging.getLogger(__name__)
-d_client = docker.from_env()
-router = router_from_env(d_client)
+
 
 class RunnerDaemonConfig:
     """Static config for one daemon process."""
@@ -60,11 +61,11 @@ class RunnerDaemonConfig:
         self,
         sim_image: str,
         bundler: IBundler,
-        poll_interval_s: float = 1.0,
     ):
         self.sim_image = sim_image
         self.bundler = bundler
-        self.poll_interval_s = poll_interval_s
+        self.d_client = docker.from_env()
+        self.router = router_from_env(self.d_client)
 
 
 def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> bool:
@@ -91,6 +92,13 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
 
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
+        # Mode owns the per-step CPU budget; the runner enforces what the mode
+        # says, and the bundle later captures the actual enforced value for
+        # the scorer to read back.
+        mode = get_mode(conn, job.mode_id)
+        if mode is None:
+            raise SetupError(f"job {job.id} references missing mode_id={job.mode_id}")
+        per_step_budget_seconds = mode.budget_ms / 1000.0
         setup = resolve_agents(conn, job.project_ids)
         # --- The match itself: no transaction, no row locks held ---
         result = run_match(
@@ -98,8 +106,9 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             agents=setup.specs,
             sim_args=sim_args,
             match_id=match_uuid,
-            router=router,
-            d_client=d_client,
+            router=config.router,
+            d_client=config.d_client,
+            per_step_budget_seconds=per_step_budget_seconds,
             extra_observers=[file_observer],
         )
 
@@ -113,6 +122,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             try:
                 run_analysis = analyze(replay_path)
                 result.run_analysis = run_analysis
+                result.final_lengths = extract_final_lengths(replay_path)
             except Exception:
                 log.warning("analysis failed for job id=%d", job.id, exc_info=True)
 
@@ -126,7 +136,11 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
         # Ranked bundle has no dev-agent console, so no agent_logs.
         saved_key: str | None = None
         try:
-            bundle_bytes = assemble_bundle(replay_path, run_analysis, budgets=result.budgets)
+            bundle_bytes = assemble_bundle(
+                replay_path, run_analysis,
+                exec_times=result.exec_times,
+                budgets=result.budgets,
+            )
             config.bundler.put(bundle_key, bundle_bytes)
             saved_key = bundle_key
             log.info("stored bundle %s (%d bytes)", bundle_key, len(bundle_bytes))
@@ -139,6 +153,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
                 conn,
                 match_uuid=match_uuid,
                 status="success" if result.success else "failure",
+                mode_id=job.mode_id,
                 sim_args=sim_args,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
@@ -172,26 +187,39 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
     return True
 
 
-def run_forever(config: RunnerDaemonConfig, shutdown: Event) -> None:
-    """Main daemon loop. `shutdown` is a threading.Event; set it to stop."""
-    log.info("orchestrator starting, polling every %.2fs", config.poll_interval_s)
+def run_forever(
+    config: RunnerDaemonConfig,
+    shutdown: Event,
+    wakeup: Event,
+) -> None:
+    """Event-driven main loop.
+
+    Drains all available work, then blocks on `wakeup` until a NOTIFY arrives
+    (a new queued match job) or shutdown fires. No polling.
+    """
+    from sa_common.db.notify import CHANNEL_MATCH_RUNNER, start_listener
+
+    log.info("match runner starting (event-driven)")
+    start_listener([CHANNEL_MATCH_RUNNER], wakeup, shutdown)
+
     with get_conn(autocommit=True) as conn:
         while not shutdown.is_set():
-            try:
-                had_work = run_one_iteration(conn, config)
-            except psycopg.OperationalError:
-                # Connection-level problem; bubble up so the supervisor can restart us.
-                log.exception("DB connection failed; exiting")
-                raise
-            except Exception:
-                # Anything else: log and keep going. Don't let one bad iteration
-                # take down the daemon.
-                log.exception("iteration failed unexpectedly")
-                had_work = False
-
-            if not had_work:
-                # Use Event.wait so SIGTERM interrupts the sleep promptly.
-                shutdown.wait(timeout=config.poll_interval_s)
+            wakeup.clear()
+            # Drain everything queued before going back to sleep.
+            while not shutdown.is_set():
+                try:
+                    had_work = run_one_iteration(conn, config)
+                except psycopg.OperationalError:
+                    log.exception("DB connection failed; exiting")
+                    raise
+                except Exception:
+                    log.exception("iteration failed unexpectedly")
+                    had_work = False
+                if not had_work:
+                    break
+            if shutdown.is_set():
+                break
+            wakeup.wait()
 
     log.info("orchestrator shut down cleanly")
 

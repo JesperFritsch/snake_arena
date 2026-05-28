@@ -33,6 +33,7 @@ JOB_STATUSES = ("queued", "running", "success", "failure", "cancelled")
 class MatchJob:
     id: int
     status: str
+    mode_id: int
     project_ids: list[int]
     sim_args: dict[str, Any]    # JSONB; reconstitute as SimArgs.model_validate() in callers
     requested_by: int | None
@@ -47,6 +48,7 @@ def _row_to_job(row: dict[str, Any]) -> MatchJob:
     return MatchJob(
         id=row["id"],
         status=row["status"],
+        mode_id=row["mode_id"],
         project_ids=row["project_ids"],
         sim_args=row["sim_args"],
         requested_by=row["requested_by"],
@@ -59,7 +61,7 @@ def _row_to_job(row: dict[str, Any]) -> MatchJob:
 
 
 _JOB_COLUMNS = """
-    id, status, project_ids, sim_args,
+    id, status, mode_id, project_ids, sim_args,
     requested_by, requested_at, started_at, finished_at,
     match_id, error
 """
@@ -71,6 +73,7 @@ _JOB_COLUMNS = """
 
 def enqueue_match_job(
     conn: psycopg.Connection,
+    mode_id: int,
     project_ids: list[int],
     sim_args: SimArgs,
     requested_by: int | None = None,
@@ -79,17 +82,17 @@ def enqueue_match_job(
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO match_jobs (project_ids, sim_args, requested_by)
-            VALUES (%s, %s, %s)
+            INSERT INTO match_jobs (mode_id, project_ids, sim_args, requested_by)
+            VALUES (%s, %s, %s, %s)
             RETURNING id
             """,
-            (project_ids, Jsonb(sim_args.model_dump()), requested_by),
+            (mode_id, project_ids, Jsonb(sim_args.model_dump()), requested_by),
         )
         row = cur.fetchone()
         assert row is not None
         job_id = row[0]
 
-    log.info("queued match job id=%d", job_id)
+    log.info("queued match job id=%d (mode_id=%d)", job_id, mode_id)
     return job_id
 
 
@@ -116,7 +119,7 @@ def claim_one_queued_job(conn: psycopg.Connection) -> MatchJob | None:
             FROM next_job
             WHERE mj.id = next_job.id
             RETURNING
-                mj.id, mj.status, mj.project_ids, mj.sim_args,
+                mj.id, mj.status, mj.mode_id, mj.project_ids, mj.sim_args,
                 mj.requested_by, mj.requested_at, mj.started_at,
                 mj.finished_at, mj.match_id, mj.error
             """
@@ -231,6 +234,16 @@ def count_jobs_by_status(conn: psycopg.Connection) -> dict[str, int]:
         return counts
 
 
+def count_queued_by_mode(conn: psycopg.Connection) -> dict[int, int]:
+    """Return {mode_id: queued_count} for the scheduler's per-mode queue cap."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT mode_id, COUNT(*) FROM match_jobs "
+            "WHERE status = 'queued' GROUP BY mode_id"
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
 # --------------------------------------------------------------------------
 # CLI — for ops and manual testing
 # --------------------------------------------------------------------------
@@ -240,6 +253,7 @@ def _format_job_line(job: MatchJob) -> str:
     parts = [
         f"[{job.id:>4}]",
         f"{job.status:<9}",
+        f"mode={job.mode_id}",
         f"projects={job.project_ids}",
         f"requested={job.requested_at:%Y-%m-%d %H:%M:%S}",
     ]
@@ -264,6 +278,10 @@ def cli(argv) -> argparse.Namespace:
     enq.add_argument(
         "project_ids", nargs="+", type=int,
         help="one or more project IDs to play (positional)",
+    )
+    enq.add_argument(
+        "--mode-id", type=int, required=True,
+        help="mode id this match belongs to (see `python -m sa_common.db.modes`)",
     )
     enq.add_argument(
         "--food", required=True,
@@ -337,6 +355,7 @@ def main():
                 sim_args = _build_sim_args(args)
                 job_id = enqueue_match_job(
                     conn,
+                    mode_id=args.mode_id,
                     project_ids=args.project_ids,
                     sim_args=sim_args,
                     requested_by=args.requested_by,

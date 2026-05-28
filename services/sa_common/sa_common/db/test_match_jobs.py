@@ -278,17 +278,29 @@ def count_active_test_jobs_for_project(
         return row[0] if row else 0
 
 
+# A 'running' test-match job whose started_at is older than this is assumed
+# to belong to a crashed orchestrator and gets failed by the next worker that
+# starts up. The threshold has to be longer than the worst legitimate runtime
+# (build + sim + analyze + bundle write) so a scale-up of test-runners can't
+# fail an in-flight job that another worker is still processing.
+STALE_RUNNING_INTERVAL = "15 minutes"
+
+
 def reset_stale_running_jobs(conn: psycopg.Connection) -> int:
-    """Reset any jobs left in 'running' state to 'failure' (e.g. after a crash).
-    Returns the number of jobs reset.
+    """Reset jobs stuck in 'running' past STALE_RUNNING_INTERVAL to 'failure'.
+
+    Called at daemon startup. The time gate makes this safe to run with
+    multiple test-runners — a freshly-started worker won't fail an in-flight
+    job owned by a peer.
     """
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             UPDATE test_match_jobs
             SET status = 'failure', finished_at = NOW(),
                 error = 'orchestrator restarted while job was running'
             WHERE status = 'running'
+              AND started_at < NOW() - INTERVAL '{STALE_RUNNING_INTERVAL}'
             """,
         )
         count = cur.rowcount

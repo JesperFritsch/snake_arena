@@ -56,11 +56,6 @@ class ProjectCreate(BaseModel):
     files: list[ProjectFile] = Field(default_factory=list)
 
 
-class MatchJobCreate(BaseModel):
-    project_ids: list[int] = Field(min_length=1, max_length=8)
-    sim_args: SimArgs
-
-
 class TestMatchCreate(BaseModel):
     player_project_id: int
     opponent_project_ids: list[int] = Field(default_factory=list, max_length=4)
@@ -115,10 +110,67 @@ class MatchDetail(BaseModel):
     id: int
     match_uuid: str
     status: str
-    mode: str
+    mode_id: int | None       # NULL for test matches
     sim_args: dict[str, Any]
     started_at: Any
     finished_at: Any | None
     bundle_key: str | None
     error: str | None
     participants: list[ParticipantOut]
+
+
+class RankedMatchParticipant(BaseModel):
+    seat: int
+    project_id: int
+    project_name: str
+    final_length: int | None
+    survival_rank: int | None
+    metrics: dict[str, Any]
+
+
+class RankedMatchSummary(BaseModel):
+    id: int
+    match_uuid: str
+    status: str
+    mode_id: int | None
+    started_at: Any
+    finished_at: Any | None
+    bundle_key: str | None
+    participants: list[RankedMatchParticipant]
+
+
+class LeaderboardEntry(BaseModel):
+    rank: int
+    project_id: int
+    project_name: str
+    language: str
+    user_display_name: str
+    matches_played: int
+    avg_score: float
+    best_score: float
+    avg_rank: float
+    avg_length: float | None
+
+
+class OverallLeaderboardEntry(BaseModel):
+    rank: int
+    project_id: int
+    project_name: str
+    language: str
+    user_display_name: str
+    overall_score: float          # 0..100, mean of per-mode normalised scores
+    total_matches: int
+    modes_played: int
+
+
+class ModeOut(BaseModel):
+    id: int
+    slug: str
+    name: str
+    description: str | None
+    participant_count: int
+    sim_args: dict[str, Any]
+    map_slug: str | None
+    budget_ms: float
+    target_matches_per_version: int
+    enabled: bool

@@ -1,14 +1,19 @@
 # services/orchestrator/orchestrator/cli.py
 """Entry point for the orchestrator.
 
-Three daemons share this CLI:
-    match        poll match_jobs, dispatch ranked matches via the runner
-    test-match   poll test_match_jobs, build + run dev test matches
-    (build daemon removed — dev builds happen inline in the test runner)
+Four daemons share this CLI:
+    match        run queued ranked match jobs from the runner
+    test-match   build + run queued dev test matches
+    scorer       score finished ranked matches
+    scheduler    enqueue ranked match jobs as work appears
+
+All four are event-driven via Postgres LISTEN/NOTIFY — they have no polling
+interval. Triggers in migrations/001.sql wake each daemon the moment its
+queue gains work. See docs/09_ranking_system.md.
 
 Each supports:
-    (default)   long-running daemon, polls the queue forever
-    --once      claim and process one job, then exit
+    (default)   long-running daemon, sleeps between NOTIFYs
+    --once      claim and process one job, then exit (match/test-match/scorer only)
 
 Exit codes for --once:
     0   one job processed (whether it succeeded or failed)
@@ -39,6 +44,15 @@ from orchestrator.test_runner_daemon import (
     run_forever as run_test_forever,
     run_one_iteration as run_test_iteration,
 )
+from orchestrator.scorer_daemon import (
+    ScorerDaemonConfig,
+    run_forever as run_scorer_forever,
+    run_one_iteration as run_scorer_iteration,
+)
+from orchestrator.scheduler_daemon import (
+    SchedulerDaemonConfig,
+    run_forever as run_scheduler_forever,
+)
 from sa_common.db.test_match_jobs import reset_stale_running_jobs
 
 
@@ -48,15 +62,18 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    p_match = subparsers.add_parser("match", help="poll match_jobs and run matches")
+    p_match = subparsers.add_parser("match", help="run queued ranked match jobs")
     p_match.add_argument(
         "--sim-image",
         default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
         help="Docker image tag for the sim (env: ORCHESTRATOR_SIM_IMAGE)",
     )
-    _add_shared_args(p_match, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
+    p_match.add_argument(
+        "--once", action="store_true",
+        help="Process at most one job, then exit. Exit 2 if queue is empty.",
+    )
 
-    p_test = subparsers.add_parser("test-match", help="poll test_match_jobs and run dev test matches")
+    p_test = subparsers.add_parser("test-match", help="run queued dev test matches")
     p_test.add_argument(
         "--sim-image",
         default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
@@ -74,7 +91,32 @@ def main() -> None:
         type=int,
         default=int(os.environ.get("BUILDER_BUILD_TIMEOUT_S", "60")),
     )
-    _add_shared_args(p_test, default_poll=1.0, poll_env="ORCHESTRATOR_POLL_INTERVAL_S")
+    p_test.add_argument(
+        "--once", action="store_true",
+        help="Process at most one job, then exit. Exit 2 if queue is empty.",
+    )
+
+    p_scorer = subparsers.add_parser(
+        "scorer",
+        help="score finished ranked matches. Scoring weights live on each mode's "
+             "scoring_config (modes table); the scorer has no per-formula flags.",
+    )
+    p_scorer.add_argument(
+        "--once", action="store_true",
+        help="Score at most one match, then exit. Exit 2 if none unscored.",
+    )
+
+    p_sched = subparsers.add_parser(
+        "scheduler",
+        help="enqueue ranked match jobs. Match configs (sim_args, target counts, "
+             "etc.) live on the modes table — this daemon has no per-mode flags.",
+    )
+    p_sched.add_argument(
+        "--per-mode-queue-cap",
+        type=int,
+        default=int(os.environ.get("SCHEDULER_PER_MODE_QUEUE_CAP", "5")),
+        help="Max queued jobs per mode at any time (env: SCHEDULER_PER_MODE_QUEUE_CAP)",
+    )
 
     args = parser.parse_args()
 
@@ -91,7 +133,6 @@ def main() -> None:
         config = RunnerDaemonConfig(
             sim_image=args.sim_image,
             bundler=bundler_from_env(),
-            poll_interval_s=args.poll_interval,
         )
         run_one, run_forever = run_match_iteration, run_match_forever
 
@@ -103,13 +144,22 @@ def main() -> None:
             sim_image=args.sim_image,
             bundler=bundler_from_env(),
             redis_url=args.redis_url,
-            poll_interval_s=args.poll_interval,
             registry_prefix=args.registry_prefix,
             build_timeout_s=args.build_timeout,
         )
         run_one, run_forever = run_test_iteration, run_test_forever
         with get_conn(autocommit=True) as conn:
             reset_stale_running_jobs(conn)
+
+    elif args.command == "scorer":
+        config = ScorerDaemonConfig(bundler=bundler_from_env())
+        run_one, run_forever = run_scorer_iteration, run_scorer_forever
+
+    elif args.command == "scheduler":
+        config = SchedulerDaemonConfig(per_mode_queue_cap=args.per_mode_queue_cap)
+        # Scheduler doesn't support --once (it's purely additive, not claim-based).
+        _run_daemon(config, run_scheduler_forever, log)
+        return
 
     else:
         # argparse `required=True` should prevent this
@@ -119,22 +169,6 @@ def main() -> None:
         _run_once(config, run_one, log)
     else:
         _run_daemon(config, run_forever, log)
-
-
-def _add_shared_args(
-    p: argparse.ArgumentParser, *, default_poll: float, poll_env: str
-) -> None:
-    p.add_argument(
-        "--poll-interval",
-        type=float,
-        default=float(os.environ.get(poll_env, str(default_poll))),
-        help="Seconds to sleep when the queue is empty (daemon mode only)",
-    )
-    p.add_argument(
-        "--once",
-        action="store_true",
-        help="Process at most one job, then exit. Exit 2 if queue is empty.",
-    )
 
 
 def _run_once(
@@ -167,25 +201,28 @@ def _run_once(
 
 def _run_daemon(
     config: Any,
-    run_forever: Callable[[Any, threading.Event], None],
+    run_forever: Callable[[Any, threading.Event, threading.Event], None],
     log: logging.Logger,
 ) -> None:
-    """Long-running mode: poll the queue, process jobs as they appear.
+    """Long-running mode: process jobs as NOTIFYs arrive.
 
-    Installs SIGINT/SIGTERM handlers so the daemon finishes its current
-    iteration cleanly instead of being killed mid-job.
+    Installs SIGINT/SIGTERM handlers that set both `shutdown` and `wakeup`
+    so a daemon blocked inside wakeup.wait() exits promptly instead of
+    being killed.
     """
     shutdown = threading.Event()
+    wakeup = threading.Event()
 
     def _handle_signal(signum, _frame):
         log.info("received signal %d, finishing current iteration then exiting", signum)
         shutdown.set()
+        wakeup.set()
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
     try:
-        run_forever(config, shutdown)
+        run_forever(config, shutdown, wakeup)
     except Exception:
         log.exception("daemon died")
         sys.exit(1)

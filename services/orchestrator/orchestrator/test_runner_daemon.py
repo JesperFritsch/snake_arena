@@ -53,10 +53,9 @@ from snake_sim.analyze.scripts.run_analyzer import analyze
 from orchestrator.agents import SetupError, resolve_test_agents
 from orchestrator.bundle import assemble_bundle
 from orchestrator.redis_observer import RedisStreamObserver
+from orchestrator.replay import extract_final_lengths
 
 log = logging.getLogger(__name__)
-d_client = docker.from_env()
-router = router_from_env(d_client)
 
 
 def _delete_pruned_bundles(bundler: IBundler, keys: list[str]) -> None:
@@ -73,16 +72,22 @@ class TestRunnerDaemonConfig:
         sim_image: str,
         bundler: IBundler,
         redis_url: str = "redis://localhost:6379",
-        poll_interval_s: float = 1.0,
         registry_prefix: str = "snake",
         build_timeout_s: int = 60,
+        test_per_step_budget_seconds: float = 0.05,
     ):
         self.sim_image = sim_image
         self.bundler = bundler
         self.redis_url = redis_url
-        self.poll_interval_s = poll_interval_s
         self.registry_prefix = registry_prefix
         self.build_timeout_s = build_timeout_s
+        # Test matches don't belong to a mode, so the budget can't be looked
+        # up from the modes table — use this default. The bundle still
+        # captures whatever was actually enforced so the in-process scoring
+        # in run_one_iteration reads the right value.
+        self.test_per_step_budget_seconds = test_per_step_budget_seconds
+        self.d_client = docker.from_env()
+        self.router = router_from_env(self.d_client)
 
 
 def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) -> bool:
@@ -182,8 +187,9 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             agents=setup.specs,
             sim_args=sim_args,
             match_id=match_uuid,
-            router=router,
-            d_client=d_client,
+            router=config.router,
+            d_client=config.d_client,
+            per_step_budget_seconds=config.test_per_step_budget_seconds,
             extra_observers=[observer, file_observer],
             on_step_log=observer.publish_step_log,
             on_exec_times=observer.publish_exec_time,
@@ -204,6 +210,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             try:
                 run_analysis = analyze(replay_path)
                 result.run_analysis = run_analysis
+                result.final_lengths = extract_final_lengths(replay_path)
             except Exception:
                 log.warning("analysis failed for job id=%d", job.id, exc_info=True)
 
@@ -233,16 +240,23 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 conn,
                 match_uuid=match_uuid,
                 status="success" if result.success else "failure",
+                mode_id=None,                       # test matches have no mode
                 sim_args=sim_args,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
-                # Test-match bundle is stored on the job row (bundle_key above),
-                # not the match row.
-                bundle_key=None,
+                # Also writing bundle_key on the match row (it's primarily
+                # stored on the test_match_jobs row, but match-level lets
+                # downstream consumers find it uniformly).
+                bundle_key=saved_key,
                 error=result.error,
                 participants=participants,
                 is_test=True,
             )
+            # Test matches are NOT scored. When the UI needs a score for
+            # dev-agent feedback, store it on a dedicated test_match_jobs
+            # column (or a scores JSONB) — separate from ranked
+            # match_participants.metrics so there's no leaderboard-leakage
+            # risk via a future query that forgets `is_test = FALSE`.
             mark_test_job_success(
                 conn,
                 job.id,
@@ -295,20 +309,37 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     return True
 
 
-def run_forever(config: TestRunnerDaemonConfig, shutdown: Event) -> None:
-    log.info("test match daemon starting, polling every %.2fs", config.poll_interval_s)
+def run_forever(
+    config: TestRunnerDaemonConfig,
+    shutdown: Event,
+    wakeup: Event,
+) -> None:
+    """Event-driven main loop.
+
+    Drains queued test-match jobs, then blocks on `wakeup` for the next
+    NOTIFY (a new queued test-match job) or shutdown.
+    """
+    from sa_common.db.notify import CHANNEL_TEST_RUNNER, start_listener
+
+    log.info("test match daemon starting (event-driven)")
+    start_listener([CHANNEL_TEST_RUNNER], wakeup, shutdown)
+
     with get_conn(autocommit=True) as conn:
         while not shutdown.is_set():
-            try:
-                had_work = run_one_iteration(conn, config)
-            except psycopg.OperationalError:
-                log.exception("DB connection failed; exiting")
-                raise
-            except Exception:
-                log.exception("iteration failed unexpectedly")
-                had_work = False
-
-            if not had_work:
-                shutdown.wait(timeout=config.poll_interval_s)
+            wakeup.clear()
+            while not shutdown.is_set():
+                try:
+                    had_work = run_one_iteration(conn, config)
+                except psycopg.OperationalError:
+                    log.exception("DB connection failed; exiting")
+                    raise
+                except Exception:
+                    log.exception("iteration failed unexpectedly")
+                    had_work = False
+                if not had_work:
+                    break
+            if shutdown.is_set():
+                break
+            wakeup.wait()
 
     log.info("test match daemon shut down cleanly")

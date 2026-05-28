@@ -1,113 +1,31 @@
 # services/api/api/routers/matches.py
-"""Match endpoints: enqueue match jobs, read job status, read completed
-matches and their participants.
+"""Read-only match endpoints.
 
-Enqueuing a match writes a row to match_jobs and returns immediately. The
-orchestrator (a separate container) claims the job, runs the match in the
-runner, and records the result in `matches` / `match_participants`. The API
-never runs a match itself.
+Ranked matches are exclusively enqueued by the scheduler daemon (see
+docs/09_ranking_system.md); the API does not enqueue ranked matches. Users
+exercise their dev agents via /test-matches.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from psycopg import Connection
 
-from sa_common.db.match_jobs import (
-    JOB_STATUSES,
-    MatchJob,
-    cancel_job,
-    enqueue_match_job,
-    get_job,
-    list_jobs,
-)
 from sa_common.db.matches import (
-    MATCH_MODES,
     MATCH_STATUSES,
     Match,
     get_match,
     get_match_participants,
     list_matches,
+    list_ranked_matches_for_project,
 )
-from sa_common.db.projects import get_project_meta
 from sa_common.db.users import User
 
 from api.auth import get_current_user
 from api.bundler import get_bundler
 from api.db import get_db
-from api.schemas import MatchDetail, MatchJobCreate, ParticipantOut
+from api.schemas import MatchDetail, ParticipantOut, RankedMatchParticipant, RankedMatchSummary
 
 router = APIRouter(tags=["matches"])
-
-
-# ---- match jobs -----------------------------------------------------------
-
-@router.post("/match-jobs", response_model=MatchJob, status_code=status.HTTP_202_ACCEPTED)
-def enqueue(
-    body: MatchJobCreate,
-    conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> MatchJob:
-    # v0 authorization: you may only enqueue matches between projects you own.
-    # Public/ranked matchmaking that pits arbitrary submitted agents against
-    # each other will relax this later.
-    for project_id in body.project_ids:
-        meta = get_project_meta(conn, project_id)
-        if meta is None or meta.user_id != user.id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"project {project_id} not found")
-        if meta.submitted_version == 0:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                f"project {project_id} has no submitted version to play",
-            )
-
-    job_id = enqueue_match_job(
-        conn,
-        project_ids=body.project_ids,
-        sim_args=body.sim_args,
-        requested_by=user.id,
-    )
-    job = get_job(conn, job_id)
-    assert job is not None
-    return job
-
-
-@router.get("/match-jobs", response_model=list[MatchJob])
-def list_match_jobs(
-    status_filter: str | None = Query(None, alias="status"),
-    limit: int = Query(20, ge=1, le=100),
-    conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> list[MatchJob]:
-    if status_filter is not None and status_filter not in JOB_STATUSES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid status: {status_filter}")
-    jobs = list_jobs(conn, status=status_filter, limit=limit)
-    # list_jobs has no user filter; scope to the caller here.
-    return [j for j in jobs if j.requested_by == user.id]
-
-
-@router.get("/match-jobs/{job_id}", response_model=MatchJob)
-def get_match_job(
-    job_id: int,
-    conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> MatchJob:
-    job = get_job(conn, job_id)
-    if job is None or job.requested_by != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
-    return job
-
-
-@router.delete("/match-jobs/{job_id}", status_code=status.HTTP_200_OK)
-def cancel_match_job(
-    job_id: int,
-    conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> dict:
-    job = get_job(conn, job_id)
-    if job is None or job.requested_by != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
-    cancelled = cancel_job(conn, job_id)
-    return {"cancelled": cancelled}
 
 
 # ---- completed matches ----------------------------------------------------
@@ -115,16 +33,47 @@ def cancel_match_job(
 @router.get("/matches", response_model=list[Match])
 def list_completed_matches(
     status_filter: str | None = Query(None, alias="status"),
-    mode: str | None = Query(None),
+    mode_id: int | None = Query(None),
     limit: int = Query(20, ge=1, le=100),
     conn: Connection = Depends(get_db),
     _: User = Depends(get_current_user),
 ) -> list[Match]:
     if status_filter is not None and status_filter not in MATCH_STATUSES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid status: {status_filter}")
-    if mode is not None and mode not in MATCH_MODES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid mode: {mode}")
-    return list_matches(conn, status=status_filter, mode=mode, limit=limit)
+    return list_matches(conn, status=status_filter, mode_id=mode_id, limit=limit)
+
+
+@router.get("/matches/for-project", response_model=list[RankedMatchSummary])
+def list_matches_for_project(
+    project_id: int = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+    conn: Connection = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[RankedMatchSummary]:
+    summaries = list_ranked_matches_for_project(conn, project_id, limit)
+    return [
+        RankedMatchSummary(
+            id=s.id,
+            match_uuid=s.match_uuid,
+            status=s.status,
+            mode_id=s.mode_id,
+            started_at=s.started_at,
+            finished_at=s.finished_at,
+            bundle_key=s.bundle_key,
+            participants=[
+                RankedMatchParticipant(
+                    seat=p.seat,
+                    project_id=p.project_id,
+                    project_name=p.project_name,
+                    final_length=p.final_length,
+                    survival_rank=p.survival_rank,
+                    metrics=p.metrics,
+                )
+                for p in s.participants
+            ],
+        )
+        for s in summaries
+    ]
 
 
 @router.get("/matches/{match_id}", response_model=MatchDetail)
@@ -141,7 +90,7 @@ def get_match_detail(
         id=match.id,
         match_uuid=match.match_uuid,
         status=match.status,
-        mode=match.mode,
+        mode_id=match.mode_id,
         sim_args=match.sim_args,
         started_at=match.started_at,
         finished_at=match.finished_at,
