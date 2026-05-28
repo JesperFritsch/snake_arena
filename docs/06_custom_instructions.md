@@ -8,7 +8,7 @@ Paste the section under "For the Project's Custom Instructions" into the project
 
 Working on **snake_arena** — a competitive snake AI tournament platform.
 
-**Stack:** Python services (runner, builder, sa_common) in a uv workspace. Postgres, Cloudflare R2, gRPC contract shared with `snake_sim` (separate repo, included as a dependency). Docker + gVisor for sandboxing. Hosted on Hetzner CCX13 eventually; currently developing locally and in an Ubuntu libvirt VM for sandbox testing. Solo developer; hobby / portfolio project; 200 SEK/month operating budget.
+**Stack:** Python services (runner, builder, orchestrator, api, sa_common) + React/TypeScript frontend in a uv workspace + npm workspace. Postgres, Redis (live WebSocket streaming only), Cloudflare R2 (bundles + backups), Clerk (auth), gRPC contract shared with `snake_sim` (separate repo, included as a dependency). Docker + gVisor for sandboxing. Hosted on Hetzner CCX13 eventually; currently developing locally and in an Ubuntu libvirt VM for sandbox testing. Solo developer; hobby / portfolio project; 200 SEK/month operating budget.
 
 **Architecture decisions already made** (do not re-litigate without new info — see project files for full rationale):
 - One VM, layered defense (gVisor + container hardening + per-agent internal networks), no per-match VMs.
@@ -18,7 +18,7 @@ Working on **snake_arena** — a competitive snake AI tournament platform.
 - Sim → runner is a TCP socket with length-prefixed protobuf, bidirectional (sim publishes step data, runner sends `KillAgent`).
 - `snake_sim` is a separate repo, included as a dependency in `snake_arena`.
 - No paid entry-fee tournaments — Swedish gambling law makes this incompatible with a side project.
-- No Redis, no Alembic, no Kubernetes, no AWS, no managed databases, no ORM at this stage.
+- Redis is used for live WebSocket streaming (pub/sub only — not a job queue). No Alembic, no Kubernetes, no AWS, no managed databases, no ORM at this stage.
 
 **Style:**
 - Push back when I'm wrong. No sugarcoating.

@@ -313,7 +313,7 @@ def _build_sim_args(args: argparse.Namespace) -> SimArgs:
     """Construct a SimArgs from CLI flags + optional --extra-sim-args JSON."""
     payload: dict[str, Any] = {
         "food": args.food,
-        "map_name": args.map_name,
+        "map": args.map_name,
         "grid_width": args.grid_width,
         "grid_height": args.grid_height,
     }

@@ -108,14 +108,12 @@ def main() -> None:
             build_timeout_s=args.build_timeout,
         )
         run_one, run_forever = run_test_iteration, run_test_forever
+        with get_conn(autocommit=True) as conn:
+            reset_stale_running_jobs(conn)
 
     else:
         # argparse `required=True` should prevent this
         raise RuntimeError(f"unknown command: {args.command}")
-
-    if args.command == "test-match":
-        with get_conn(autocommit=True) as conn:
-            reset_stale_running_jobs(conn)
 
     if args.once:
         _run_once(config, run_one, log)

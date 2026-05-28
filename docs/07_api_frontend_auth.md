@@ -83,9 +83,9 @@ Replays currently live on local disk in the artifacts directory. The API streams
 
 ### Package layout
 
-Separate top-level package: `services/frontend/`. Independent toolchain (Node/pnpm), independent build, independent CI.
+Top-level `frontend/` directory. Independent toolchain (Node/npm), independent build.
 
-The "frontend inside the API package" alternative was considered and rejected: the toolchains don't share anything (Python uv vs Node pnpm), so colocation buys nothing and costs cognitive overhead. The earlier "frontend inside API" idea only made sense for a non-Node path (Jinja + HTMX), which was rejected once "modern + mobile + LLM-built" was set as the goal.
+The "frontend inside the API package" alternative was considered and rejected: the toolchains don't share anything (Python uv vs Node npm), so colocation buys nothing and costs cognitive overhead. The earlier "frontend inside API" idea only made sense for a non-Node path (Jinja + HTMX), which was rejected once "modern + mobile + LLM-built" was set as the goal.
 
 ### Stack
 
@@ -219,25 +219,24 @@ Don't put captchas on API endpoints. Clerk handles bot mitigation on its signup 
 
 ---
 
-## Open Decisions
+## Resolved Decisions (from the original open list)
 
-Items deferred from this design pass, roughly in the order they'll need to be resolved:
+1. **Build flow** — No separate `build_jobs` table. The test-match daemon builds inline: it claims a `test_match_jobs` row, builds the dev image if needed, and runs the match in one flow. Build status is tracked on `projects.dev_build_status`.
 
-1. **`build_jobs` queue design.** The build flow needs its own table mirroring `match_jobs`, plus a builder daemon that polls it (same pattern as the orchestrator). Status enum, retry semantics, and how source code reaches the builder (DB blob? object storage? mounted volume?) all need to be worked out. Deserves its own design session before any `POST /submissions` work begins.
+2. **Clerk JWT verification** — Hand-rolled: `PyJWT` + JWKS caching via `httpx`. No `clerk-backend-api` dependency.
 
-2. **Specific endpoint paths and shapes.** The list above is a sketch. Final paths, query parameters, pagination, and request/response models get locked in per implementation chunk.
+3. **Code editor** — Monaco (via `@monaco-editor/react`).
 
-3. **Frontend production hosting.** Start with FastAPI mounting the built `dist/`; migrate to Cloudflare Pages when justified.
+4. **User sync** — Just-in-time provisioning: first API call from a new Clerk user inserts a `users` row. No webhooks.
 
-4. **User sync mechanism.** Just-in-time provisioning for v0; webhook-based sync if needed later, especially for handling deletions / GDPR requests.
+5. **Frontend production hosting** — TBD; start with FastAPI mounting the built `dist/` bundle.
 
-5. **Clerk JWT verification library.** `clerk-backend-api` (official) vs hand-rolled with `python-jose` + JWKS caching. Decide during implementation.
+## Still open
 
-6. **Per-user quota limits.** Specific numeric caps for matches/hour and builds/hour. Start permissive (e.g., 100 matches/hour) and tighten if abuse appears.
-
-7. **Clerk session lifetime configuration.** Default settings are likely fine; revisit if security or UX needs adjustment.
-
-8. **Code editor choice.** CodeMirror 6 vs Monaco for the in-browser code editor. Decide when building the submission UI.
+- **Per-user quota limits** — no hard caps implemented yet. Cloudflare rate limiting is the only layer active.
+- **Tournament scheduler** — not built.
+- **R2 wiring** — `IBundler` interface exists; R2 implementation and env wiring not done yet.
+- **Replay host / bundle URL** — `REPLAY_HOST` env var wired in settings; production CDN path not finalised.
 
 ---
 

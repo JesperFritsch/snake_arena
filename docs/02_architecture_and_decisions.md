@@ -8,8 +8,8 @@ Four concerns, deliberately separate even though some are merged into one proces
 
 1. **Build service** — turns user code into a runnable image. Input: code blob + language. Output: tagged image in the local Docker daemon.
 2. **Match runner** — executes a single match. Input: N image tags + match config. Output: replay file + `MatchResult`.
-3. **Scheduler / orchestrator** — decides *when* to run matches and *which*. Tournaments, test runs, ad-hoc. **Not yet built.**
-4. **State store** — Postgres. Tracks users, projects, code versions, submissions, matches, results.
+3. **Orchestrator** — decides *when* to run matches and *which*. Polls `match_jobs` (ranked) and `test_match_jobs` (dev test). Tournament scheduler not yet built.
+4. **State store** — Postgres. Tracks users, projects, matches, results.
 
 Both test mode and tournament mode share #1 (build) and #2 (run a match). They differ only in who triggers them and what data is loaded.
 
@@ -29,15 +29,15 @@ scheduler triggers tournament → fetch frozen submissions per user
 ## Versioning model
 
 ```
-User ──< Project ──< CodeVersion ──< SubmissionImage
+User ──< Project (dev state + submitted state on one row)
 ```
 
 - A user owns one or more projects (one project = one snake agent for v1).
-- A project has many code versions; every "save" produces one (autoincrementing per project).
-- **Not every save produces an image.** Only "submit" or "test run" triggers a build. Otherwise we'd build thousands of images per user.
-- For *test runs*, the image can be ephemeral (deleted after the match). For *tournament submissions*, the image is persisted and tagged with the version it was built from.
-
-This means: `SubmissionImage` references `CodeVersion`. You can always trace "what code produced this image."
+- A `projects` row carries **two parallel states**: a mutable `dev_*` side (editor draft + latest test build) and a frozen `submitted_*` side (pinned code archive, pinned image tag, version counter).
+- **Save** overwrites `dev_code_archive` and resets build status.
+- **Test** builds the dev image, runs a match. On success, status reaches `ready`.
+- **Submit** (requires `ready`) promotes dev → submitted: copies the code archive and image tag, bumps `submitted_version`. Later saves/builds don't touch the submitted side.
+- No separate `code_versions` or `submissions` tables. The version counter on the row is enough to reconstruct "version N of agent X played this match" from `match_participants.project_version`.
 
 ## Decisions made (do not re-debate without new info)
 

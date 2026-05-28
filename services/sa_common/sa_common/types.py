@@ -10,17 +10,19 @@ from snake_sim.analyze.scripts.run_analyzer import RunAnalysis
 class MatchResult:
     success: bool
     sim_logs: str | None = None
-    agent_logs: dict[str, str] | None = Field(default_factory={})
-    tags_to_names: dict[str, str] | None = Field(default_factory={})
+    agent_logs: dict[str, str] | None = None
+    tags_to_names: dict[str, str] | None = None
     run_analysis: RunAnalysis | None = None
     # Per-step stdout chunks for the dev agent (seat 0), split on the harness
     # step separator. Used to build the test-match console view.
     dev_agent_step_logs: list[str] | None = None
     # Per-step CPU times (ms) keyed by snake_id. snake_id → [ms per step].
     exec_times: dict[int, list[float]] | None = None
-    # CPU budget config (seconds) that was in force for this match. Lets a
-    # bundle reader reconstruct what counted as "over budget".
+    # CPU budget config (seconds) that was in force for this match.
     budgets: dict[str, float] | None = None
+    # Kill reason per seat: "per_step" | "sustained" | "wall_clock" |
+    # "sustained_wall" | "startup_cpu" | "init_failure" | "dead" | None
+    kill_reasons: dict[int, str | None] | None = None
     error: str | None = None
 
 

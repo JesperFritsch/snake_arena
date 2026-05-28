@@ -52,11 +52,11 @@ export function EditorPage() {
   const shortcutTestRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const dirty = serialize(files) !== originalSig;
+  const origFiles = JSON.parse(originalSig) as [string, string][];
   const dirtyPaths = new Set(
     files
       .filter((f) => {
-        const orig = JSON.parse(originalSig) as [string, string][];
-        const match = orig.find(([p]) => p === f.path);
+        const match = origFiles.find(([p]) => p === f.path);
         return !match || match[1] !== f.content;
       })
       .map((f) => f.path),

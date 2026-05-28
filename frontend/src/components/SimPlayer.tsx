@@ -21,6 +21,24 @@ interface Highlight {
   trappingIdx?: number; // only for trap kind
 }
 
+function parseHighlights(data: Uint8Array): Highlight[] {
+  const analysis = JSON.parse(new TextDecoder().decode(data)) as {
+    fatal_steps?: Record<string, number>;
+    traps_mapping?: Record<string, Array<{ trapped_ids: number[]; trapping_ids: number[] }>>;
+  };
+  const highlights: Highlight[] = [];
+  for (const [snakeId, step] of Object.entries(analysis.fatal_steps ?? {})) {
+    highlights.push({ step, kind: "death", snakeIdx: Number(snakeId) });
+  }
+  for (const [stepStr, trapInfos] of Object.entries(analysis.traps_mapping ?? {})) {
+    const step = Number(stepStr);
+    for (const trap of trapInfos) {
+      highlights.push({ step, kind: "trap", snakeIdx: trap.trapped_ids[0] ?? 0, trappingIdx: trap.trapping_ids[0] });
+    }
+  }
+  return highlights;
+}
+
 interface Props {
   job: TestMatchJob;
   onConsoleLog?: (log: string | null) => void;
@@ -162,21 +180,7 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
       const files = await fetchBundleFiles(jobId);
       const analysisFile = files["analysis.json"];
       if (!analysisFile) return;
-      const analysis = JSON.parse(new TextDecoder().decode(analysisFile)) as {
-        fatal_steps?: Record<string, number>;
-        traps_mapping?: Record<string, Array<{ trapped_ids: number[]; trapping_ids: number[] }>>;
-      };
-      const newHighlights: Highlight[] = [];
-      for (const [snakeId, step] of Object.entries(analysis.fatal_steps ?? {})) {
-        newHighlights.push({ step, kind: "death", snakeIdx: Number(snakeId) });
-      }
-      for (const [stepStr, trapInfos] of Object.entries(analysis.traps_mapping ?? {})) {
-        const step = Number(stepStr);
-        for (const trap of trapInfos) {
-          newHighlights.push({ step, kind: "trap", snakeIdx: trap.trapped_ids[0] ?? 0, trappingIdx: trap.trapping_ids[0] });
-        }
-      }
-      setHighlights(newHighlights);
+      setHighlights(parseHighlights(analysisFile));
     } catch {
       // highlights are non-critical
     }
@@ -228,23 +232,7 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
       const analysisFile = files["analysis.json"];
       if (analysisFile) {
         try {
-          const analysis = JSON.parse(new TextDecoder().decode(analysisFile)) as {
-            fatal_steps?: Record<string, number>;
-            traps_mapping?: Record<string, Array<{ trapped_ids: number[]; trapping_ids: number[] }>>;
-          };
-          const newHighlights: Highlight[] = [];
-          for (const [snakeId, step] of Object.entries(analysis.fatal_steps ?? {})) {
-            newHighlights.push({ step, kind: "death", snakeIdx: Number(snakeId) });
-          }
-          for (const [stepStr, trapInfos] of Object.entries(analysis.traps_mapping ?? {})) {
-            const step = Number(stepStr);
-            for (const trap of trapInfos) {
-              const snakeIdx = trap.trapped_ids[0] ?? 0;
-              const trappingIdx = trap.trapping_ids[0];
-              newHighlights.push({ step, kind: "trap", snakeIdx, trappingIdx });
-            }
-          }
-          setHighlights(newHighlights);
+          setHighlights(parseHighlights(analysisFile));
         } catch (err) {
           console.error("analysis.json parse error", err);
         }
@@ -342,7 +330,7 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
 
       ws.onerror = () => setStatus("error");
       ws.onclose = () => {
-        if (!cancelled && status === "live") setStatus("ended");
+        if (!cancelled) setStatus((s) => s === "live" ? "ended" : s);
       };
     });
 

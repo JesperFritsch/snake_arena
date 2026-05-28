@@ -25,35 +25,31 @@ Users, projects, code versions, submissions, matches, match participants, tourna
 
 Storage: **PostgreSQL**, running in a container on the VM.
 
-Planned schema (will evolve, see `05_database_and_schema.md` for current state):
+Actual schema (see `05_database_and_schema.md` and `migrations/001.sql` for details):
+
 ```
-users(id, email, created_at, ...)
-projects(id, user_id, name, language, created_at)
-code_versions(
-  id, project_id, version_num, code_blob, created_at,
-  parent_version_id  -- for branching history
-)
-submissions(
-  id, project_id, code_version_id, image_tag, status, language, created_at
-)  -- status: building | ready | failed | gc'd
-matches(
-  id, kind, status, scheduled_at, started_at, finished_at, error
-)  -- kind: test | tournament
-match_participants(
-  match_id, slot, submission_id, result, final_score, crashed
-)
-match_artifacts(
-  match_id, replay_r2_key, analysis_r2_key, size_bytes, created_at
-)
-tournaments(id, name, scheduled_at, status, ruleset)
-tournament_matches(tournament_id, match_id)
-sessions(id, user_id, expires_at)  -- if session-based auth
+users(id, clerk_user_id, email, display_name, created_at)
+projects(id, user_id, name, language, source,
+         dev_code_archive, dev_image_tag, dev_build_status, dev_built_at,
+         submitted_code_archive, submitted_image_tag, submitted_version, submitted_at,
+         created_at, updated_at)
+matches(id, match_uuid, status, mode, sim_args, started_at, finished_at,
+        bundle_key, error, is_test)
+match_participants(match_id, seat, project_id, project_version,
+                   final_length, fatal_step, survival_rank,
+                   killed_by_budget, metrics)
+match_jobs(id, status, project_ids, sim_args, requested_by, requested_at,
+           started_at, finished_at, match_id, error)
+test_match_jobs(id, status, player_project_id, opponent_project_ids, sim_args,
+                requested_by, requested_at, started_at, finished_at,
+                match_id, error, bundle_key, pinned)
 ```
 
-Notable design choices:
+Notable design choices that diverged from earlier plans:
 
-- **Source code lives in `code_versions.code_blob`.** Source files are small (KB), high-value, and benefit from being transactional with the project metadata. Splitting source into object storage would create consistency problems and add latency for the common case of "show me my project."
-- **`match_artifacts` stores R2 keys, not file contents.** Large binary artifacts go to object storage; the DB holds only the reference.
+- **No separate `code_versions` or `submissions` tables.** Both the iterative dev state and the frozen submitted state live on the `projects` row. `submitted_version` (integer counter) is the cross-match identity for history. This is simpler and sufficient for v1.
+- **`bundle_key` on `matches` / `test_match_jobs`, not a separate `match_artifacts` table.** One key per match, references a zip in the bundler store. Simpler than a join table; the zip itself contains replay, analysis, exec times, and logs.
+- **Source code lives in `projects.dev_code_archive` (BYTEA).** Same rationale as the original plan: small, high-value, transactional with project metadata.
 
 ### 2. Container images — submission artifacts
 
@@ -70,34 +66,32 @@ Rationale:
 
 One `.run_proto` per match. KB to low-MB each. Written once at match end, read occasionally (replay viewer, analysis), kept indefinitely or until garbage-collected.
 
-Storage: **Cloudflare R2** from day one.
+Storage: **Cloudflare R2** from day one (currently `LocalBundler` on disk for dev).
 
 Rationale:
 - **Egress is free on R2.** Replays will be served to browsers; replay-heavy users could otherwise burn the VM's bandwidth budget. Single biggest cost-protection decision in v1.
 - **Decoupled from VM lifecycle.** If the VM is destroyed, replays persist.
 - **Browser can fetch directly via presigned URL.** Saves the VM from proxying replay bytes on every view.
 
-Layout:
+Layout (actual):
 ```
-snake-arena/
-└── replays/<yyyy>/<mm>/<match-id>.run_proto
+matches/{match-uuid}/bundle.zip        # ranked match bundles
+test-matches/{job-id}/bundle.zip       # test match bundles
 ```
 
-Date-prefixed paths make bulk operations (e.g., "delete all matches from before 2025") trivial.
+Each `bundle.zip` contains `replay.json` (JSONL), `analysis.json`, `exec_times.json`, `budgets.json`, and optionally `agent_logs.json` (dev test matches).
+
+Date-keyed paths were considered but the match UUID / job ID is sufficient for addressing; date prefixes would add complexity with no operational benefit at v1.
 
 ### 4. Analysis output and highlights
 
 Derived from the replay file via the existing `run_analyzer` tool. Typically smaller than the replay itself (KB scale). Same write-once/read-occasionally pattern.
 
-Storage: **Cloudflare R2**, same bucket as replays, separate prefix.
-```
-snake-arena/
-└── analysis/<yyyy>/<mm>/<match-id>.json
-```
+Bundled inside the match's `bundle.zip` as `analysis.json` — not a separate R2 object. Colocated with the replay it was derived from.
 
 Rationale:
-- Same access pattern as replays — colocating simplifies retention policies.
-- Storing as JSON (not in Postgres) keeps the DB schema stable as the analyzer's output evolves. Adding new highlight types doesn't require migrations.
+- Same access pattern as the replay — always fetched together (the frontend loads the bundle once and reads both files from the zip).
+- Keeping it in Postgres would mean the schema changes as the analyzer's output evolves. Storing as JSON in the zip keeps the DB schema stable.
 - Trivially regeneratable from the replay if ever lost.
 
 ### 5. Operational logs
@@ -134,10 +128,9 @@ The general principle: persist only what is canonical or expensive to recompute.
 
 ### In Cloudflare R2
 ```
-snake-arena/
-├── replays/<yyyy>/<mm>/<match-id>.run_proto
-├── analysis/<yyyy>/<mm>/<match-id>.json
-└── backups/postgres/<yyyy-mm-dd>.dump
+matches/<match-uuid>/bundle.zip
+test-matches/<job-id>/bundle.zip
+backups/postgres/<yyyy-mm-dd>.dump
 ```
 
 ### Not on the VM (deliberately)

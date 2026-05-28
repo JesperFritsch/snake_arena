@@ -225,7 +225,7 @@ def run_match(
     *,
     router: Router,
     d_client: DockerClient,
-    match_id: str | None = None,
+    match_id: str,
     agent_mem_limit: str = "512m",
     agent_cpus: float = 1.0,
     agent_pids_limit: int = 128,
@@ -235,7 +235,6 @@ def run_match(
     on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
     on_result: Callable[[MatchResult], None] | None = None,
 ) -> MatchResult:
-    match_id = match_id or f"match-{uuid.uuid4().hex[:8]}"
     networks: list[Network] = []
     agent_containers: list[Container] = []
     sim_container: Container | None = None
@@ -451,6 +450,10 @@ def run_match(
                 else:
                     # Partial stdout exists on the kill step — prepend.
                     dev_step_logs[kill_step] = note + dev_step_logs[kill_step]
+        kill_reasons = {
+            seat: cpu_observer.get_kill_reason(seat)
+            for seat in range(len(agents))
+        }
         return _finish(MatchResult(
             success=exit_code == 0,
             sim_logs=sim_logs,
@@ -459,6 +462,7 @@ def run_match(
             dev_agent_step_logs=dev_step_logs,
             exec_times=cpu_observer.get_exec_times(),
             budgets=cpu_observer.get_budgets(),
+            kill_reasons=kill_reasons,
         ))
 
     finally:

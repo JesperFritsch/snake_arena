@@ -6,6 +6,7 @@ the same image runs in dev and prod with only the environment differing.
 """
 from __future__ import annotations
 
+import functools
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,7 @@ class Settings:
     pool_max_size: int = 8
 
 
+@functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return load_settings()
 

@@ -45,10 +45,6 @@ def _jwks_client() -> PyJWKClient:
 
 
 def decode_token(token: str) -> dict:
-    return _decode(token)
-
-
-def _decode(token: str) -> dict:
     settings = _settings()
     try:
         signing_key = _jwks_client().get_signing_key_from_jwt(token)
@@ -74,7 +70,7 @@ def get_current_user(
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
     conn: Connection = Depends(get_db),
 ) -> User:
-    claims = _decode(creds.credentials)
+    claims = decode_token(creds.credentials)
 
     clerk_user_id = claims.get("sub")
     email = claims.get("email")

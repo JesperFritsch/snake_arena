@@ -82,7 +82,7 @@ def _decode_files(files: list[ProjectFile]) -> list[tuple[str, bytes]]:
     """Decode wire files to (path, bytes), enforcing count/size limits."""
     if len(files) > _MAX_FILES:
         raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status.HTTP_413_CONTENT_TOO_LARGE,
             f"too many files (max {_MAX_FILES})",
         )
     decoded: list[tuple[str, bytes]] = []
@@ -101,7 +101,7 @@ def _decode_files(files: list[ProjectFile]) -> list[tuple[str, bytes]]:
         total += len(data)
         if total > _MAX_DECODED_BYTES:
             raise HTTPException(
-                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status.HTTP_413_CONTENT_TOO_LARGE,
                 f"project too large (max {_MAX_DECODED_BYTES} bytes uncompressed)",
             )
         decoded.append((f.path, data))
@@ -117,7 +117,7 @@ def _pack(files: list[ProjectFile]) -> bytes:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     if len(archive) >= _MAX_ARCHIVE_BYTES:
         raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status.HTTP_413_CONTENT_TOO_LARGE,
             "packed project exceeds storage limit",
         )
     return archive
@@ -324,8 +324,8 @@ async def upload_image(
     size = file.size or 0
     if size > _MAX_IMAGE_BYTES:
         raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            f"image too large (max {_MAX_IMAGE_BYTES // 1024 // 1024 // 1024} GB)",
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            f"image too large (max {_MAX_IMAGE_BYTES // 1024 // 1024} MB)",
         )
 
     try:
@@ -337,9 +337,6 @@ async def upload_image(
         loaded = client.images.load(file.file)
     except DockerException as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"failed to load image: {e}")
-
-    if not loaded:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty file")
 
     if not loaded:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no images found in tarball")

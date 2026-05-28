@@ -4,7 +4,7 @@ Detailed notes on each subsystem, written for someone (or some future Claude) wa
 
 ## Match runner
 
-Located at `services/runner/`. Currently a Python function + CLI; future versions will poll a jobs table.
+Located at `services/runner/`. A Python function (`run_match`) called by the orchestrator daemons; also has a CLI for manual invocation.
 
 ### Responsibilities of `run_match`
 
@@ -19,8 +19,9 @@ Located at `services/runner/`. Currently a Python function + CLI; future version
 7. Wait for the sim container to exit (with hard match-level wall-clock timeout as backstop).
 8. Read the replay file from the mounted artifacts volume.
 9. Tear down: stop all containers, remove all networks. Always run cleanup, even on exceptions.
-10. Return a `MatchResult` (winner, scores, replay path, per-agent stats, crash flags, sim exit code).
-11. After computing the result, best-effort persist to Postgres via `sa_common.db.record_match_result`. Wrapped in try/except — DB failure must not fail the match.
+10. Return a `MatchResult` (success flag, replay data, per-agent stats, kill reasons, exec times, error).
+
+The orchestrator owns DB writes. The runner is pure execution: it returns a `MatchResult` and the caller decides what to persist.
 
 ### Failure modes are expected outcomes, not exceptions
 
@@ -34,18 +35,20 @@ The runner returns a `MatchResult` for any input. It never propagates a crash fr
 - Match exceeds wall-clock limit.
 - Sandbox escape attempt (logged, treated as crash).
 
-### Artifacts directory
+### Replay capture
 
-A host directory is bind-mounted into the sim and agents at `/tmp` (so the sim can write replays and agents can write logs). The runner sets the permissions on the host dir before the mount so the in-container uid can write to it.
+The replay is captured in-process by a `FilePersistObserver` (a `ILoopObserver` that writes JSONL to a temp file as step messages arrive). No bind-mounted artifacts volume. After the match the orchestrator assembles a bundle zip containing:
 
-Layout under the artifacts host dir per match:
 ```
-artifacts/
-├── runs/                      # replay protos (.run_proto)
-├── <match-id>-agent1.log
-├── <match-id>-agent2.log
-└── <match-id>-sim.log
+bundle.zip
+├── replay.json      # JSONL, one {type, data} message per line
+├── analysis.json    # run_analyzer output (fatal_steps, traps_mapping, ...)
+├── exec_times.json  # per-snake per-step CPU times
+├── budgets.json     # AgentContainerManager knob snapshot
+└── agent_logs.json  # dev agent step logs (test matches only)
 ```
+
+The bundle is stored via `IBundler` (`LocalBundler` in dev, R2 in prod) and a `bundle_key` reference is written to the DB row.
 
 ### Cleanup guarantees
 
@@ -165,11 +168,15 @@ The cgroup poll has to happen every ~10 ms reliably. With one thread per contain
 
 The sim still has a wall-clock match timeout (~60 seconds, very loose). It is not the fairness mechanism; it exists only to prevent infinite hangs if the runner crashes or the socket dies. Real fairness lives in the runner.
 
-## Job orchestration (planned, not built)
+## Orchestrator (`services/orchestrator/`)
 
-- Polling, not pub/sub. A `jobs` table in Postgres with `(id, kind, status, payload, created_at, started_at, finished_at, error)`.
-- Runner becomes a worker loop: `LOOP { take a job; run it; mark done; sleep if empty }`. Single worker per host at v1.
-- `kind` field decides what to do: `test_match`, `tournament_match`, etc.
-- Test runs (user-triggered, latency-sensitive) and tournament runs (background) can share the table; tournaments get lower priority.
+Two daemons share the orchestrator CLI (`orchestrator match` and `orchestrator test-match`):
 
-Redis-as-queue was considered and rejected: more infra, lower latency than is actually needed at this scale. Postgres polling is ~10 lines of code.
+- **`match` daemon** — polls `match_jobs` (ranked matches). Claims jobs with `FOR UPDATE SKIP LOCKED`, calls `run_match`, writes results and flips job status in one atomic transaction.
+- **`test-match` daemon** — polls `test_match_jobs` (user-initiated dev runs). Builds the dev image inline if needed, calls `run_match`, streams live frames over Redis pub/sub to the WebSocket endpoint, then stores the bundle and persists results.
+
+Both support `--once` (process one job then exit, useful for tests) and daemon mode (polls forever, handles `SIGTERM` gracefully).
+
+Redis is used only for the live WebSocket streaming path (test matches). It is **not** used as a job queue; that's Postgres.
+
+Stale `running` jobs: if the process dies mid-match, the job stays `running`. The test-match daemon calls `reset_stale_running_jobs` at startup. The ranked match daemon has a manual recovery note but no automatic heartbeat reaper yet.

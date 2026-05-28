@@ -20,7 +20,7 @@ export class SimStore {
   private steps: SimStepData[] = [];
   private finalStep: number | null = null;
   annotations: Annotation[] = [];
-  private agentLogs: Record<string, string[]> | null = null;
+  private agentLogs: string[] | null = null;
   private execTimesPerStep: Record<string, number>[] = [];
 
   /** Renderable frames: frame 0 is the start state, then one per step. */
@@ -46,9 +46,8 @@ export class SimStore {
         this.finalStep = msg.data.final_step;
         break;
       case "step_log": {
-        if (!this.agentLogs) this.agentLogs = { "0": [] };
-        const chunks = this.agentLogs["0"] ?? (this.agentLogs["0"] = []);
-        chunks[msg.data.step] = msg.data.log;
+        if (!this.agentLogs) this.agentLogs = [];
+        this.agentLogs[msg.data.step] = msg.data.log;
         break;
       }
       case "exec_time":
@@ -68,7 +67,7 @@ export class SimStore {
    * banner visible, fall back to the most recent banner-prefixed entry
    * whenever the current step has no log of its own. */
   getDevLogs(stepIndex: number): string | null {
-    const chunks = this.agentLogs?.["0"];
+    const chunks = this.agentLogs;
     if (!chunks) return null;
     const direct = chunks[stepIndex];
     if (direct) return direct;

@@ -61,8 +61,6 @@ def bundler_from_env() -> IBundler:
     BUNDLE_DIR (where to write), the API REPLAY_HOST (where the browser reads)."""
     backend = os.environ.get("BUNDLER_BACKEND", "disk")
     if backend == "disk":
-        base_dir = os.environ.get("BUNDLE_DIR") or os.environ.get(
-            "ORCHESTRATOR_ARTIFACTS_DIR", "./sim-artifacts"
-        )
+        base_dir = os.environ.get("BUNDLE_DIR", "./sim-artifacts")
         return DiskBundler(base_dir=base_dir, public_base_url=os.environ.get("REPLAY_HOST"))
     raise ValueError(f"unknown BUNDLER_BACKEND: {backend!r}")

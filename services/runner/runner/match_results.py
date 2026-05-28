@@ -13,6 +13,8 @@ from sa_common.types import MatchResult, ParticipantRow
 
 log = logging.getLogger(__name__)
 
+_BUDGET_KILL_REASONS = {"per_step", "sustained", "wall_clock", "sustained_wall", "startup_cpu"}
+
 
 def build_participants(
     result: MatchResult,
@@ -69,7 +71,6 @@ def build_participants(
     for sid in snake_ids:
         agent_tag = snake_tags.get(sid)
         agent_name = tags_to_names.get(agent_tag)
-        print(agent_name, seat_by_agent_name)
         if agent_name is None or agent_name not in seat_by_agent_name:
             log.warning(
                 "snake_id %s has no setup mapping (tag=%r); skipping",
@@ -78,15 +79,17 @@ def build_participants(
             )
             continue
 
+        seat = seat_by_agent_name[agent_name]
+        kill_reason = result.kill_reasons.get(seat) if result.kill_reasons else None
         participants.append(
             ParticipantRow(
-                seat=seat_by_agent_name[agent_name],
+                seat=seat,
                 project_id=project_by_agent_name[agent_name],
                 project_version=version_by_agent_name[agent_name],
                 final_length=None,  # TODO: pull from analysis once API confirmed
                 fatal_step=fatal_steps.get(sid),
                 survival_rank=rank_of_snake[sid],
-                killed_by_budget=False,  # TODO: surface from CpuBudgetObserver
+                killed_by_budget=kill_reason in _BUDGET_KILL_REASONS,
                 metrics={},
             )
         )

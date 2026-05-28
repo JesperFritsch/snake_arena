@@ -166,7 +166,7 @@ def list_projects_for_user(conn: Connection, user_id: int) -> list[ProjectMeta]:
 
 def list_all_submitted(conn: Connection) -> list[PublicProjectSummary]:
     """All projects with a submitted version, any user — for opponent selection."""
-    with conn.cursor(row_factory=dict_row) as cur:
+    with conn.cursor(row_factory=class_row(PublicProjectSummary)) as cur:
         cur.execute(
             """
             SELECT p.id, p.name, p.language, p.submitted_version, p.submitted_at,
@@ -177,17 +177,7 @@ def list_all_submitted(conn: Connection) -> list[PublicProjectSummary]:
             ORDER BY p.submitted_at DESC
             """
         )
-        return [
-            PublicProjectSummary(
-                id=row["id"],
-                name=row["name"],
-                language=row["language"],
-                submitted_version=row["submitted_version"],
-                submitted_at=row["submitted_at"],
-                user_display_name=row["user_display_name"],
-            )
-            for row in cur.fetchall()
-        ]
+        return cur.fetchall()
 
 
 # --------------------------------------------------------------------------

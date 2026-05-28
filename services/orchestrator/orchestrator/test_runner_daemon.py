@@ -59,6 +59,14 @@ d_client = docker.from_env()
 router = router_from_env(d_client)
 
 
+def _delete_pruned_bundles(bundler: IBundler, keys: list[str]) -> None:
+    for key in keys:
+        try:
+            bundler.delete(key)
+        except Exception:
+            log.warning("failed to delete pruned bundle %s", key, exc_info=True)
+
+
 class TestRunnerDaemonConfig:
     def __init__(
         self,
@@ -102,7 +110,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
     # recording). Created here so the finally block can close it.
     file_observer = FilePersistObserver(store_dir=work_dir, filename="replay.json")
 
-    terminal_status: str | None = None  # finally publishes this if not already done
+    terminal_status = "failure"  # finally publishes this if not already done
     published_terminal = False
 
     def on_match_result(result) -> None:
@@ -242,11 +250,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 bundle_key=saved_key,
             )
             pruned_keys = prune_unpinned_test_jobs(conn, job.player_project_id)
-        for key in pruned_keys:
-            try:
-                config.bundler.delete(key)
-            except Exception:
-                log.warning("failed to delete pruned bundle %s", key, exc_info=True)
+        _delete_pruned_bundles(config.bundler, pruned_keys)
 
         terminal_status = "success" if result.success else "failure"
         # Publish terminal status only after the DB row is in a terminal state +
@@ -257,29 +261,17 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
 
     except SetupError as e:
         log.warning("test job id=%d setup failed: %s", job.id, e)
-        pruned_keys: list[str] = []
         with conn.transaction():
             mark_test_job_failure(conn, job.id, f"setup: {e}")
             pruned_keys = prune_unpinned_test_jobs(conn, job.player_project_id)
-        for key in pruned_keys:
-            try:
-                config.bundler.delete(key)
-            except Exception:
-                log.warning("failed to delete pruned bundle %s", key, exc_info=True)
-        terminal_status = "failure"
+        _delete_pruned_bundles(config.bundler, pruned_keys)
 
     except Exception as e:
         log.exception("test job id=%d crashed during execution", job.id)
-        pruned_keys = []
         with conn.transaction():
             mark_test_job_failure(conn, job.id, repr(e))
             pruned_keys = prune_unpinned_test_jobs(conn, job.player_project_id)
-        for key in pruned_keys:
-            try:
-                config.bundler.delete(key)
-            except Exception:
-                log.warning("failed to delete pruned bundle %s", key, exc_info=True)
-        terminal_status = "failure"
+        _delete_pruned_bundles(config.bundler, pruned_keys)
 
     finally:
         # Terminal status closes the WS for live viewers. The success path
@@ -287,7 +279,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         # for paths that never got there (build failure, setup error, crash).
         try:
             if not published_terminal:
-                observer.publish_status(terminal_status or "failure")
+                observer.publish_status(terminal_status)
         except Exception:
             log.warning("failed to publish terminal status for job id=%d", job.id, exc_info=True)
         try:
