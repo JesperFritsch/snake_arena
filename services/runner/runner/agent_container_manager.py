@@ -67,8 +67,9 @@ class _AgentTracker:
     in_startup: bool = True
     killed: bool = False
     # One of: None (alive / clean exit), "startup_cpu", "per_step",
-    # "sustained", "wall_clock", "sustained_wall", "init_failure", "dead".
-    # Used so the runner can explain a kill to the dev agent's console.
+    # "sustained", "wall_clock", "sustained_wall", "init_failure", "dead",
+    # "post_dev_cleanup". Used so the runner can explain a kill to the
+    # dev agent's console.
     kill_reason: str | None = None
 
 
@@ -178,6 +179,12 @@ class AgentContainerManager(ILoopObserver):
         # Without it, `container.kill()` is async at the docker level and
         # the snake may answer 1–2 more steps before the kill takes effect.
         on_seat_killed: Callable[[int], None] | None = None,
+        # For test matches: once the dev agent (seat 0) dies, end the
+        # match for the opponents after this many *additional* sim steps
+        # so the replay still shows a few frames of context after the
+        # death. None disables the behavior (use for ranked/regular
+        # matches where the rest of the bracket should keep playing).
+        kill_opponents_after_dev_dies_steps: int | None = None,
     ):
         super().__init__()
         self._name_to_container = snake_name_to_container
@@ -213,6 +220,11 @@ class AgentContainerManager(ILoopObserver):
         self._poll_interval_s = poll_interval_s
         self._on_exec_times = on_exec_times
         self._on_seat_killed = on_seat_killed
+        self._kill_opp_after_dev_dies_steps = kill_opponents_after_dev_dies_steps
+        # First sim step number at which seat 0 was observed dead. Set
+        # once and used as the reference point for the opponent-cleanup
+        # deadline above.
+        self._dev_died_at_step: int | None = None
 
         self._trackers: dict[int, _AgentTracker] = {}
         self._exec_times_ms: dict[int, list[float]] = {}  # snake_id → [cpu ms per step]
@@ -414,6 +426,28 @@ class AgentContainerManager(ILoopObserver):
                     tracker.killed = True
                     tracker.kill_reason = "dead"
                     self._kill_seat(snake_id)
+
+            # Test-match opponent cleanup. Once the dev agent (seat 0) is
+            # dead, give the replay a few more frames of context so the
+            # user can see what happened, then end the match by killing
+            # any opponents that are still running. Caller's contract
+            # when enabling this knob is that seat 0 exists — let a
+            # KeyError surface loudly if that's ever violated.
+            if self._kill_opp_after_dev_dies_steps is not None and self._trackers[0].killed:
+                if self._dev_died_at_step is None:
+                    self._dev_died_at_step = data.step
+                elif data.step - self._dev_died_at_step >= self._kill_opp_after_dev_dies_steps:
+                    for seat, t in self._trackers.items():
+                        if seat == 0 or t.killed:
+                            continue
+                        log.info(
+                            "test match: dev died at step %d, "
+                            "ending opponent seat %d at step %d",
+                            self._dev_died_at_step, seat, data.step,
+                        )
+                        t.killed = True
+                        t.kill_reason = "post_dev_cleanup"
+                        self._kill_seat(seat)
         if step_times and self._on_exec_times is not None:
             try:
                 self._on_exec_times(data.step, step_times)
@@ -454,8 +488,8 @@ class AgentContainerManager(ILoopObserver):
     def get_kill_reason(self, seat: int) -> str | None:
         """Why the given seat's container was killed, if it was. One of
         "startup_cpu", "per_step", "sustained", "wall_clock", "sustained_wall",
-        "init_failure", "dead", or None if the agent ran to clean completion
-        / is still alive."""
+        "init_failure", "dead", "post_dev_cleanup", or None if the agent
+        ran to clean completion / is still alive."""
         with self._lock:
             tracker = self._trackers.get(seat)
             return tracker.kill_reason if tracker else None

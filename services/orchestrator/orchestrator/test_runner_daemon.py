@@ -195,6 +195,11 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             on_step_log=observer.publish_step_log,
             on_exec_times=observer.publish_exec_time,
             on_result=on_match_result,
+            # Test matches are dev-agent-centric: when the dev (seat 0)
+            # is out, the bundle's remaining frames are just opponent
+            # noise. Keep 5 extra frames of context for the replay then
+            # end the match.
+            kill_opponents_after_dev_dies_steps=5,
         )
 
         # Flush the in-process replay writer before reading the file back.

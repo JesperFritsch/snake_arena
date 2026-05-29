@@ -60,6 +60,8 @@ services:
       BUILDER_REGISTRY_PREFIX:  snake
       BUILDER_BUILD_TIMEOUT_S:  "60"
       SANDBOX_IMAGES_DIR:       /app/sandbox-images
+    env_file:
+      - .env  # for STEP_CPU_BUDGET_MS and any other overrides
     volumes:
       - *vol-docker-sock
       - *vol-cgroup
@@ -78,6 +80,8 @@ services:
     cgroup: host
     environment:
       <<: [*orchestrator-env, *bundler-env]
+    env_file:
+      - .env  # for RANKED_MATCH_STEP_CPU_BUDGET_MS and any other overrides
     volumes:
       - *vol-docker-sock
       - *vol-cgroup

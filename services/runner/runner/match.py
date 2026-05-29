@@ -286,6 +286,11 @@ def run_match(
     on_step_log: Callable[[int, str], None] | None = None,
     on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
     on_result: Callable[[MatchResult], None] | None = None,
+    # Test-match opponent cleanup: once seat 0 (the dev agent) dies,
+    # end the match for any remaining opponents after this many extra
+    # sim steps. None disables (use for ranked / multi-agent matches
+    # where the bracket should keep playing).
+    kill_opponents_after_dev_dies_steps: int | None = None,
 ) -> MatchResult:
     networks: list[Network] = []
     agent_containers: list[Container] = []
@@ -459,6 +464,7 @@ def run_match(
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
             on_seat_killed=_disconnect_sim_from_seat,
+            kill_opponents_after_dev_dies_steps=kill_opponents_after_dev_dies_steps,
         )
         cpu_observer.set_agent_containers(seat_to_container)
         for obs in (extra_observers or []):
