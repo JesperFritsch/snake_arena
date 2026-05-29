@@ -150,6 +150,7 @@ def main() -> None:
             redis_url=_env_or(args.redis_url, "REDIS_URL"),
             registry_prefix=_env_or(args.registry_prefix, "BUILDER_REGISTRY_PREFIX"),
             build_timeout_s=_env_or(args.build_timeout, "BUILDER_BUILD_TIMEOUT_S", int),
+            test_per_step_budget_seconds=_env_or(args.step_cpu_budget_ms, "STEP_CPU_BUDGET_MS", lambda x: x / 1000),
         )
         run_one, run_forever = run_test_iteration, run_test_forever
         with get_conn(autocommit=True) as conn:
