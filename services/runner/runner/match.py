@@ -410,6 +410,30 @@ def run_match(
         # Notify all observers (cpu + extra) that containers are ready so they
         # can start monitoring from the very first gRPC init call.
         seat_to_container = {i: c for i, c in enumerate(agent_containers)}
+
+        def _disconnect_sim_from_seat(seat_id: int) -> None:
+            # Fired by AgentContainerManager just before it kills a snake's
+            # container. `container.kill()` is async — docker daemon →
+            # containerd → SIGKILL delivery adds ~10–50 ms of latency, and
+            # in that window the sim is happily exchanging gRPC frames
+            # with the (still-alive) snake. Disconnecting the sim from
+            # this snake's private network breaks that TCP connection
+            # right away, so the sim's next request fails with
+            # ConnectionError instead of getting a valid (and now-banned)
+            # decision back.
+            if sim_container is None:
+                return  # sim not started yet — pre-match init_failure path
+            if seat_id >= len(agent_containers):
+                return
+            net = networks[seat_id]
+            try:
+                net.disconnect(sim_container, force=True)
+            except (NotFound, APIError) as e:
+                log.debug(
+                    "disconnect sim from seat %d network failed: %s",
+                    seat_id, e,
+                )
+
         cpu_observer = AgentContainerManager(
             snake_name_to_container=target_to_container,
             per_step_budget_seconds=per_step_budget_seconds,
@@ -434,6 +458,7 @@ def run_match(
             wall_accumulating_max_seconds=per_step_budget_seconds * 20,
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
+            on_seat_killed=_disconnect_sim_from_seat,
         )
         cpu_observer.set_agent_containers(seat_to_container)
         for obs in (extra_observers or []):
@@ -511,21 +536,26 @@ def run_match(
         if agent_containers:
             note = _budget_kill_note(cpu_observer.get_kill_reason(0), cpu_observer.get_budgets())
             if note:
-                # kill_step = number of notify_step events the dev agent
-                # survived. Equivalently, the index of the step it died on.
-                kill_step = len(cpu_observer.get_exec_times().get(0, []))
+                # Land the banner *at or after* the last step the agent
+                # actually emitted output for. Two cases the max() handles:
+                #   – manager processed N notify_steps but the agent ran
+                #     M > N steps before `container.kill()` actually took
+                #     effect (docker-kill latency, see match.py:Fix-B).
+                #     Anchor on M so the banner doesn't land mid-log with
+                #     real "step!" output dangling after it.
+                #   – agent died before printing as many steps as the
+                #     manager saw (M < N). Pad with empty chunks so the
+                #     banner still lands at the manager's view of the
+                #     kill step (consistent with replay frame indexing).
                 if dev_step_logs is None:
                     dev_step_logs = []
-                # Pad with empty chunks up to kill_step if the harness emitted
-                # fewer separators than completed steps (defensive).
+                kill_step = max(
+                    len(cpu_observer.get_exec_times().get(0, [])),
+                    len(dev_step_logs),
+                )
                 while len(dev_step_logs) < kill_step:
                     dev_step_logs.append("")
-                if len(dev_step_logs) == kill_step:
-                    # No partial stdout on the kill step — add a new entry.
-                    dev_step_logs.append(note)
-                else:
-                    # Partial stdout exists on the kill step — prepend.
-                    dev_step_logs[kill_step] = note + dev_step_logs[kill_step]
+                dev_step_logs.append(note)
         kill_reasons = {
             seat: cpu_observer.get_kill_reason(seat)
             for seat in range(len(agents))

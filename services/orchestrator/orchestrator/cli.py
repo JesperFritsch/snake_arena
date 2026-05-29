@@ -89,6 +89,10 @@ def main() -> None:
         "--once", action="store_true",
         help="Process at most one job, then exit. Exit 2 if queue is empty.",
     )
+    p_match.add_argument(
+        "--step-cpu-budget-ms", type=int, default=None,
+        help="Override per-step CPU budget for ranked matches (env: STEP_CPU_BUDGET_MS)",
+    )
 
     p_test = subparsers.add_parser("test-match", help="run queued dev test matches")
     p_test.add_argument("--sim-image",      default=None)
@@ -98,6 +102,10 @@ def main() -> None:
     p_test.add_argument(
         "--once", action="store_true",
         help="Process at most one job, then exit. Exit 2 if queue is empty.",
+    )
+    p_test.add_argument(
+        "--step_cpu_budget_ms", type=int, default=None,
+        help="Override per-step CPU budget for test matches (env: STEP_CPU_BUDGET_MS)",
     )
 
     p_scorer = subparsers.add_parser(

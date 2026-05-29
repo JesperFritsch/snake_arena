@@ -171,6 +171,13 @@ class AgentContainerManager(ILoopObserver):
         wall_accumulating_max_seconds: float = 1.0,
         poll_interval_s: float = 0.01,
         on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
+        # Called synchronously before the snake's container is killed.
+        # Use it to break the sim's network connection to the snake (e.g.
+        # disconnect sim_container from the snake's private docker network)
+        # so the sim can't get any more responses out of the dying snake.
+        # Without it, `container.kill()` is async at the docker level and
+        # the snake may answer 1–2 more steps before the kill takes effect.
+        on_seat_killed: Callable[[int], None] | None = None,
     ):
         super().__init__()
         self._name_to_container = snake_name_to_container
@@ -205,6 +212,7 @@ class AgentContainerManager(ILoopObserver):
         self._last_notify_step_wall_ns: int = 0
         self._poll_interval_s = poll_interval_s
         self._on_exec_times = on_exec_times
+        self._on_seat_killed = on_seat_killed
 
         self._trackers: dict[int, _AgentTracker] = {}
         self._exec_times_ms: dict[int, list[float]] = {}  # snake_id → [cpu ms per step]
@@ -296,7 +304,7 @@ class AgentContainerManager(ILoopObserver):
                     log.info("seat %d absent from match start (init failure) — killing container", seat)
                     tracker.killed = True
                     tracker.kill_reason = "init_failure"
-                    self._kill_container(tracker.container)
+                    self._kill_seat(seat)
 
         if self._thread is None or not self._thread.is_alive():
             self._stop_event.clear()
@@ -373,7 +381,7 @@ class AgentContainerManager(ILoopObserver):
                         )
                         tracker.killed = True
                         tracker.kill_reason = "sustained"
-                        self._kill_container(tracker.container)
+                        self._kill_seat(snake_id)
                         continue
 
                 if self._wall_accumulating_enabled and response_wall_ns > 0:
@@ -398,14 +406,14 @@ class AgentContainerManager(ILoopObserver):
                         )
                         tracker.killed = True
                         tracker.kill_reason = "sustained_wall"
-                        self._kill_container(tracker.container)
+                        self._kill_seat(snake_id)
                         continue
 
                 if not data.alive_states.get(snake_id, False):
                     log.info("snake %s (%s) is dead — killing container", snake_id, tracker.name)
                     tracker.killed = True
                     tracker.kill_reason = "dead"
-                    self._kill_container(tracker.container)
+                    self._kill_seat(snake_id)
         if step_times and self._on_exec_times is not None:
             try:
                 self._on_exec_times(data.step, step_times)
@@ -598,7 +606,7 @@ class AgentContainerManager(ILoopObserver):
                             )
                             tracker.killed = True
                             tracker.kill_reason = "startup_cpu" if tracker.in_startup else "per_step"
-                            self._kill_container(tracker.container)
+                            self._kill_seat(snake_id)
                             continue
                         # Wall ≫ cpu — skip the kill, wait for the next
                         # notify_step (accumulating budget will catch it
@@ -653,7 +661,7 @@ class AgentContainerManager(ILoopObserver):
                                 )
                                 tracker.kill_reason = "wall_clock"
                             tracker.killed = True
-                            self._kill_container(tracker.container)
+                            self._kill_seat(snake_id)
                             continue
 
                     # Projected sustained CPU kill: replicates the bank
@@ -695,7 +703,7 @@ class AgentContainerManager(ILoopObserver):
                             )
                             tracker.killed = True
                             tracker.kill_reason = "sustained"
-                            self._kill_container(tracker.container)
+                            self._kill_seat(snake_id)
                             continue
 
                     # Projected sustained wall kill: same idea as the CPU
@@ -736,7 +744,7 @@ class AgentContainerManager(ILoopObserver):
                             )
                             tracker.killed = True
                             tracker.kill_reason = "sustained_wall"
-                            self._kill_container(tracker.container)
+                            self._kill_seat(snake_id)
                             continue
 
             self._stop_event.wait(self._poll_interval_s)
@@ -771,6 +779,22 @@ class AgentContainerManager(ILoopObserver):
             return -1
 
         return -1
+
+    def _kill_seat(self, seat_id: int) -> None:
+        """Kill the snake's container, firing on_seat_killed first so the
+        caller can drop the sim→snake network connection synchronously.
+        Without that hook, container.kill() is async enough that the sim
+        can keep getting valid responses from the dying snake for a step
+        or two — see Match46 / fix-B in match.py."""
+        tracker = self._trackers.get(seat_id)
+        if tracker is None:
+            return
+        if self._on_seat_killed is not None:
+            try:
+                self._on_seat_killed(seat_id)
+            except Exception:
+                log.warning("on_seat_killed hook for seat %d failed", seat_id, exc_info=True)
+        self._kill_container(tracker.container)
 
     @staticmethod
     def _kill_container(container: Container) -> None:
