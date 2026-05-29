@@ -38,20 +38,13 @@ def build_participants(
         A list of ParticipantRow, one per participating agent. May be empty
         if the match has no usable participation data at all.
     """
-    if not result.run_analysis:
-        # No analysis: record participation with what we know from setup.
-        # Per-snake outcomes (fatal_step, survival_rank, final_length) stay None.
-        log.warning("building participants without run_analysis (best-effort)")
-        return [
-            ParticipantRow(
-                seat=seat_by_agent_name[name],
-                project_id=project_by_agent_name[name],
-                project_version=version_by_agent_name[name],
-            )
-            for name in result.agent_logs.keys()
-            if name in seat_by_agent_name  # skip anything we didn't set up
-        ]
-
+    # run_analysis is required — a "successful" match without it would silently
+    # produce participant rows with no per-snake outcomes (length/rank/step all
+    # None), which the leaderboard then can't score. Callers must catch this if
+    # they want to record partial state; the runner_daemon currently fails the
+    # job, which is the right call.
+    if result.run_analysis is None:
+        raise ValueError("build_participants requires result.run_analysis")
     analysis = result.run_analysis
     tags_to_names = result.tags_to_names
     snake_tags = analysis.env_meta_data.snake_tags  # snake_id -> agent_name

@@ -69,16 +69,20 @@ def _tail_log(text: str, budget: int = _STARTUP_LOG_BUDGET) -> str:
 def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str | None:
     """Human-readable banner explaining why the dev agent was killed,
     prepended to the dev agent's last step log. Returns None for kills that
-    don't need a banner (clean exit, snake-died-in-game)."""
+    don't need a banner (clean exit, snake-died-in-game).
+
+    `budgets` is the dict from AgentContainerManager.get_budgets(); every
+    key referenced below is unconditionally written by that producer.
+    """
     if kill_reason == "per_step":
-        ms = budgets.get("per_step_seconds", 0) * 1000
+        ms = budgets["per_step_seconds"] * 1000
         return (
             f"=== Agent killed: exceeded the per-step CPU budget "
             f"(~{ms:.0f} ms in one step). ===\n"
         )
     if kill_reason == "sustained":
-        step_ms = budgets.get("accumulating_step_seconds", 0) * 1000
-        max_ms = budgets.get("accumulating_max_seconds", 0) * 1000
+        step_ms = budgets["accumulating_step_seconds"] * 1000
+        max_ms = budgets["accumulating_max_seconds"] * 1000
         return (
             f"=== Agent killed: exceeded the sustained CPU budget "
             f"(long-run average above {step_ms:.0f} ms/step; up to "
@@ -92,8 +96,8 @@ def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str
             "sleeping or blocked on I/O instead of computing — don't sleep. ===\n"
         )
     if kill_reason == "sustained_wall":
-        step_ms = budgets.get("wall_accumulating_step_seconds", 0) * 1000
-        max_ms = budgets.get("wall_accumulating_max_seconds", 0) * 1000
+        step_ms = budgets["wall_accumulating_step_seconds"] * 1000
+        max_ms = budgets["wall_accumulating_max_seconds"] * 1000
         return (
             f"=== Agent killed: exceeded the sustained wall-clock budget "
             f"(non-CPU wall time grew faster than {step_ms:.0f} ms/step; "
@@ -101,7 +105,7 @@ def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str
             f"sleeping just under the per-step wall-clock limit. ===\n"
         )
     if kill_reason == "startup_cpu":
-        ms = budgets.get("startup_seconds", 0) * 1000
+        ms = budgets["startup_seconds"] * 1000
         return (
             f"=== Agent killed during startup: exceeded the startup CPU "
             f"budget (~{ms:.0f} ms). Agent constructor + gRPC init must "
@@ -116,12 +120,12 @@ def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str
     return None
 
 
-def _dev_step_logs(dev_text: str) -> list[str] | None:
+def _dev_step_logs(dev_text: str | None) -> list[str] | None:
     """Dev-agent (seat 0) console logs. If the agent took steps, split into
     per-frame chunks. If it crashed before the first update (no separators),
     return the whole log as a single step-0 entry so the console still shows
-    what happened."""
-    if not dev_text.strip():
+    what happened. None when the agent produced no logs at all."""
+    if dev_text is None or not dev_text.strip():
         return None
     if _STEP_SEP in dev_text:
         return _split_step_logs(dev_text)
@@ -255,7 +259,7 @@ def run_match(
     def _init_failure(error: str) -> MatchResult:
         agent_logs = _collect_agent_logs(agent_containers)
         dev_step_logs = (
-            _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
+            _dev_step_logs(agent_logs.get(agent_containers[0].name))
             if agent_containers else None
         )
         return _finish(MatchResult(
@@ -339,8 +343,8 @@ def run_match(
             # per-step cap), starts at per_step_budget, capped at 500ms.
             # Catches agents that stay under the per-step cap but average
             # above the long-run rate.
-            accumulating_step_seconds=0.01,
-            accumulating_max_seconds=0.5,
+            accumulating_step_seconds=per_step_budget_seconds / 5,
+            accumulating_max_seconds=per_step_budget_seconds * 10,
             # Per-step wall-clock guard: catches agents that block on sleep
             # / I/O. The effective budget is computed adaptively from
             # observed contention each poll iteration (see manager docstring).
@@ -349,9 +353,9 @@ def run_match(
             # per-step threshold" abuse. Bank grows 50ms/step, starts at
             # 500ms, capped at 1s. Strict — a 1.4s/step sleeper drains it
             # in a single step.
-            wall_accumulating_step_seconds=0.05,
-            wall_accumulating_initial_seconds=0.5,
-            wall_accumulating_max_seconds=1.0,
+            wall_accumulating_step_seconds=per_step_budget_seconds / 2,
+            wall_accumulating_initial_seconds=per_step_budget_seconds * 10,
+            wall_accumulating_max_seconds=per_step_budget_seconds * 20,
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
         )
@@ -409,7 +413,7 @@ def run_match(
 
         try:
             ex_result = sim_container.wait()
-            exit_code = ex_result.get("StatusCode", -1)
+            exit_code = ex_result["StatusCode"]
         except Exception as e:
             log.warning("sim wait failed: %s", e)
             try:
@@ -424,7 +428,7 @@ def run_match(
         # Dev-agent (seat 0) console logs: per-step if it ran, else the whole
         # log (e.g. a crash during init, before any update).
         dev_step_logs = (
-            _dev_step_logs(agent_logs.get(agent_containers[0].name, ""))
+            _dev_step_logs(agent_logs.get(agent_containers[0].name))
             if agent_containers else None
         )
         # If the dev agent was killed by a budget violation, surface that to
@@ -462,6 +466,7 @@ def run_match(
             tags_to_names=target_to_name,
             dev_agent_step_logs=dev_step_logs,
             exec_times=cpu_observer.get_exec_times(),
+            wall_step_times=cpu_observer.get_wall_step_times(),
             budgets=cpu_observer.get_budgets(),
             kill_reasons=kill_reasons,
         ))

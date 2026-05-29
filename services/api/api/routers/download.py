@@ -21,16 +21,16 @@ router = APIRouter(prefix="/download", tags=["download"])
 
 
 def _name_to_dir(sandbox_dir: Path) -> dict[str, Path]:
-    """Map manifest `name` → sandbox image directory (e.g. 'javascript' → js/)."""
+    """Map manifest `name` → sandbox image directory (e.g. 'javascript' → js/).
+
+    Manifests are part of our deployment; a malformed one is a deploy bug
+    that should fail loudly rather than silently disappear from the map.
+    """
     result: dict[str, Path] = {}
     for manifest_path in sandbox_dir.glob("*/manifest.toml"):
-        try:
-            with open(manifest_path, "rb") as f:
-                name = tomllib.load(f).get("language", {}).get("name")
-            if name:
-                result[name] = manifest_path.parent
-        except Exception:
-            pass
+        with open(manifest_path, "rb") as f:
+            data = tomllib.load(f)
+        result[data["language"]["name"]] = manifest_path.parent
     return result
 
 

@@ -383,10 +383,14 @@ def list_ranked_matches_for_project(
     conn: psycopg.Connection,
     project_id: int,
     limit: int = 20,
+    mode_id: int | None = None,
 ) -> list[MatchSummaryRow]:
     """Return the N most recent ranked successful matches the project played in.
 
-    Each match includes all participants with their project names.
+    Each match includes all participants with their project names. If
+    `mode_id` is given, only matches from that mode are returned — used
+    when the leaderboard modal opens from a per-mode tab so the counts
+    match the leaderboard row's `matches_played`.
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -403,6 +407,7 @@ def list_ranked_matches_for_project(
                     ON mp2.match_id = m2.id AND mp2.project_id = %s
                 WHERE m2.is_test = FALSE
                   AND m2.status = 'success'
+                  AND (%s::bigint IS NULL OR m2.mode_id = %s)
                 ORDER BY m2.id DESC
                 LIMIT %s
             ) sub
@@ -411,7 +416,7 @@ def list_ranked_matches_for_project(
             JOIN projects p ON p.id = mp.project_id
             ORDER BY m.started_at DESC, mp.seat ASC
             """,
-            (project_id, limit),
+            (project_id, mode_id, mode_id, limit),
         )
         matches: dict[int, MatchSummaryRow] = {}
         for row in cur.fetchall():

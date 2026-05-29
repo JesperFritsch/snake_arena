@@ -1,5 +1,5 @@
 # services/orchestrator/orchestrator/scorer_daemon.py
-"""Daemon that scores completed matches.
+"""Daemon that scores completed ranked matches.
 
 Claims one unscored success match at a time using a *revertable lease*
 (scoring_started_at), fetches its bundle, computes scores per the mode's
@@ -7,13 +7,12 @@ scoring_config, and writes them into match_participants.metrics. Only on
 success does it mark the row as scored_at = NOW().
 
 If anything between the claim and the write fails (transient bundler error,
-malformed zip, etc.), the lease is released so a future worker can pick the
-match up again. This avoids the silent-data-loss path the previous design
-had where one nginx hiccup permanently un-scored a match.
+malformed zip, missing data, etc.), the lease is released and
+scoring_attempts is incremented. After MAX_SCORING_ATTEMPTS the match stops
+being claimable and is left to manual intervention.
 
-Test matches (mode_id IS NULL) are scored too, using DEFAULT_CONFIG from
-the scoring module. The score is informational — never written to a ranked
-leaderboard. See docs/09_ranking_system.md.
+Test matches (mode_id IS NULL) are excluded by the claim query and never
+seen by this daemon. See docs/09_ranking_system.md.
 """
 from __future__ import annotations
 
@@ -34,7 +33,7 @@ from sa_common.db.matches import (
     reset_stale_score_leases,
 )
 from sa_common.db.modes import get_mode
-from sa_common.scoring import DEFAULT_CONFIG, ScoringConfig, compute_scores
+from sa_common.scoring import ScoringConfig, compute_scores
 from orchestrator.bundle import read_bundle
 
 log = logging.getLogger(__name__)
@@ -60,22 +59,18 @@ def run_one_iteration(conn: psycopg.Connection, config: ScorerDaemonConfig) -> b
         claim.bundle_key,
     )
 
-    # Resolve the scoring config from the mode (or default for test matches).
-    # The budget itself comes from the bundle — that's what the runner actually
-    # enforced, which is the right denominator for the speed multiplier even
-    # if mode.budget_ms gets re-tuned later.
-    scoring_cfg = DEFAULT_CONFIG
-    if claim.mode_id is not None:
-        with conn.transaction():
-            mode = get_mode(conn, claim.mode_id)
-        if mode is None:
-            # Mode was deleted between match creation and scoring — unusual.
-            log.warning(
-                "match id=%d references missing mode_id=%d; using DEFAULT_CONFIG",
-                claim.match_id, claim.mode_id,
-            )
-        else:
-            scoring_cfg = ScoringConfig.from_dict(mode.scoring_config)
+    # Resolve the scoring config from the mode. Test matches are filtered out
+    # by claim_unscored_match (mode_id IS NOT NULL), so claim.mode_id is always
+    # set here. A missing mode row means the mode was deleted between match
+    # creation and scoring — a real ops anomaly, not something to paper over.
+    assert claim.mode_id is not None
+    with conn.transaction():
+        mode = get_mode(conn, claim.mode_id)
+    if mode is None:
+        raise RuntimeError(
+            f"match id={claim.match_id} references missing mode_id={claim.mode_id}"
+        )
+    scoring_cfg = ScoringConfig.from_dict(mode.scoring_config)
 
     # --- Fetch + parse bundle (any failure releases the lease) ---
     try:
@@ -94,16 +89,11 @@ def run_one_iteration(conn: psycopg.Connection, config: ScorerDaemonConfig) -> b
     try:
         with conn.transaction():
             participants = get_match_participants(conn, claim.match_id)
-
         if not participants:
-            log.warning(
-                "match id=%d has no participants; marking scored to skip",
-                claim.match_id,
+            raise RuntimeError(
+                f"match id={claim.match_id} has no participants — runner_daemon "
+                f"should never record a success match without them"
             )
-            with conn.transaction():
-                mark_match_scored(conn, claim.match_id)
-            return True
-
         scores = compute_scores(contents.exec_times, contents.budget_ms, participants, scoring_cfg)
     except Exception:
         log.exception(

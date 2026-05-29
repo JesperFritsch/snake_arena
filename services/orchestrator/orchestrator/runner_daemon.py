@@ -114,17 +114,20 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
 
         file_observer.close()  # flush the replay before reading it back
 
-        # Analyze the captured replay so participants get per-snake outcomes and
-        # the bundle carries analysis.json. Skip a zero-step match (analyze()
-        # can't build a result from no steps).
-        run_analysis = None
-        if result.success and replay_path.exists() and replay_path.stat().st_size > 0:
-            try:
-                run_analysis = analyze(replay_path)
-                result.run_analysis = run_analysis
-                result.final_lengths = extract_final_lengths(replay_path)
-            except Exception:
-                log.warning("analysis failed for job id=%d", job.id, exc_info=True)
+        # Analyze the captured replay so participants get per-snake outcomes
+        # and the bundle carries analysis.json. A "success" match without
+        # analysis would silently end up with zero participant rows and no
+        # leaderboard contribution — so analyzer failures fail the job
+        # rather than getting swallowed.
+        if not (result.success and replay_path.exists() and replay_path.stat().st_size > 0):
+            raise RuntimeError(
+                f"job {job.id} returned success but produced no replay "
+                f"(success={result.success}, replay_exists={replay_path.exists()}, "
+                f"replay_size={replay_path.stat().st_size if replay_path.exists() else 0})"
+            )
+        run_analysis = analyze(replay_path)
+        result.run_analysis = run_analysis
+        result.final_lengths = extract_final_lengths(replay_path)
 
         participants = build_participants(
             result=result,
@@ -139,6 +142,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             bundle_bytes = assemble_bundle(
                 replay_path, run_analysis,
                 exec_times=result.exec_times,
+                wall_step_times=result.wall_step_times,
                 budgets=result.budgets,
             )
             config.bundler.put(bundle_key, bundle_bytes)

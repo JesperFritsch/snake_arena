@@ -17,6 +17,24 @@ log = logging.getLogger(__name__)
 
 _CGROUP_BASE = Path("/sys/fs/cgroup")
 
+# When the poll loop sees `used_this_step > step_budget_ns`, the per-step
+# kill only fires if the snake was *busy* for most of the window — i.e.
+# cpu/wall >= this ratio. A snake that's idle for most of the budget window
+# is only "over" because notify_step has been delayed (slow observer chain,
+# socket buffering) and CPU has accumulated across multiple intended sim
+# steps; in that case the accumulating CPU budget handles enforcement on
+# the next notify_step. 0.5 = "at least 50% of the window was CPU work."
+_PER_STEP_KILL_BUSY_RATIO = 0.5
+
+# Wall-guard "stall" detection: when wall > wall_budget AND the snake's
+# cpu/wall ratio is below this, treat as a stall (sleep, blocking IO,
+# or a hang where Python interpreter + gRPC keepalive nudge cpu just past
+# the 1 ms absolute sleep_threshold). A legitimate working snake under
+# contention has cpu/wall ≈ 1/contention; with default max contention of
+# 5x that's 20%. 1% leaves a wide margin for slow but real work while
+# still catching `time.sleep(N)` style hangs.
+_WALL_CLOCK_STALL_RATIO = 0.01
+
 
 @dataclass
 class _AgentTracker:
@@ -189,7 +207,14 @@ class AgentContainerManager(ILoopObserver):
         self._on_exec_times = on_exec_times
 
         self._trackers: dict[int, _AgentTracker] = {}
-        self._exec_times_ms: dict[int, list[float]] = {}  # snake_id → [ms per step]
+        self._exec_times_ms: dict[int, list[float]] = {}  # snake_id → [cpu ms per step]
+        # Wall time between consecutive notify_step events, per snake.
+        # The value is globally the same for every snake alive at a given
+        # step (it's the sim's cycle time), but storing per-snake means
+        # each snake's list ends when it dies — same shape as
+        # exec_times_ms, so step N's cpu/wall align by index without
+        # consumers having to slice a global list.
+        self._wall_step_times_ms: dict[int, list[float]] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -227,6 +252,10 @@ class AgentContainerManager(ILoopObserver):
             # from a previous match.
             self._last_notify_step_wall_ns = now_wall
             self._step_history.clear()
+            # Reset per-match diagnostics so a daemon that runs multiple
+            # matches in one process doesn't carry wall-times across matches.
+            self._wall_step_times_ms.clear()
+            self._exec_times_ms.clear()
             active_ids = set(names.keys())
             for snake_id, name in names.items():
                 container = self._seat_to_container.get(snake_id) or self._name_to_container.get(name)
@@ -278,6 +307,7 @@ class AgentContainerManager(ILoopObserver):
         with self._lock:
             wall_step_ns = max(0, now_wall - self._last_notify_step_wall_ns) if self._last_notify_step_wall_ns else 0
             self._last_notify_step_wall_ns = now_wall
+            wall_step_ms = wall_step_ns / 1e6
             # First pass: snapshot CPU delta for each live tracker. We need
             # max_cpu_step before debiting the wall bank, so this is a two-pass
             # loop.
@@ -310,6 +340,7 @@ class AgentContainerManager(ILoopObserver):
                 delta_ns = cpu_deltas.get(snake_id, 0)
                 step_times[snake_id] = delta_ns / 1e6
                 self._exec_times_ms.setdefault(snake_id, []).append(delta_ns / 1e6)
+                self._wall_step_times_ms.setdefault(snake_id, []).append(wall_step_ms)
                 tracker.step_budget_ns = self._per_step_budget_ns
                 tracker.step_start_wall_ns = now_wall
                 tracker.step_start_cpu_ns = current
@@ -370,6 +401,17 @@ class AgentContainerManager(ILoopObserver):
         """Return accumulated per-step CPU times (ms) keyed by snake_id."""
         with self._lock:
             return {k: list(v) for k, v in self._exec_times_ms.items()}
+
+    def get_wall_step_times(self) -> dict[int, list[float]]:
+        """Per-snake wall time between consecutive notify_step events (ms).
+
+        Values are globally the same at any given step (it's the sim's
+        cycle time), but the per-snake shape matches get_exec_times(): a
+        snake's list ends at the step where it died. snake_id N's
+        wall_step_times[N][i] aligns with exec_times[N][i].
+        """
+        with self._lock:
+            return {k: list(v) for k, v in self._wall_step_times_ms.items()}
 
     def get_kill_reason(self, seat: int) -> str | None:
         """Why the given seat's container was killed, if it was. One of
@@ -500,22 +542,61 @@ class AgentContainerManager(ILoopObserver):
 
                     used_this_step = current - tracker.last_cpu_ns
                     if used_this_step > tracker.step_budget_ns:
-                        log.warning(
-                            "snake %s (%s) over cpu budget: used %.3fs / %.3fs -> killing",
-                            snake_id, tracker.name,
-                            used_this_step / 1e9, tracker.step_budget_ns / 1e9,
+                        # Wall time since the budget window opened. cpu / wall
+                        # is the snake's *busy ratio* — close to 1 means tight
+                        # loop (real over-budget event), far below 1 means the
+                        # snake was idle for most of the window. The latter is
+                        # only possible if notify_step has been delayed and
+                        # the cpu has accumulated across multiple intended
+                        # steps, so the per-step kill is unfair. The
+                        # accumulating cpu budget catches sustained abuse on
+                        # the next notify_step instead.
+                        wall_since_step = (
+                            time.monotonic_ns() - tracker.step_start_wall_ns
+                            if tracker.step_start_wall_ns else 0
                         )
-                        tracker.killed = True
-                        tracker.kill_reason = "startup_cpu" if tracker.in_startup else "per_step"
-                        self._kill_container(tracker.container)
-                        continue
+                        busy_ratio = (
+                            used_this_step / wall_since_step
+                            if wall_since_step > 0 else 1.0
+                        )
+                        if busy_ratio >= _PER_STEP_KILL_BUSY_RATIO:
+                            log.warning(
+                                "snake %s (%s) over cpu budget: used %.3fs cpu "
+                                "in %.3fs wall / %.3fs budget -> killing",
+                                snake_id, tracker.name,
+                                used_this_step / 1e9,
+                                wall_since_step / 1e9,
+                                tracker.step_budget_ns / 1e9,
+                            )
+                            tracker.killed = True
+                            tracker.kill_reason = "startup_cpu" if tracker.in_startup else "per_step"
+                            self._kill_container(tracker.container)
+                            continue
+                        # Wall ≫ cpu — skip the kill, wait for the next
+                        # notify_step (accumulating budget will catch it
+                        # if the snake is genuinely over the long-run rate).
+                        log.debug(
+                            "snake %s (%s) over per-step cpu (%.3fs cpu / "
+                            "%.3fs wall, ratio %.2f) but window stretched "
+                            "(notify_step delayed) — not killing",
+                            snake_id, tracker.name,
+                            used_this_step / 1e9, wall_since_step / 1e9,
+                            busy_ratio,
+                        )
 
-                    # Wall-clock guard: catches agents that block on sleep() /
-                    # I/O instead of computing. We require *both* (a) wall-clock
-                    # since the last step started has blown the contention-
-                    # adaptive budget and (b) CPU usage in that window is
-                    # essentially zero — that rules out an agent that's
-                    # legitimately burning its full CPU budget under load.
+                    # Wall-clock guard: catches agents that block the sim past
+                    # the wall-clock budget. This is the ONLY enforcement that
+                    # fires without depending on a future notify_step, so it
+                    # has to cover both kinds of "blocking the sim":
+                    #   (a) cpu ≈ 0:  agent is sleeping / blocked on I/O.
+                    #   (b) cpu > step_budget:  agent has burned more than a
+                    #       single step's worth of cpu AND the sim hasn't
+                    #       advanced — i.e. one slow step inside the gRPC
+                    #       handler, not a delayed notify_step over many fast
+                    #       steps.
+                    # The gap between sleep_threshold and step_budget is left
+                    # alone: that's "moderate cpu, under per-step budget" and
+                    # the sim might just be slow due to load.
                     if (
                         self._wall_clock_enabled
                         and not tracker.in_startup
@@ -523,20 +604,50 @@ class AgentContainerManager(ILoopObserver):
                     ):
                         wall_elapsed = time.monotonic_ns() - tracker.step_start_wall_ns
                         cpu_in_window = current - tracker.step_start_cpu_ns
-                        if (
-                            wall_elapsed > wall_budget_ns
-                            and cpu_in_window <= self._wall_clock_sleep_threshold_ns
-                        ):
-                            log.warning(
-                                "snake %s (%s) wall-clock %.3fs > budget %.3fs but "
-                                "cpu only %.3fs -> killing (sleeping/hung)",
-                                snake_id, tracker.name,
-                                wall_elapsed / 1e9, wall_budget_ns / 1e9,
-                                cpu_in_window / 1e9,
-                            )
-                            tracker.killed = True
-                            tracker.kill_reason = "wall_clock"
-                            self._kill_container(tracker.container)
+                        # cpu/wall ratio is a more robust "is this snake
+                        # doing anything" check than an absolute sleep
+                        # threshold: time.sleep(N) ends up with cpu just
+                        # above 1 ms (gRPC deserialisation + interpreter
+                        # tick) but the ratio stays tiny.
+                        cpu_ratio = (
+                            cpu_in_window / wall_elapsed
+                            if wall_elapsed > 0 else 1.0
+                        )
+                        stalled = (
+                            cpu_in_window <= self._wall_clock_sleep_threshold_ns
+                            or cpu_ratio < _WALL_CLOCK_STALL_RATIO
+                        )
+                        if wall_elapsed > wall_budget_ns:
+                            if stalled:
+                                log.warning(
+                                    "snake %s (%s) wall-clock %.3fs > budget "
+                                    "%.3fs, cpu only %.3fs (ratio %.4f) -> "
+                                    "killing (sleeping/hung)",
+                                    snake_id, tracker.name,
+                                    wall_elapsed / 1e9, wall_budget_ns / 1e9,
+                                    cpu_in_window / 1e9, cpu_ratio,
+                                )
+                                tracker.killed = True
+                                tracker.kill_reason = "wall_clock"
+                                self._kill_container(tracker.container)
+                            elif cpu_in_window > tracker.step_budget_ns:
+                                log.warning(
+                                    "snake %s (%s) stuck: cpu %.3fs > step "
+                                    "budget %.3fs in wall %.3fs > %.3fs -> "
+                                    "killing (single slow step holding sim)",
+                                    snake_id, tracker.name,
+                                    cpu_in_window / 1e9,
+                                    tracker.step_budget_ns / 1e9,
+                                    wall_elapsed / 1e9, wall_budget_ns / 1e9,
+                                )
+                                tracker.killed = True
+                                # "per_step" — same banner: the snake exceeded
+                                # the per-step CPU budget. We just couldn't
+                                # detect it via the fast path because the
+                                # busy_ratio was low, so the wall-clock guard
+                                # caught it after wall_budget elapsed.
+                                tracker.kill_reason = "per_step"
+                                self._kill_container(tracker.container)
 
             self._stop_event.wait(self._poll_interval_s)
         log.info("cpu budget poll loop stopped")
@@ -578,10 +689,12 @@ class AgentContainerManager(ILoopObserver):
         except NotFound:
             pass  # already gone — goal state met
         except APIError as e:
-            # 409 Conflict = "container is not running": it already exited, which
-            # is exactly what we wanted. Anything else is genuinely unexpected.
-            status = getattr(getattr(e, "response", None), "status_code", None)
-            if status == 409:
+            # 409 Conflict = "container is not running": it already exited,
+            # which is exactly what we wanted. Anything else is genuinely
+            # unexpected. If the docker SDK's exception shape changes and
+            # .response.status_code is no longer present, we *want* the
+            # AttributeError to surface so we know to update the pin.
+            if e.response.status_code == 409:
                 log.debug("container %s already stopped", container.name)
             else:
                 log.warning("failed to kill container %s: %s", container.name, e)

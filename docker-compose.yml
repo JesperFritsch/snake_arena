@@ -5,16 +5,26 @@
 #   (nginx WebDAV at /upload/). No shared volume needed between services.
 #   The file-server owns /srv/files and serves it as static files.
 #
-# REPLAY_HOST is only needed by the API (url() -> browser-accessible URL).
-# It is not set here — the API service wires it in its own env.
+# Env vars are declared explicitly per service — there are no in-code
+# defaults left for anything that should be operator-configurable, so the
+# contract is fully visible here. See .env for what comes from the host.
 
 x-vol-docker-sock: &vol-docker-sock /var/run/docker.sock:/var/run/docker.sock
 x-vol-cgroup:      &vol-cgroup      /sys/fs/cgroup:/sys/fs/cgroup:ro
 
+# Env shared by every orchestrator daemon (match/test-match/scorer/scheduler).
+x-orchestrator-env: &orchestrator-env
+  LOG_LEVEL:    INFO
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+
+# Env for services that talk to the bundler (match/test-match/scorer).
+# REPLAY_HOST is required by the factory; orchestrator daemons never call
+# .url() so an empty string is fine.
 x-bundler-env: &bundler-env
   BUNDLER_BACKEND:   http
   BUNDLE_UPLOAD_URL: http://file-server/upload
   BUNDLE_READ_URL:   http://file-server
+  REPLAY_HOST:       ""
 
 services:
   postgres:
@@ -45,9 +55,11 @@ services:
     command: ["test-match", "--sim-image", "snake-sim"]
     cgroup: host
     environment:
-      <<: *bundler-env
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://redis:6379
+      <<: [*orchestrator-env, *bundler-env]
+      REDIS_URL:                redis://redis:6379
+      BUILDER_REGISTRY_PREFIX:  snake
+      BUILDER_BUILD_TIMEOUT_S:  "60"
+      SANDBOX_IMAGES_DIR:       /app/sandbox-images
     volumes:
       - *vol-docker-sock
       - *vol-cgroup
@@ -65,8 +77,7 @@ services:
     command: ["match", "--sim-image", "snake-sim"]
     cgroup: host
     environment:
-      <<: *bundler-env
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      <<: [*orchestrator-env, *bundler-env]
     volumes:
       - *vol-docker-sock
       - *vol-cgroup
@@ -82,8 +93,7 @@ services:
       dockerfile: Dockerfile.orchestrator
     command: ["scorer"]
     environment:
-      <<: *bundler-env
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      <<: [*orchestrator-env, *bundler-env]
     depends_on:
       - postgres
       - file-server
@@ -96,7 +106,8 @@ services:
       dockerfile: Dockerfile.orchestrator
     command: ["scheduler"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      <<: *orchestrator-env
+      SCHEDULER_PER_MODE_QUEUE_CAP: "5"
     depends_on:
       - postgres
     restart: unless-stopped

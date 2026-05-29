@@ -292,15 +292,13 @@ async def _stream_live(websocket: WebSocket, job_id: int) -> None:
                 data = message["data"]
                 text = data.decode() if isinstance(data, (bytes, bytearray)) else data
                 await websocket.send_text(text)
-                try:
-                    msg = json.loads(text)
-                    if (
-                        msg.get("type") == "status"
-                        and msg.get("data", {}).get("status") in _TERMINAL_JOB_STATUSES
-                    ):
-                        break
-                except Exception:
-                    pass
+                # We own the publisher (orchestrator.redis_observer), so the
+                # message shape is a contract — read it strictly rather than
+                # swallowing a KeyError that would silently keep the stream
+                # open past a terminal status.
+                msg = json.loads(text)
+                if msg["type"] == "status" and msg["data"]["status"] in _TERMINAL_JOB_STATUSES:
+                    break
     except asyncio.TimeoutError:
         log.warning("WS stream for job %d hit 10-minute timeout", job_id)
     finally:

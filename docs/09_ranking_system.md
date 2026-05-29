@@ -126,22 +126,22 @@ event-driven: it walks the enabled modes whenever something happens that
 might change "what should be queued" (see "Wakeups" below) and asks the
 matchmaker for groups where the mode is **underplayed**.
 
-A `(project, version)` pair is **underplayed** in mode M when the count of
-distinct opponent-versions it has played in M (or is about to play —
-queued/running jobs count) is less than M's *effective* target. For solo
-modes the underplay test is "matches played + in-flight in M < target."
+A `(project, version)` pair is **underplayed** in mode M when its
+`matches_played` count (success + in-flight queued/running) is less than
+`mode.target`. Same metric for solo and multi modes, and the same metric
+the leaderboard's eligibility check uses, so the matchmaker and the
+leaderboard agree on "played enough."
 
-The **effective target** for multi modes is `min(mode.target, N - 1)`
-where N is the number of currently-submitted projects. You can never have
-more distinct opponents than there are other projects, so a higher
-`mode.target` is unreachable and would loop forever. The cap is computed
-automatically; mode rows can be tuned for the population you expect to
-reach but don't have to be re-tuned when the population is smaller.
+For multi modes, the matchmaker *prefers* opponents the seed hasn't played
+yet (variety), but doesn't require them. Once every other project has
+played the seed at least once, pairings repeat — that's fine, the target
+is volume-of-matches, not distinct opponents. A mode with a target higher
+than `N - 1` works the same way: each project just plays multiple matches
+against each other project until the count reaches target.
 
-In-flight (queued/running) match_jobs are counted toward distinct
-opponents so the matchmaker doesn't repeatedly queue the same pairing
-within a single scheduler tick. Without this, the cap of 5 per mode would
-get filled with five copies of the same pairing.
+In-flight (queued/running) match_jobs are counted toward matches_played
+so the matchmaker doesn't fill its per-mode queue cap with copies of the
+same project in a single scheduler tick.
 
 Per iteration:
 

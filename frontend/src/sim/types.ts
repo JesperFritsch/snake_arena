@@ -28,7 +28,7 @@ export interface SimStepData {
 }
 
 export interface SimStopData {
-  final_step: number;
+  final_step: number | null;   // null when notify_stop never fired (sim aborted)
 }
 
 export type JobStatus = "queued" | "running" | "success" | "failure" | "cancelled";

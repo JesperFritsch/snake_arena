@@ -71,13 +71,10 @@ def create_app() -> FastAPI:
         version_map: dict[str, str] = {}
         if sandbox_dir.is_dir():
             for manifest_path in sandbox_dir.glob("*/manifest.toml"):
-                try:
-                    with open(manifest_path, "rb") as f:
-                        data = tomllib.load(f).get("language", {})
-                    if (name := data.get("name")) and (ver := data.get("version")):
-                        version_map[name] = ver
-                except Exception:
-                    pass
+                with open(manifest_path, "rb") as f:
+                    data = tomllib.load(f)
+                lang = data["language"]
+                version_map[lang["name"]] = lang["version"]
         return [
             {"name": p.name, "version": version_map.get(p.name)}
             for p in sorted(templates_dir.iterdir())
@@ -105,8 +102,9 @@ def main() -> None:
 
     uvicorn.run(
         "api.main:app",
-        host=os.environ.get("API_HOST", "0.0.0.0"),
-        port=int(os.environ.get("API_PORT", "8000")),
+        host=os.environ["API_HOST"],
+        port=int(os.environ["API_PORT"]),
+        # API_RELOAD is a presence flag — any non-empty value enables reload.
         reload=bool(os.environ.get("API_RELOAD")),
     )
 

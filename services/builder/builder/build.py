@@ -36,7 +36,7 @@ class LanguageManifest:
 
 
 def _sandbox_images_dir() -> Path:
-    return Path(os.environ.get("SANDBOX_IMAGES_DIR", "sandbox-images")).resolve()
+    return Path(os.environ["SANDBOX_IMAGES_DIR"]).resolve()
 
 
 @cache
@@ -233,17 +233,21 @@ def _run_build(
                 timeout=build_timeout_s,
             )
         except BuildError as e:
+            # Docker SDK emits varied dicts in build_log: {"stream": "..."},
+            # {"status": "..."}, {"error": "..."}, {"aux": {...}}. Filter to
+            # the "stream" entries explicitly rather than masking the rest
+            # with an empty-string default.
             build_logs = "\n".join(
-                str(line.get("stream", "")) for line in e.build_log
+                str(line["stream"]) for line in e.build_log if "stream" in line
             )
             return _fail(f"build failed: {e.msg}", build_logs=build_logs)
         except DockerException as e:
             return _fail(f"docker error during build: {e}")
 
         build_logs = "\n".join(
-            str(entry.get("stream", "")).rstrip()
+            str(entry["stream"]).rstrip()
             for entry in log_stream
-            if entry.get("stream")
+            if "stream" in entry
         )
 
         return BuildResult(

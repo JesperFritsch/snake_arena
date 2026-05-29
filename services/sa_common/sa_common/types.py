@@ -18,6 +18,10 @@ class MatchResult:
     dev_agent_step_logs: list[str] | None = None
     # Per-step CPU times (ms) keyed by snake_id. snake_id → [ms per step].
     exec_times: dict[int, list[float]] | None = None
+    # Wall time between consecutive notify_step events (ms), per snake.
+    # Globally the same at any given step (sim cycle time) but shaped like
+    # exec_times so each snake's list ends when it dies. snake_id → [ms].
+    wall_step_times: dict[int, list[float]] | None = None
     # CPU budget config (seconds) that was in force for this match.
     budgets: dict[str, float] | None = None
     # Kill reason per seat: "per_step" | "sustained" | "wall_clock" |

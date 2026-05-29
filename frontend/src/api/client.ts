@@ -93,7 +93,7 @@ export interface ApiClient {
   pinTestMatch(jobId: number, pinned: boolean): Promise<TestMatchJob>;
   cancelTestMatch(jobId: number): Promise<void>;
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
-  listProjectRankedMatches(projectId: number, limit?: number): Promise<RankedMatchSummary[]>;
+  listProjectRankedMatches(projectId: number, opts?: { modeId?: number; limit?: number }): Promise<RankedMatchSummary[]>;
   getMatchBundleUrl(matchId: number): Promise<{ url: string }>;
 }
 
@@ -174,8 +174,14 @@ export function useApi(): ApiClient {
         request(g, "POST", `/test-matches/${jobId}/cancel`),
       getTestMatchBundleUrl: (jobId) =>
         request(g, "GET", `/test-matches/${jobId}/bundle-url`),
-      listProjectRankedMatches: (projectId, limit = 20) =>
-        request(g, "GET", `/matches/for-project?project_id=${projectId}&limit=${limit}`),
+      listProjectRankedMatches: (projectId, opts) => {
+        const params = new URLSearchParams({
+          project_id: String(projectId),
+          limit: String(opts?.limit ?? 20),
+        });
+        if (opts?.modeId != null) params.set("mode_id", String(opts.modeId));
+        return request(g, "GET", `/matches/for-project?${params.toString()}`);
+      },
       getMatchBundleUrl: (matchId) =>
         request(g, "GET", `/matches/${matchId}/bundle-url`),
     };

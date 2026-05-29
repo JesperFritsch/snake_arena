@@ -69,7 +69,9 @@ class RedisStreamObserver(ILoopObserver):
         self._publish({"type": "exec_time", "data": {"step": step, "times": times}})
 
     def publish_stop(self) -> None:
-        self._publish({"type": "stop", "data": {"final_step": self.final_step or 0}})
+        # final_step stays None if notify_stop never fired (e.g. the sim
+        # aborted before the loop produced any steps). Frontend handles null.
+        self._publish({"type": "stop", "data": {"final_step": self.final_step}})
 
     def publish_status(self, status: str) -> None:
         """Job-lifecycle transition (running / success / failure / cancelled).

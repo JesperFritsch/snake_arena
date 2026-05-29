@@ -118,18 +118,22 @@ export function LeaderboardPage() {
     setSelectedMatch(null);
   }, []);
 
-  // When a project is selected, load its match history.
+  // When a project is selected, load its match history. Scope to the active
+  // mode when opened from a per-mode tab — otherwise the modal's row count
+  // can disagree with the leaderboard row's `matches_played` (the leaderboard
+  // is per-mode, history would otherwise span every mode).
   useEffect(() => {
     if (!selectedProject) return;
     let cancelled = false;
     setMatchList(null);
     setSelectedMatch(null);
     setMatchListLoading(true);
-    api.listProjectRankedMatches(selectedProject.id, 50)
+    const modeId = tab === "overall" ? undefined : modes?.find((m) => m.slug === tab)?.id;
+    api.listProjectRankedMatches(selectedProject.id, { modeId, limit: 50 })
       .then((data) => { if (!cancelled) { setMatchList(data); setMatchListLoading(false); } })
       .catch(() => { if (!cancelled) { setMatchList([]); setMatchListLoading(false); } });
     return () => { cancelled = true; };
-  }, [selectedProject?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedProject?.id, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Escape closes the modal.
   useEffect(() => {

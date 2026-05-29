@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import functools
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -31,18 +31,18 @@ class Settings:
 
     # CORS: the frontend dev origin (e.g. http://localhost:5173). In prod,
     # when FastAPI serves the bundle from the same origin, this can be empty.
-    cors_origins: list[str] = field(default_factory=list)
+    cors_origins: list[str]
 
     # Base URL where match bundles are served. In dev this points at the nginx
     # file-server container (e.g. http://localhost:8081). In prod set it to the
     # R2 public URL or a presigned-URL base — the bundle endpoint returns
     # {replay_host}/{bundle_path} and the browser fetches directly.
-    replay_host: str | None = None
-    templates_dir: Path = Path("templates")
-    sandbox_images_dir: Path = Path("sandbox-images")
-    redis_url: str = "redis://localhost:6379"
-    pool_min_size: int = 1
-    pool_max_size: int = 8
+    replay_host: str | None
+    templates_dir: Path
+    sandbox_images_dir: Path
+    redis_url: str
+    pool_min_size: int
+    pool_max_size: int
 
 
 @functools.lru_cache(maxsize=1)
@@ -51,29 +51,20 @@ def get_settings() -> Settings:
 
 
 def load_settings() -> Settings:
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError(
-            "DATABASE_URL not set. Example: "
-            "postgresql://snake_arena:dev_password_change_me@localhost:5432/snake_arena"
-        )
-
-    clerk_issuer = os.environ.get("CLERK_ISSUER")
-    if not clerk_issuer:
-        raise RuntimeError(
-            "CLERK_ISSUER not set. This is your Clerk instance issuer URL, e.g. "
-            "https://your-app.clerk.accounts.dev"
-        )
-
+    """Build Settings from the environment. Every required var must be set —
+    no in-code defaults. See docker-compose.yml and .env for the contract."""
     return Settings(
-        database_url=database_url,
-        clerk_issuer=clerk_issuer.rstrip("/"),
+        database_url=os.environ["DATABASE_URL"],
+        clerk_issuer=os.environ["CLERK_ISSUER"].rstrip("/"),
+        # CLERK_AUDIENCE is optional in the protocol; treat empty string as unset.
         clerk_audience=os.environ.get("CLERK_AUDIENCE") or None,
         cors_origins=_split_csv(os.environ.get("CORS_ORIGINS")),
-        replay_host=os.environ.get("REPLAY_HOST") or None,
-        templates_dir=Path(os.environ.get("TEMPLATES_DIR", "code_templates")).resolve(),
-        sandbox_images_dir=Path(os.environ.get("SANDBOX_IMAGES_DIR", "sandbox-images")).resolve(),
-        redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379"),
-        pool_min_size=int(os.environ.get("DB_POOL_MIN_SIZE", "1")),
-        pool_max_size=int(os.environ.get("DB_POOL_MAX_SIZE", "8")),
+        # REPLAY_HOST is required for the API (browser fetches use it), but
+        # not for orchestrator daemons that only put/get internally.
+        replay_host=os.environ["REPLAY_HOST"],
+        templates_dir=Path(os.environ["TEMPLATES_DIR"]).resolve(),
+        sandbox_images_dir=Path(os.environ["SANDBOX_IMAGES_DIR"]).resolve(),
+        redis_url=os.environ["REDIS_URL"],
+        pool_min_size=int(os.environ["DB_POOL_MIN_SIZE"]),
+        pool_max_size=int(os.environ["DB_POOL_MAX_SIZE"]),
     )

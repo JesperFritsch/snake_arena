@@ -2,11 +2,13 @@
 """Assemble and read match bundles (zip).
 
 Bundle contents:
-  replay.json     – the recorded run (JSONL of sim messages)
-  analysis.json   – run_analyzer output ({} if analysis didn't run)
-  agent_logs.json – dev-agent per-step stdout (test matches only)
-  exec_times.json – per-snake per-step CPU times in ms
-  budgets.json    – CPU budget config (seconds) that was in force for this run
+  replay.json         – the recorded run (JSONL of sim messages)
+  analysis.json       – run_analyzer output ({} if analysis didn't run)
+  agent_logs.json     – dev-agent per-step stdout (test matches only)
+  exec_times.json     – per-snake per-step CPU times in ms
+  wall_step_times.json– wall time between notify_step events, in ms
+                        (one entry per step, shared across snakes)
+  budgets.json        – CPU budget config (seconds) that was in force for this run
 
 Both assemble_bundle (writer) and read_bundle (reader) live here so that any
 change to the bundle format is a single-file edit.
@@ -24,59 +26,61 @@ from snake_sim.analyze.scripts.run_analyzer import RunAnalysis
 
 @dataclass(slots=True)
 class BundleContents:
-    """All five files in a bundle, parsed.
+    """All six files in a bundle, parsed.
 
-    Fields are None when the corresponding file was absent (e.g. agent_logs
-    is only written for test matches; analysis is empty/absent if the
-    analyzer didn't run on a zero-step match).
+    replay, analysis, exec_times, wall_step_times, and budgets are always
+    present for ranked matches — assemble_bundle writes them unconditionally.
+    agent_logs is only present for test matches (the writer skips it when
+    dev_step_logs is None). Missing required files raise from read_bundle().
     """
     replay: list[dict]                            # parsed replay.json JSONL — one sim message per element
-    analysis: dict                                # run_analyzer output ({} if it didn't run)
+    analysis: dict                                # run_analyzer output
     agent_logs: dict[str, list[str]] | None       # {"0": [step_log_str, ...]}; None for ranked matches
-    exec_times: dict[int, list[float]] | None     # seat -> [ms per step]
-    budgets: dict[str, float] | None              # everything AgentContainerManager.get_budgets() wrote
+    exec_times: dict[int, list[float]]            # seat -> [cpu ms per step]
+    wall_step_times: dict[int, list[float]]       # seat -> [wall ms per step], same shape as exec_times
+    budgets: dict[str, float]                     # everything AgentContainerManager.get_budgets() wrote
 
     @property
     def budget_ms(self) -> float:
-        """Per-step CPU budget in ms, derived from budgets['per_step_seconds'].
-
-        Falls back to 50ms if budgets is missing or malformed — same value the
-        scorer used pre-fix, kept here so a corrupt bundle scores something
-        rather than crashing.
-        """
-        if self.budgets is None:
-            return 50.0
-        per_step_s = self.budgets.get("per_step_seconds")
-        return float(per_step_s) * 1000 if per_step_s is not None else 50.0
-
-
-def _read_optional_json(zf: zipfile.ZipFile, name: str):
-    if name not in zf.namelist():
-        return None
-    return json.loads(zf.read(name))
+        """Per-step CPU budget in ms, derived from budgets['per_step_seconds']."""
+        return float(self.budgets["per_step_seconds"]) * 1000
 
 
 def read_bundle(bundle_bytes: bytes) -> BundleContents:
-    """Parse a bundle zip into all of its component files."""
+    """Parse a bundle zip into all of its component files.
+
+    Raises if a required file is missing. agent_logs.json is the only
+    optional file (test-match-only).
+    """
     with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as zf:
-        # replay.json is JSONL, one message per line.
-        replay: list[dict] = []
-        if "replay.json" in zf.namelist():
-            replay_text = zf.read("replay.json").decode()
-            replay = [json.loads(line) for line in replay_text.splitlines() if line.strip()]
+        names = set(zf.namelist())
+        for required in (
+            "replay.json", "analysis.json", "exec_times.json",
+            "wall_step_times.json", "budgets.json",
+        ):
+            if required not in names:
+                raise ValueError(f"bundle missing required file: {required}")
 
-        analysis = _read_optional_json(zf, "analysis.json") or {}
-        agent_logs = _read_optional_json(zf, "agent_logs.json")
-        budgets = _read_optional_json(zf, "budgets.json")
+        replay_text = zf.read("replay.json").decode()
+        replay = [json.loads(line) for line in replay_text.splitlines() if line.strip()]
 
-        exec_times_raw = _read_optional_json(zf, "exec_times.json")
-        exec_times = {int(k): v for k, v in exec_times_raw.items()} if exec_times_raw else None
+        analysis = json.loads(zf.read("analysis.json"))
+        budgets = json.loads(zf.read("budgets.json"))
+
+        exec_times_raw = json.loads(zf.read("exec_times.json"))
+        exec_times = {int(k): v for k, v in exec_times_raw.items()}
+
+        wall_step_times_raw = json.loads(zf.read("wall_step_times.json"))
+        wall_step_times = {int(k): v for k, v in wall_step_times_raw.items()}
+
+        agent_logs = json.loads(zf.read("agent_logs.json")) if "agent_logs.json" in names else None
 
     return BundleContents(
         replay=replay,
         analysis=analysis,
         agent_logs=agent_logs,
         exec_times=exec_times,
+        wall_step_times=wall_step_times,
         budgets=budgets,
     )
 
@@ -86,6 +90,7 @@ def assemble_bundle(
     run_analysis: RunAnalysis | None,
     dev_step_logs: list[str] | None = None,
     exec_times: dict[int, list[float]] | None = None,
+    wall_step_times: dict[int, list[float]] | None = None,
     budgets: dict[str, float] | None = None,
 ) -> bytes:
     analysis_obj = run_analysis.to_dict() if run_analysis is not None else {}
@@ -99,6 +104,11 @@ def assemble_bundle(
         if exec_times is not None:
             # String-keyed for JSON compatibility.
             zf.writestr("exec_times.json", json.dumps({str(k): v for k, v in exec_times.items()}).encode())
+        if wall_step_times is not None:
+            zf.writestr(
+                "wall_step_times.json",
+                json.dumps({str(k): v for k, v in wall_step_times.items()}).encode(),
+            )
         if budgets is not None:
             zf.writestr("budgets.json", json.dumps(budgets).encode())
     return buf.getvalue()

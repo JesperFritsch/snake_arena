@@ -11,15 +11,17 @@ One parametric formula covers solo and multiplayer modes:
           x (budget_ms / max(avg_step_ms, floor_ms)) ^ w  [speed bonus]
 
   - length is the base — you only grow by eating.
-  - The eating-rate bonus rewards efficient eaters over slow grinders. A snake
-    at length 30 in 100 steps beats one at length 30 in 500 steps.
+  - The eating-rate bonus rewards efficient eaters over slow grinders.
   - The survival bonus rewards outlasting opponents in multiplayer. In solo
     modes alpha is 0, collapsing the survival factor to 1.
   - The speed bonus rewards CPU efficiency. floor_ms clamps avg_step_ms so a
     trivial constant-move agent can't game the multiplier.
 
-For test matches (no mode), the scorer applies DEFAULT_CONFIG so users still
-get an informational score. See docs/09_ranking_system.md.
+Inputs are taken as truth: missing exec_times, missing final_length, or
+missing survival_rank cause a raise. The scorer catches that, releases the
+lease, increments scoring_attempts, and eventually gives up — much better
+than silently emitting a score from defaults that would mislead the
+leaderboard.
 """
 from __future__ import annotations
 
@@ -31,27 +33,20 @@ from sa_common.types import ParticipantRow
 
 @dataclass(frozen=True)
 class ScoringConfig:
-    alpha: float = 0.5      # survival weight (multi); 0 in solo modes
-    beta: float = 2.0       # eating-rate weight
-    w: float = 0.3          # speed multiplier exponent
-    floor_ms: float = 2.0   # min avg_step_ms; clamps the speed bonus
+    alpha: float       # survival weight (multi); 0 in solo modes
+    beta: float        # eating-rate weight
+    w: float           # speed multiplier exponent
+    floor_ms: float    # min avg_step_ms; clamps the speed bonus
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any] | None) -> "ScoringConfig":
-        """Build from modes.scoring_config JSONB, falling back on defaults."""
-        if not d:
-            return cls()
+    def from_dict(cls, d: dict[str, Any]) -> "ScoringConfig":
+        """Build from modes.scoring_config JSONB. All four keys are required."""
         return cls(
-            alpha    = float(d.get("alpha",    cls.alpha)),
-            beta     = float(d.get("beta",     cls.beta)),
-            w        = float(d.get("w",        cls.w)),
-            floor_ms = float(d.get("floor_ms", cls.floor_ms)),
+            alpha    = float(d["alpha"]),
+            beta     = float(d["beta"]),
+            w        = float(d["w"]),
+            floor_ms = float(d["floor_ms"]),
         )
-
-
-# Used for test matches (mode_id IS NULL). Informational; never written to a
-# ranked leaderboard. Same shape as a typical multi config.
-DEFAULT_CONFIG = ScoringConfig(alpha=0.5, beta=2.0, w=0.3, floor_ms=2.0)
 
 
 @dataclass(slots=True)
@@ -83,48 +78,48 @@ class ParticipantScore:
 
 
 def compute_scores(
-    exec_times: dict[int, list[float]] | None,
+    exec_times: dict[int, list[float]],
     budget_ms: float,
     participants: list[ParticipantRow],
-    config: ScoringConfig = DEFAULT_CONFIG,
+    config: ScoringConfig,
 ) -> list[ParticipantScore]:
-    """Compute per-participant scores.
+    """Compute per-participant scores. Every input is required.
 
-    exec_times: {seat: [ms_per_step, ...]} — None if timing data is unavailable,
-                in which case speed_multiplier defaults to 1.0 and steps_alive
-                falls back to fatal_step (or 0 if also missing).
-    budget_ms:  the per-step CPU budget in milliseconds.
-    participants: rows from match_participants for this match.
+    exec_times    must contain a non-empty list for every participant's seat.
+    final_length  must be set on every participant.
+    survival_rank must be set on every participant in multi modes (alpha > 0).
     """
     n = len(participants)
     out: list[ParticipantScore] = []
 
     for p in participants:
-        length = float(p.final_length) if p.final_length is not None else 0.0
+        if p.final_length is None:
+            raise ValueError(f"seat={p.seat} has no final_length")
+        if p.seat not in exec_times:
+            raise ValueError(f"seat={p.seat} has no exec_times entry")
+        step_times = exec_times[p.seat]
+        if not step_times:
+            raise ValueError(f"seat={p.seat} has empty exec_times list")
+        if config.alpha > 0 and p.survival_rank is None:
+            raise ValueError(
+                f"seat={p.seat}: survival_rank is required when alpha > 0"
+            )
 
-        step_times = exec_times.get(p.seat) if exec_times else None
-        if step_times:
-            steps_alive = len(step_times)
-            avg_ms = sum(step_times) / steps_alive
-            min_ms = min(step_times)
-            max_ms = max(step_times)
-        else:
-            # No timing data — neutral speed bonus; fall back to fatal_step.
-            steps_alive = p.fatal_step if p.fatal_step is not None else 0
-            avg_ms = budget_ms
-            min_ms = budget_ms
-            max_ms = budget_ms
+        length = float(p.final_length)
+        steps_alive = len(step_times)
+        avg_ms = sum(step_times) / steps_alive
+        min_ms = min(step_times)
+        max_ms = max(step_times)
 
-        food_rate     = length / max(steps_alive, 1)
+        food_rate     = length / steps_alive
         eating_factor = 1.0 + config.beta * food_rate
 
-        if n <= 1 or p.survival_rank is None:
+        if config.alpha == 0 or n == 1:
             survival_factor = 1.0
         else:
             survival_factor = 1.0 + config.alpha * (1.0 - (p.survival_rank - 1) / (n - 1))
 
         speed_mult = (budget_ms / max(avg_ms, config.floor_ms)) ** config.w
-
         score = length * eating_factor * survival_factor * speed_mult
 
         out.append(ParticipantScore(

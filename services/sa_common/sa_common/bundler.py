@@ -77,22 +77,20 @@ class DiskBundler:
 class HttpBundler:
     """PUT/DELETE bundles via WebDAV; GET bundles from the static-serve root.
 
-    upload_url  — WebDAV base URL for PUT/DELETE
-                  (e.g. http://file-server/upload).
-    read_url    — static-serve base URL for GET
-                  (e.g. http://file-server). Defaults to upload_url if omitted.
-    public_base_url — browser-accessible base URL returned by url()
-                  (e.g. http://localhost:8081). Required by the API.
+    upload_url       — WebDAV base URL for PUT/DELETE (e.g. http://file-server/upload).
+    read_url         — static-serve base URL for GET (e.g. http://file-server).
+    public_base_url  — browser-accessible base URL returned by url()
+                       (e.g. http://localhost:8081). None disables url().
     """
 
     def __init__(
         self,
         upload_url: str,
-        read_url: str | None = None,
-        public_base_url: str | None = None,
+        read_url: str,
+        public_base_url: str | None,
     ):
         self._upload_url = upload_url.rstrip("/")
-        self._read_url = (read_url or upload_url).rstrip("/")
+        self._read_url = read_url.rstrip("/")
         self._public_base_url = public_base_url.rstrip("/") if public_base_url else None
 
     def put(self, key: str, data: bytes) -> None:
@@ -130,30 +128,32 @@ class HttpBundler:
 def bundler_from_env() -> IBundler:
     """Build the configured bundler from environment variables.
 
-    BUNDLER_BACKEND  disk | http  (default: disk)
+    BUNDLER_BACKEND    disk | http  — required.
+    REPLAY_HOST        public base URL for url(). Required by the API; for
+                       orchestrator daemons that only put/get it can be empty.
 
-    disk:
-      BUNDLE_DIR      local path to write bundles (default: ./sim-artifacts)
-      REPLAY_HOST     public base URL for url() — required by the API
-
-    http:
+    disk backend:
+      BUNDLE_DIR       local path to write bundles
+    http backend:
       BUNDLE_UPLOAD_URL  WebDAV base URL for PUT/DELETE
                          (e.g. http://file-server/upload)
       BUNDLE_READ_URL    static-serve base URL for GET
-                         (e.g. http://file-server). Defaults to BUNDLE_UPLOAD_URL.
-      REPLAY_HOST        public base URL for url() — required by the API
+                         (e.g. http://file-server)
     """
-    backend = os.environ.get("BUNDLER_BACKEND", "disk")
+    backend = os.environ["BUNDLER_BACKEND"]
+    # REPLAY_HOST is required for the API; orchestrator daemons (which only
+    # PUT/GET internally) set it to an empty string in compose. Treat empty
+    # as "no public URL" so .url() raises if called.
+    replay_host = os.environ["REPLAY_HOST"] or None
     if backend == "disk":
-        base_dir = os.environ.get("BUNDLE_DIR", "./sim-artifacts")
-        return DiskBundler(base_dir=base_dir, public_base_url=os.environ.get("REPLAY_HOST"))
+        return DiskBundler(
+            base_dir=os.environ["BUNDLE_DIR"],
+            public_base_url=replay_host,
+        )
     if backend == "http":
-        upload_url = os.environ.get("BUNDLE_UPLOAD_URL")
-        if not upload_url:
-            raise ValueError("BUNDLE_UPLOAD_URL is required when BUNDLER_BACKEND=http")
         return HttpBundler(
-            upload_url=upload_url,
-            read_url=os.environ.get("BUNDLE_READ_URL"),
-            public_base_url=os.environ.get("REPLAY_HOST"),
+            upload_url=os.environ["BUNDLE_UPLOAD_URL"],
+            read_url=os.environ["BUNDLE_READ_URL"],
+            public_base_url=replay_host,
         )
     raise ValueError(f"unknown BUNDLER_BACKEND: {backend!r}")

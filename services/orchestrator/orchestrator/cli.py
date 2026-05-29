@@ -56,16 +56,33 @@ from orchestrator.scheduler_daemon import (
 from sa_common.db.test_match_jobs import reset_stale_running_jobs
 
 
+def _env_or(cli_value, env_name: str, cast=str):
+    """Resolve a flag's value: CLI override if given, else os.environ[env_name].
+
+    Keeps env reads out of argparse defaults so each subcommand only requires
+    the env vars it actually uses — e.g. running `scheduler` doesn't fail
+    because BUILDER_BUILD_TIMEOUT_S (only needed by `test-match`) isn't set.
+
+    Missing env exits with a short message naming the variable. Cast failures
+    bubble up as-is — they're a config-typo class of bug, not a missing one.
+    """
+    if cli_value is not None:
+        return cli_value
+    try:
+        return cast(os.environ[env_name])
+    except KeyError:
+        sys.exit(f"missing required environment variable: {env_name}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="snake_arena orchestrator")
-    parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
+    parser.add_argument("--log-level", default=None)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_match = subparsers.add_parser("match", help="run queued ranked match jobs")
     p_match.add_argument(
-        "--sim-image",
-        default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
+        "--sim-image", default=None,
         help="Docker image tag for the sim (env: ORCHESTRATOR_SIM_IMAGE)",
     )
     p_match.add_argument(
@@ -74,23 +91,10 @@ def main() -> None:
     )
 
     p_test = subparsers.add_parser("test-match", help="run queued dev test matches")
-    p_test.add_argument(
-        "--sim-image",
-        default=os.environ.get("ORCHESTRATOR_SIM_IMAGE"),
-    )
-    p_test.add_argument(
-        "--redis-url",
-        default=os.environ.get("REDIS_URL", "redis://localhost:6379"),
-    )
-    p_test.add_argument(
-        "--registry-prefix",
-        default=os.environ.get("BUILDER_REGISTRY_PREFIX", "snake"),
-    )
-    p_test.add_argument(
-        "--build-timeout",
-        type=int,
-        default=int(os.environ.get("BUILDER_BUILD_TIMEOUT_S", "60")),
-    )
+    p_test.add_argument("--sim-image",      default=None)
+    p_test.add_argument("--redis-url",      default=None)
+    p_test.add_argument("--registry-prefix", default=None)
+    p_test.add_argument("--build-timeout", type=int, default=None)
     p_test.add_argument(
         "--once", action="store_true",
         help="Process at most one job, then exit. Exit 2 if queue is empty.",
@@ -112,40 +116,32 @@ def main() -> None:
              "etc.) live on the modes table — this daemon has no per-mode flags.",
     )
     p_sched.add_argument(
-        "--per-mode-queue-cap",
-        type=int,
-        default=int(os.environ.get("SCHEDULER_PER_MODE_QUEUE_CAP", "5")),
+        "--per-mode-queue-cap", type=int, default=None,
         help="Max queued jobs per mode at any time (env: SCHEDULER_PER_MODE_QUEUE_CAP)",
     )
 
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=args.log_level,
+        level=_env_or(args.log_level, "LOG_LEVEL"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     log = logging.getLogger(f"orchestrator.{args.command}")
 
     if args.command == "match":
-        if not args.sim_image:
-            print("--sim-image or ORCHESTRATOR_SIM_IMAGE is required", file=sys.stderr)
-            sys.exit(2)
         config = RunnerDaemonConfig(
-            sim_image=args.sim_image,
+            sim_image=_env_or(args.sim_image, "ORCHESTRATOR_SIM_IMAGE"),
             bundler=bundler_from_env(),
         )
         run_one, run_forever = run_match_iteration, run_match_forever
 
     elif args.command == "test-match":
-        if not args.sim_image:
-            print("--sim-image or ORCHESTRATOR_SIM_IMAGE is required", file=sys.stderr)
-            sys.exit(2)
         config = TestRunnerDaemonConfig(
-            sim_image=args.sim_image,
+            sim_image=_env_or(args.sim_image, "ORCHESTRATOR_SIM_IMAGE"),
             bundler=bundler_from_env(),
-            redis_url=args.redis_url,
-            registry_prefix=args.registry_prefix,
-            build_timeout_s=args.build_timeout,
+            redis_url=_env_or(args.redis_url, "REDIS_URL"),
+            registry_prefix=_env_or(args.registry_prefix, "BUILDER_REGISTRY_PREFIX"),
+            build_timeout_s=_env_or(args.build_timeout, "BUILDER_BUILD_TIMEOUT_S", int),
         )
         run_one, run_forever = run_test_iteration, run_test_forever
         with get_conn(autocommit=True) as conn:
@@ -156,7 +152,9 @@ def main() -> None:
         run_one, run_forever = run_scorer_iteration, run_scorer_forever
 
     elif args.command == "scheduler":
-        config = SchedulerDaemonConfig(per_mode_queue_cap=args.per_mode_queue_cap)
+        config = SchedulerDaemonConfig(
+            per_mode_queue_cap=_env_or(args.per_mode_queue_cap, "SCHEDULER_PER_MODE_QUEUE_CAP", int),
+        )
         # Scheduler doesn't support --once (it's purely additive, not claim-based).
         _run_daemon(config, run_scheduler_forever, log)
         return

@@ -77,6 +77,10 @@ def get_mode_leaderboard(
         )
         rows = cur.fetchall()
 
+    # All rows are guaranteed to have scored participants by the WHERE clause
+    # (`mp.metrics ? 'score'`), so avg_score / best_score / avg_rank are never
+    # NULL. avg_length is still NULL-able because final_length is nullable in
+    # match_participants (a snake that crashed pre-step has no final length).
     return [
         LeaderboardEntry(
             rank=i + 1,
@@ -85,9 +89,9 @@ def get_mode_leaderboard(
             language=row["language"],
             user_display_name=row["user_display_name"],
             matches_played=int(row["matches_played"]),
-            avg_score=float(row["avg_score"] or 0),
-            best_score=float(row["best_score"] or 0),
-            avg_rank=float(row["avg_rank"] or 0),
+            avg_score=float(row["avg_score"]),
+            best_score=float(row["best_score"]),
+            avg_rank=float(row["avg_rank"]),
             avg_length=float(row["avg_length"]) if row["avg_length"] is not None else None,
         )
         for i, row in enumerate(rows)
@@ -187,7 +191,7 @@ def get_overall_leaderboard(
             project_name=row["project_name"],
             language=row["language"],
             user_display_name=row["user_display_name"],
-            overall_score=float(row["overall_score"] or 0),
+            overall_score=float(row["overall_score"]),
             total_matches=int(row["total_matches"]),
             modes_played=int(row["modes_played"]),
         )

@@ -50,21 +50,21 @@ def list_underplayed_versions(
     conn: psycopg.Connection,
     mode: Mode,
 ) -> list[VersionStats]:
-    """Return submitted versions that haven't hit the mode's effective target.
+    """Return submitted versions that haven't hit the mode's target.
 
-    Multi modes: a version is underplayed when the distinct opponent versions
-    it has played OR is about to play (queued/running) is less than the
-    effective target. Effective target = min(mode.target, N - 1) where N is
-    the number of currently-submitted projects, because you can never have
-    more distinct opponents than there are other projects.
+    Both solo and multi modes count *matches played + in-flight* (success
+    matches plus queued/running jobs) against `mode.target`. The same
+    metric drives the leaderboard's eligibility check, so the matchmaker
+    and the leaderboard agree on "played enough."
 
-    Solo modes: count matches played + in-flight in this mode, capped at
-    mode.target.
+    Variety (distinct opponents played) is a sort-order preference inside
+    pick_match_group, not a hard stop — once a project has played every
+    other project at least once, additional matches will repeat pairings,
+    and that's fine.
 
     Counting in-flight match_jobs (queued/running) prevents the scheduler
-    from filling its per-mode queue cap with five copies of the same pairing
-    in a single tick. Without it, queued matches are invisible to the
-    matchmaker and it re-picks the same seed/opponent.
+    from filling its per-mode queue cap with five copies of the same
+    pairing in a single tick.
 
     Result is sorted least-played first.
     """
@@ -130,18 +130,18 @@ def _underplayed_solo(conn: psycopg.Connection, mode: Mode) -> list[VersionStats
 
 
 def _underplayed_multi(conn: psycopg.Connection, mode: Mode) -> list[VersionStats]:
-    """Multi modes: each version needs `effective_target` distinct opponents.
+    """Multi modes: each version needs `mode.target` matches played + in-flight.
 
-    effective_target = min(mode.target, N - 1) — you can't have more distinct
-    opponents than there are other submitted projects, so a higher mode.target
-    is unreachable and would loop forever.
+    matches_played counts the project's appearances in success matches plus
+    queued/running jobs for this mode. distinct_opponents is returned in
+    the stats but is NOT used as the stop condition — it drives pick_match_group's
+    "prefer fresh pairings" sort order. Once everyone has played everyone,
+    pairings repeat, and that's fine: target is about volume of matches.
     """
     n_submitted = _count_submitted(conn)
     if n_submitted < mode.participant_count:
         return []
-    effective_target = min(mode.target_matches_per_version, n_submitted - 1)
-    if effective_target <= 0:
-        return []
+    target = mode.target_matches_per_version
 
     with conn.cursor() as cur:
         cur.execute(
@@ -151,8 +151,33 @@ def _underplayed_multi(conn: psycopg.Connection, mode: Mode) -> list[VersionStat
                 FROM projects
                 WHERE submitted_version > 0
             ),
-            -- Pairings already in match_participants (success matches only).
-            played_success AS (
+            -- Match appearances (success + in-flight). Each row = one
+            -- match this version participated in (or is about to).
+            played_success_matches AS (
+                SELECT mp.project_id, mp.project_version, mp.match_id
+                FROM match_participants mp
+                JOIN matches m
+                  ON m.id = mp.match_id
+                 AND m.mode_id = %(mode_id)s
+                 AND m.status = 'success'
+            ),
+            in_flight_matches AS (
+                -- One row per (project, job) for queued/running jobs.
+                SELECT self_p.id AS project_id,
+                       self_p.submitted_version AS project_version,
+                       mj.id AS match_id
+                FROM match_jobs mj
+                CROSS JOIN LATERAL unnest(mj.project_ids) AS self_pid
+                JOIN projects self_p
+                  ON self_p.id = self_pid AND self_p.submitted_version > 0
+                WHERE mj.mode_id = %(mode_id)s
+                  AND mj.status IN ('queued', 'running')
+            ),
+            -- Distinct opponent (project, version) pairs from BOTH sources.
+            -- The two CTEs share no match_id space (one is from matches,
+            -- the other from match_jobs), but UNION dedupes per opponent
+            -- pair so distinct_opponents counts each pairing once.
+            opponent_pairs AS (
                 SELECT mp_self.project_id, mp_self.project_version,
                        mp_other.project_id AS opp_project,
                        mp_other.project_version AS opp_version
@@ -164,15 +189,11 @@ def _underplayed_multi(conn: psycopg.Connection, mode: Mode) -> list[VersionStat
                 JOIN match_participants mp_other
                   ON mp_other.match_id = m.id
                  AND mp_other.seat != mp_self.seat
-            ),
-            -- Pairings queued or running (about to happen). Use each
-            -- opponent's CURRENT submitted_version because that's what the
-            -- runner will resolve when it dispatches.
-            in_flight AS (
-                SELECT self_p.id AS project_id,
-                       self_p.submitted_version AS project_version,
-                       other_p.id AS opp_project,
-                       other_p.submitted_version AS opp_version
+
+                UNION
+
+                SELECT self_p.id, self_p.submitted_version,
+                       other_p.id, other_p.submitted_version
                 FROM match_jobs mj
                 CROSS JOIN LATERAL unnest(mj.project_ids) AS self_pid
                 CROSS JOIN LATERAL unnest(mj.project_ids) AS other_pid
@@ -184,26 +205,38 @@ def _underplayed_multi(conn: psycopg.Connection, mode: Mode) -> list[VersionStat
                   AND mj.status IN ('queued', 'running')
                   AND self_pid <> other_pid
             ),
-            opponent_pairs AS (
-                SELECT * FROM played_success
-                UNION
-                SELECT * FROM in_flight
+            match_counts AS (
+                SELECT project_id, project_version, COUNT(*) AS matches_played
+                FROM (
+                    SELECT * FROM played_success_matches
+                    UNION ALL
+                    SELECT * FROM in_flight_matches
+                ) AS all_matches
+                GROUP BY project_id, project_version
+            ),
+            opp_counts AS (
+                SELECT project_id, project_version,
+                       COUNT(DISTINCT (opp_project, opp_version)) AS distinct_opponents
+                FROM opponent_pairs
+                GROUP BY project_id, project_version
             )
             SELECT s.project_id,
                    s.version,
-                   COUNT(op.opp_project) AS matches_played,
-                   COUNT(DISTINCT (op.opp_project, op.opp_version)) AS distinct_opponents
+                   COALESCE(mc.matches_played, 0)      AS matches_played,
+                   COALESCE(oc.distinct_opponents, 0)  AS distinct_opponents
             FROM submitted s
-            LEFT JOIN opponent_pairs op
-                   ON op.project_id = s.project_id
-                  AND op.project_version = s.version
-            GROUP BY s.project_id, s.version, s.submitted_at
-            HAVING COUNT(DISTINCT (op.opp_project, op.opp_version)) < %(target)s
-            ORDER BY distinct_opponents ASC,
-                     matches_played    ASC,
+            LEFT JOIN match_counts mc
+                   ON mc.project_id = s.project_id
+                  AND mc.project_version = s.version
+            LEFT JOIN opp_counts oc
+                   ON oc.project_id = s.project_id
+                  AND oc.project_version = s.version
+            WHERE COALESCE(mc.matches_played, 0) < %(target)s
+            ORDER BY matches_played    ASC,
+                     distinct_opponents ASC,
                      s.submitted_at    DESC
             """,
-            {"mode_id": mode.id, "target": effective_target},
+            {"mode_id": mode.id, "target": target},
         )
         return [
             VersionStats(
@@ -269,13 +302,15 @@ def pick_match_group(
     """Pick one group of `mode.participant_count` versions for a multi mode.
 
     Greedy strategy:
-      1. Seed the group with the most-underplayed version.
-      2. Fill remaining seats from a candidate pool (all submitted versions
-         except the seed and its already-played opponents). Walk candidates
-         in least-played-with-seed order; break ties randomly.
-      3. If the pool runs dry before the group is full, fall back to any
-         other submitted version (rare — only when the pool of pairings is
-         genuinely exhausted, e.g. only `n` submissions in total).
+      1. Seed the group with the most-underplayed version (lowest matches_played).
+      2. Fill the remaining seats from all submitted versions, sorted so:
+           a) opponents the seed hasn't played yet come first (variety),
+           b) then by underplay rank (let the underplayed catch up),
+           c) random tiebreak.
+         Once every other project has played the seed at least once, the
+         "unplayed" tier is empty and the sort falls through to underplay
+         rank — i.e. pairings repeat. That's by design: matches_played is
+         the target, distinct opponents is a soft preference.
 
     Returns None when fewer than `mode.participant_count` submissions exist
     overall (the scheduler logs and moves on).

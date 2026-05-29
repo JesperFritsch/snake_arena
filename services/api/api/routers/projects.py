@@ -321,8 +321,9 @@ async def upload_image(
     if meta.source != "external_image":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "only external_image projects support image upload")
 
-    size = file.size or 0
-    if size > _MAX_IMAGE_BYTES:
+    if file.size is None:
+        raise HTTPException(status.HTTP_411_LENGTH_REQUIRED, "Content-Length required")
+    if file.size > _MAX_IMAGE_BYTES:
         raise HTTPException(
             status.HTTP_413_CONTENT_TOO_LARGE,
             f"image too large (max {_MAX_IMAGE_BYTES // 1024 // 1024} MB)",

@@ -45,7 +45,7 @@ from sa_common.db.test_match_jobs import (
 )
 from sa_common.db.matches import record_match_result
 from sa_common.db.connection import get_conn
-from sa_common.types import SimArgs
+from sa_common.types import ParticipantRow, SimArgs
 
 from snake_sim.loop_observers.file_persist_observer import FilePersistObserver
 from snake_sim.analyze.scripts.run_analyzer import analyze
@@ -74,7 +74,7 @@ class TestRunnerDaemonConfig:
         redis_url: str = "redis://localhost:6379",
         registry_prefix: str = "snake",
         build_timeout_s: int = 60,
-        test_per_step_budget_seconds: float = 0.05,
+        test_per_step_budget_seconds: float = 0.025,
     ):
         self.sim_image = sim_image
         self.bundler = bundler
@@ -141,10 +141,11 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         # the runner) wouldn't reach them otherwise. Re-publish the entry
         # carrying the banner as a step_log so it lands in the store at the
         # right step index. Idempotent with the line above for startup kills.
-        for step, log_text in enumerate(result.dev_agent_step_logs or []):
-            if log_text and log_text.startswith("=== Agent killed"):
-                observer.publish_step_log(step, log_text)
-                break
+        if result.dev_agent_step_logs is not None:
+            for step, log_text in enumerate(result.dev_agent_step_logs):
+                if log_text and log_text.startswith("=== Agent killed"):
+                    observer.publish_step_log(step, log_text)
+                    break
         observer.publish_stop()
 
     try:
@@ -201,32 +202,32 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         # and the dev-build verdict was persisted there too.)
         file_observer.close()
 
-        # Analyze the captured replay so build_participants can derive per-snake
-        # outcomes and the bundle carries analysis.json. Skip when the match had
-        # no steps (e.g. the agent never connected) — analyze() can't build a
-        # result from zero steps.
+        # Analyze the captured replay so build_participants can derive
+        # per-snake outcomes and the bundle carries analysis.json. A
+        # zero-step match (e.g. dev agent crashed at startup before any
+        # frame) has no analyzable replay — in that case we skip analysis
+        # AND participants. Otherwise analyzer failures bubble up so we
+        # don't silently land an empty-participants test match.
         run_analysis = None
+        participants: list[ParticipantRow] = []
         if result.success and observer.step_count > 0 and replay_path.exists():
-            try:
-                run_analysis = analyze(replay_path)
-                result.run_analysis = run_analysis
-                result.final_lengths = extract_final_lengths(replay_path)
-            except Exception:
-                log.warning("analysis failed for job id=%d", job.id, exc_info=True)
-
-        participants = build_participants(
-            result=result,
-            project_by_agent_name=setup.project_by_name,
-            version_by_agent_name=setup.version_by_name,
-            seat_by_agent_name=setup.seat_by_name,
-        )
+            run_analysis = analyze(replay_path)
+            result.run_analysis = run_analysis
+            result.final_lengths = extract_final_lengths(replay_path)
+            participants = build_participants(
+                result=result,
+                project_by_agent_name=setup.project_by_name,
+                version_by_agent_name=setup.version_by_name,
+                seat_by_agent_name=setup.seat_by_name,
+            )
 
         saved_key: str | None = None
         try:
             bundle_bytes = assemble_bundle(
                 replay_path, run_analysis,
-                dev_step_logs=result.dev_agent_step_logs or [],
+                dev_step_logs=result.dev_agent_step_logs,
                 exec_times=result.exec_times,
+                wall_step_times=result.wall_step_times,
                 budgets=result.budgets,
             )
             config.bundler.put(bundle_key, bundle_bytes)

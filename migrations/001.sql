@@ -194,8 +194,8 @@ CREATE INDEX idx_matches_mode_status
 INSERT INTO modes
     (slug,                name,                  description,                                  participant_count, sim_args,                                       budget_ms, scoring_config,                                    target_matches_per_version)
 VALUES
-    ('multi-2-standard',  '2-player Standard',   'Head-to-head on a 20x20 board.',             2,                 '{"food": 3, "grid_width": 20, "grid_height": 20}', 25,        '{"alpha": 0.5, "beta": 2.0, "w": 0.3, "floor_ms": 2.0}', 15),
-    ('multi-4-standard',  '4-player Standard',   'Full-board scrum on a 20x20 board.',         4,                 '{"food": 3, "grid_width": 20, "grid_height": 20}', 25,        '{"alpha": 0.5, "beta": 2.0, "w": 0.3, "floor_ms": 2.0}', 20);
+    ('multi-4-standard',  '4-player Standard',   'Full-board scrum on a 20x15 board.',         4,                 '{"food": 5, "grid_width": 20, "grid_height": 15}', 50,        '{"alpha": 0.5, "beta": 2.0, "w": 0.3, "floor_ms": 2.0}', 10),
+    ('multi-6-standard',  '6-player Standard',   'Full-board scrum on a 20x20 board.',         6,                 '{"food": 7, "grid_width": 20, "grid_height": 20}', 50,        '{"alpha": 0.5, "beta": 2.0, "w": 0.3, "floor_ms": 2.0}', 10);
 
 -- --------------------------------------------------------------------------
 -- LISTEN/NOTIFY wakeups for event-driven daemons. Triggers fire inside the
