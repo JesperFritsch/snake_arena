@@ -371,20 +371,15 @@ export function MatchViewer({
           className="mv-pane mv-console"
           style={{ flex: 1 - splitRatio }}
         >
-          {execTimes && (
+          {execTimes && execTimes["0"] !== undefined && (
             <div className="exec-times-bar">
-              <span className="exec-times-label">Step CPU time</span>
-              {Object.entries(execTimes).map(([id, ms]) => {
-                const seat = Number(id);
-                const name = activeJob?.participant_names[seat] ?? `snake ${seat}`;
-                const label = seat === 0 ? `${name} (dev)` : name;
-                return (
-                  <span key={id} className="exec-times-entry">
-                    <span className="exec-times-name">{label}</span>
-                    <span className="exec-times-ms">{ms.toFixed(3)}ms</span>
-                  </span>
-                );
-              })}
+              <span className="exec-times-label">Dev CPU time</span>
+              <span className="exec-times-entry">
+                <span className="exec-times-name">
+                  {activeJob?.participant_names[0] ?? "snake 0"} (dev)
+                </span>
+                <span className="exec-times-ms">{execTimes["0"].toFixed(3)}ms</span>
+              </span>
             </div>
           )}
           <div className="console">{consoleContent}</div>

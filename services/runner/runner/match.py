@@ -37,6 +37,15 @@ _STEP_SEP = "---STEP_END---\n"  # printed by the agent harness after each update
 _STEP_STDOUT_BUDGET = 10_000     # bytes per step chunk before truncation notice
 _STARTUP_LOG_BUDGET = 16_000    # bytes kept when an agent crashes before any step
 _TRUNCATION_NOTICE = "\n[stdout truncated — output too long for this step]\n"
+_MATCH_LOG_CAP = 10 * 1024 * 1024  # 10 MiB per agent kept for the bundle
+_MATCH_LOG_TRUNCATION_BANNER = (
+    "\n"
+    "=========================================================\n"
+    "LOG TRUNCATED: this agent produced more than 10 MiB of\n"
+    "stdout/stderr during the match. Output past this point\n"
+    "was dropped. Reduce log volume to see your full output.\n"
+    "=========================================================\n"
+)
 
 
 def _split_step_logs(text: str, budget: int = _STEP_STDOUT_BUDGET) -> list[str]:
@@ -133,30 +142,65 @@ def _dev_step_logs(dev_text: str | None) -> list[str] | None:
 
 
 class _StepLogStreamer:
-    """Follows a container's stdout in a daemon thread and invokes
-    on_step_log(frame, text) as each frame's output completes (delimited by the
-    harness separator). Chunk c is the agent reacting to frame c's world, so it
-    maps to frame c.
+    """Follows a container's stdout in a daemon thread. Two outputs:
 
-    Each frame is capped at `budget` bytes *mid-stream*: once it exceeds the
-    budget, further bytes are dropped (memory stays bounded even if an agent
-    floods stdout) and the cap resets at the next separator. Best-effort,
-    live-only — the bundle uses _split_step_logs.
+    1. Per-step live stream via on_step_log(frame, text) as each frame's
+       output completes (delimited by the harness separator). Each chunk is
+       capped at `budget` bytes mid-stream. Disabled when on_step_log=None.
+    2. Full accumulated log (capped at _MATCH_LOG_CAP bytes) exposed via
+       get_full_log(). Unlike docker's default rotation — which keeps the
+       *last* N bytes — we keep the *first* 10 MiB (where startup and
+       first-error usually live) and drop anything past it. If truncation
+       happened, the returned text gets a clear banner appended so the
+       user sees they produced too much output.
     """
 
     def __init__(
         self,
         container: Container,
-        on_step_log: Callable[[int, str], None],
+        on_step_log: Callable[[int, str], None] | None = None,
         budget: int = _STEP_STDOUT_BUDGET,
     ) -> None:
         self._container = container
         self._on_step_log = on_step_log
         self._budget = budget
+        self._full_log = bytearray()
+        self._full_log_truncated = False
+        self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, daemon=True, name="step-log-stream")
 
     def start(self) -> None:
         self._thread.start()
+
+    @property
+    def container(self) -> Container:
+        return self._container
+
+    def get_full_log(self) -> str:
+        """Snapshot of the agent's stdout so far, with a truncation banner
+        appended if the 10 MiB cap was hit. Safe to call while the
+        streamer is still running."""
+        with self._lock:
+            text = bytes(self._full_log).decode(errors="replace")
+            truncated = self._full_log_truncated
+        if truncated:
+            text += _MATCH_LOG_TRUNCATION_BANNER
+        return text
+
+    def _append_full(self, data: bytes) -> None:
+        # Keep the FIRST _MATCH_LOG_CAP bytes; drop the rest. Called from
+        # the streaming thread; lock against concurrent get_full_log().
+        with self._lock:
+            if self._full_log_truncated:
+                return
+            room = _MATCH_LOG_CAP - len(self._full_log)
+            if room <= 0:
+                self._full_log_truncated = True
+            elif len(data) <= room:
+                self._full_log.extend(data)
+            else:
+                self._full_log.extend(data[:room])
+                self._full_log_truncated = True
 
     def _run(self) -> None:
         sep = _STEP_SEP.encode()
@@ -197,6 +241,9 @@ class _StepLogStreamer:
             for data in self._container.logs(stream=True, follow=True):
                 if not data:
                     continue
+                self._append_full(data)
+                if self._on_step_log is None:
+                    continue  # accumulate-only mode (non-dev agents)
                 scan.extend(data)
                 # Pull off every complete <content><SEP> segment.
                 while True:
@@ -242,6 +289,7 @@ def run_match(
 ) -> MatchResult:
     networks: list[Network] = []
     agent_containers: list[Container] = []
+    log_streamers: list[_StepLogStreamer] = []
     sim_container: Container | None = None
     loop_observable: ILoopObservable | None = None
 
@@ -257,7 +305,7 @@ def run_match(
         return result
 
     def _init_failure(error: str) -> MatchResult:
-        agent_logs = _collect_agent_logs(agent_containers)
+        agent_logs = _collect_agent_logs(agent_containers, log_streamers)
         dev_step_logs = (
             _dev_step_logs(agent_logs.get(agent_containers[0].name))
             if agent_containers else None
@@ -301,6 +349,23 @@ def run_match(
                     memswap_limit=agent_mem_limit,
                     nano_cpus=int(agent_cpus * 1_000_000_000),
                     pids_limit=agent_pids_limit,
+                    # Bound the FDs an agent can hold open — there's no
+                    # legitimate reason for an agent to keep many files /
+                    # sockets, and an unbounded default lets a misbehaving
+                    # agent stall its own gRPC accept loop (which surfaces
+                    # as a misleading "init_failure" kill reason).
+                    ulimits=[docker.types.Ulimit(name="nofile", soft=128, hard=128)],
+                    # Cap on-disk log buffering at the docker daemon. The
+                    # runner streams stdout live via _StepLogStreamer and
+                    # re-reads the full log once at match end; both can
+                    # tolerate truncation of stdout-spam attacks. The cap
+                    # rotates in-place (max-file=1) so total disk use per
+                    # container is bounded to ~max-size and the file is
+                    # destroyed when the container is removed at cleanup.
+                    log_config=docker.types.LogConfig(
+                        type=docker.types.LogConfig.types.JSON,
+                        config={"max-size": "10m", "max-file": "1"},
+                    ),
                     cap_drop=["ALL"],
                     security_opt=["no-new-privileges"],
                     user="1000:1000",
@@ -308,6 +373,17 @@ def run_match(
                 agent_containers.append(container)
                 target_to_container[target] = container
                 target_to_name[target] = agent.name
+                # Start the log streamer immediately so it captures stdout
+                # from container start, including init crashes. Only the
+                # dev agent (the first one) forwards per-step chunks to
+                # on_step_log for the live console; the rest accumulate
+                # silently for the post-match bundle.
+                streamer = _StepLogStreamer(
+                    container,
+                    on_step_log=on_step_log if len(agent_containers) == 1 else None,
+                )
+                streamer.start()
+                log_streamers.append(streamer)
             except ImageNotFound:
                 return _finish(MatchResult(
                     success=False,
@@ -364,11 +440,6 @@ def run_match(
             if hasattr(obs, "set_agent_containers"):
                 obs.set_agent_containers(seat_to_container)
 
-        # Stream the dev agent's (seat 0) stdout per step to the caller, live.
-        # follow=True starts from container creation, so no early output is missed.
-        if on_step_log is not None and agent_containers:
-            _StepLogStreamer(agent_containers[0], on_step_log).start()
-
         sim_net = d_client.networks.create(f"{match_id}-sim", driver="bridge", internal=False)
         networks.append(sim_net)
         router.attach(sim_net)
@@ -423,7 +494,7 @@ def run_match(
             exit_code = -1
 
         sim_logs = sim_container.logs().decode(errors="replace")
-        agent_logs = _collect_agent_logs(agent_containers)
+        agent_logs = _collect_agent_logs(agent_containers, log_streamers)
 
         # Dev-agent (seat 0) console logs: per-step if it ran, else the whole
         # log (e.g. a crash during init, before any update).
@@ -499,9 +570,21 @@ def _wait_for_agents_ready(containers: list[Container], timeout: int) -> bool:
     return True
 
 
-def _collect_agent_logs(containers: list[Container]) -> dict[str, str]:
-    logs = {}
+def _collect_agent_logs(
+    containers: list[Container],
+    streamers: list["_StepLogStreamer"] | None = None,
+) -> dict[str, str]:
+    """Per-container stdout, source-of-truth from our in-process streamer
+    (caps at 10 MiB, banner-appended on overflow). Falls back to docker's
+    own log API for any container without a streamer — only the
+    pre-streamer-start failure paths use the fallback."""
+    streamer_by_container = {id(s.container): s for s in (streamers or [])}
+    logs: dict[str, str] = {}
     for c in containers:
+        s = streamer_by_container.get(id(c))
+        if s is not None:
+            logs[c.name] = s.get_full_log()
+            continue
         try:
             logs[c.name] = c.logs().decode(errors="replace")
         except APIError:

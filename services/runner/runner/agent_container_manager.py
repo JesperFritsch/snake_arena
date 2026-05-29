@@ -26,15 +26,6 @@ _CGROUP_BASE = Path("/sys/fs/cgroup")
 # the next notify_step. 0.5 = "at least 50% of the window was CPU work."
 _PER_STEP_KILL_BUSY_RATIO = 0.5
 
-# Wall-guard "stall" detection: when wall > wall_budget AND the snake's
-# cpu/wall ratio is below this, treat as a stall (sleep, blocking IO,
-# or a hang where Python interpreter + gRPC keepalive nudge cpu just past
-# the 1 ms absolute sleep_threshold). A legitimate working snake under
-# contention has cpu/wall ≈ 1/contention; with default max contention of
-# 5x that's 20%. 1% leaves a wide margin for slow but real work while
-# still catching `time.sleep(N)` style hangs.
-_WALL_CLOCK_STALL_RATIO = 0.01
-
 
 @dataclass
 class _AgentTracker:
@@ -48,16 +39,27 @@ class _AgentTracker:
     # allows and is killed.
     accumulating_remaining_ns: int = 0
     # Running bank for the wall-clock accumulating budget (ns). Refilled by
-    # `wall_accumulating_step_ns` and debited by *excess* wall (wall_step
-    # minus the part explained by cpu_step under current contention). Bounds
-    # how much "sleeping just under the per-step wall threshold" an agent
-    # can do across the match.
+    # `wall_accumulating_step_ns` and debited by *excess* wall (the snake's
+    # own response wall minus the part explained by cpu_step under current
+    # contention). Bounds how much "sleeping just under the per-step wall
+    # threshold" an agent can do across the match.
     wall_bank_remaining_ns: int = 0
     # Wall-clock and CPU snapshot at the start of the current step. The poll
     # loop uses these to catch agents that are sleeping / hanging — they
     # blow the per-step wall-clock budget without ever burning CPU.
     step_start_wall_ns: int = 0
     step_start_cpu_ns: int = 0
+    # Set when the sim notifies us that this snake has returned its decision
+    # for the current step. Until that happens, the snake is the (or a)
+    # bottleneck holding the sim from advancing — only pending snakes are
+    # kill candidates for the wall-clock guards. Reset at every notify_step
+    # for surviving snakes.
+    responded_this_step: bool = False
+    # Wall time (monotonic_ns) when this snake's decision arrived this step,
+    # i.e. when notify_decision fired for it. 0 = not received yet. Used to
+    # compute the snake's individual response wall for the sustained-wall
+    # excess debit at notify_step.
+    response_wall_ns: int = 0
     # True from set_agent_containers until notify_start fires for this seat.
     # Used so the poll loop can distinguish a startup-phase CPU kill from a
     # per-step CPU kill — the budget is `startup_budget_ns` in either case
@@ -93,19 +95,22 @@ class AgentContainerManager(ILoopObserver):
     above the long-run rate.
 
     Phase 2 also runs two wall-clock guards (enabled when
-    `wall_clock_safety_factor` > 0):
+    `wall_clock_safety_factor` > 0). Both rely on the sim firing
+    `notify_decision(snake_id)` as soon as a snake's response for the
+    current step arrives. A snake that has *not* yet fired notify_decision
+    is "pending" — it's the (or a) bottleneck holding the sim from
+    advancing. Only pending snakes are kill candidates here; snakes that
+    already responded this step can't be the cause of a slow wall, even if
+    wall_step looks bad globally because a neighbour is hanging.
 
-    Per-step wall budget — if notify_step doesn't fire for longer than a
-    contention-adjusted budget *and* the agent has used less than
-    `wall_clock_sleep_threshold_seconds` of CPU in that window, the agent
-    is presumed sleeping / blocked and killed. The budget is computed
-    adaptively each poll iteration:
+    Per-step wall budget — if a pending snake's wall_elapsed exceeds the
+    contention-adjusted budget, it's killed. Reason "wall_clock" if its
+    cpu_in_window is under the step CPU budget (sleeping/blocked) or
+    "per_step" if it's over (single slow step holding the sim). The budget
+    is computed adaptively each poll iteration:
       1. Rolling mean of (wall_step / max_cpu_step) over the last K
          completed steps, when there are at least `wall_clock_min_history`
-         steps whose max_cpu_step >= `wall_clock_contention_min_cpu_seconds`.
-         The threshold filters out all-sleeper / all-trivial steps that would
-         otherwise let an attacker's slow wall divided by its tiny cpu inflate
-         "contention" enough to mask itself.
+         steps of history.
       2. Otherwise, PSI from `/proc/pressure/cpu` (or a configured cgroup
          path) scaled by `wall_clock_psi_scale_k`.
       3. Otherwise, `wall_clock_fallback_contention`.
@@ -117,10 +122,13 @@ class AgentContainerManager(ILoopObserver):
     Sustained wall budget — bounds long-run "sleep just under the line"
     abuse. Each agent has a wall bank that refills by
     `wall_accumulating_step_seconds` per step and is debited by *excess
-    wall*, defined as `max(0, wall_step - cpu_per_step * contention)`. A
-    sleeping agent contributes ~0 CPU, so essentially all of wall_step is
-    "excess" and drains the bank fast. An agent legitimately slowed by
-    contention sees expected_wall ≈ wall_step, so excess is ~0. Bank is
+    wall*, defined as `max(0, snake_response_wall - cpu_step * contention)`.
+    `snake_response_wall` is the time between the step's start and when the
+    sim acked this snake's decision (per-snake, not the global wall_step) —
+    that's what isolates each snake from its neighbours. A sleeping agent
+    contributes ~0 CPU but a large response_wall, so essentially all of it
+    is "excess" and drains the bank fast. An agent legitimately slowed by
+    contention sees expected_wall ≈ response_wall, so excess is ~0. Bank is
     capped at `wall_accumulating_max_seconds`; when it goes negative the
     agent is killed.
 
@@ -145,7 +153,6 @@ class AgentContainerManager(ILoopObserver):
         #   budget_5x    ≈ 50ms * 5 * 3 = 750ms, still ≥ hard_floor.
         wall_clock_safety_factor: float = 3.0,
         wall_clock_hard_floor_seconds: float = 1.0,
-        wall_clock_sleep_threshold_seconds: float = 0.001,
         wall_clock_psi_path: str | None = "/proc/pressure/cpu",
         wall_clock_psi_scale_k: float = 1.0,
         wall_clock_fallback_contention: float = 5.0,
@@ -157,11 +164,6 @@ class AgentContainerManager(ILoopObserver):
         # sustained-wall budget self-defeats. Real host contention almost
         # never exceeds ~5×.
         wall_clock_max_contention: float = 5.0,
-        # Minimum max_cpu_per_step for a step to count toward the rolling
-        # contention mean. Filters out steps where every agent was sleeping
-        # or doing nothing — those tell us nothing about contention and
-        # would otherwise pollute the measurement.
-        wall_clock_contention_min_cpu_seconds: float = 0.005,
         # Wall-clock accumulating guard. Strict by default — caps long-run
         # "sleep just under the line" abuse without affecting honest agents.
         wall_accumulating_step_seconds: float = 0.0,
@@ -185,13 +187,11 @@ class AgentContainerManager(ILoopObserver):
         # Wall-clock guard config.
         self._wall_clock_safety_factor = wall_clock_safety_factor
         self._wall_clock_hard_floor_ns = int(wall_clock_hard_floor_seconds * 1e9)
-        self._wall_clock_sleep_threshold_ns = int(wall_clock_sleep_threshold_seconds * 1e9)
         self._wall_clock_psi_path = Path(wall_clock_psi_path) if wall_clock_psi_path else None
         self._wall_clock_psi_scale_k = wall_clock_psi_scale_k
         self._wall_clock_fallback_contention = wall_clock_fallback_contention
         self._wall_clock_min_history = wall_clock_min_history
         self._wall_clock_max_contention = wall_clock_max_contention
-        self._wall_clock_contention_min_cpu_ns = int(wall_clock_contention_min_cpu_seconds * 1e9)
         self._wall_clock_enabled = wall_clock_safety_factor > 0
         # Sustained-wall config.
         self._wall_accumulating_step_ns = int(wall_accumulating_step_seconds * 1e9)
@@ -272,6 +272,8 @@ class AgentContainerManager(ILoopObserver):
                     tracker.wall_bank_remaining_ns = self._wall_accumulating_initial_ns
                     tracker.step_start_wall_ns = now_wall
                     tracker.step_start_cpu_ns = max(baseline, 0)
+                    tracker.responded_this_step = False
+                    tracker.response_wall_ns = 0
                     tracker.in_startup = False
                 else:
                     self._trackers[snake_id] = _AgentTracker(
@@ -324,12 +326,7 @@ class AgentContainerManager(ILoopObserver):
                 # state updates use a consistent value for this step.
                 tracker.last_cpu_ns = current
             max_cpu_step_ns = max(cpu_deltas.values(), default=0)
-            # Push to step-history (used for contention tier 1) only if we
-            # had at least one agent doing real work — a stalled step
-            # (all cpu deltas ≈ noise) tells us nothing about contention and
-            # would otherwise let a sleeper inflate the measured contention
-            # to justify its own slow wall (sustained-wall self-defeat).
-            if wall_step_ns > 0 and max_cpu_step_ns >= self._wall_clock_contention_min_cpu_ns:
+            if wall_step_ns > 0 and max_cpu_step_ns > 0:
                 self._step_history.append((wall_step_ns, max_cpu_step_ns))
             contention = self._contention_factor_locked()
 
@@ -341,9 +338,26 @@ class AgentContainerManager(ILoopObserver):
                 step_times[snake_id] = delta_ns / 1e6
                 self._exec_times_ms.setdefault(snake_id, []).append(delta_ns / 1e6)
                 self._wall_step_times_ms.setdefault(snake_id, []).append(wall_step_ms)
+                # Per-snake response wall for this step: time between step
+                # start and when the sim acked this snake's decision. Falls
+                # back to the full wall_step if notify_decision was never
+                # received (shouldn't happen for an alive snake — the sim
+                # wouldn't have moved on — but we'd rather over-charge in the
+                # weird case than under-charge).
+                if tracker.response_wall_ns and tracker.step_start_wall_ns:
+                    response_wall_ns = max(
+                        0, tracker.response_wall_ns - tracker.step_start_wall_ns
+                    )
+                else:
+                    response_wall_ns = wall_step_ns
                 tracker.step_budget_ns = self._per_step_budget_ns
                 tracker.step_start_wall_ns = now_wall
                 tracker.step_start_cpu_ns = current
+                # Pending-set reset for the upcoming step. Done here (not in
+                # notify_decision) so the window between this notify_step and
+                # the next notify_decision is the snake's responsibility.
+                tracker.responded_this_step = False
+                tracker.response_wall_ns = 0
 
                 if self._accumulating_enabled:
                     tracker.accumulating_remaining_ns += self._accumulating_step_ns - delta_ns
@@ -362,13 +376,14 @@ class AgentContainerManager(ILoopObserver):
                         self._kill_container(tracker.container)
                         continue
 
-                if self._wall_accumulating_enabled and wall_step_ns > 0:
-                    # excess_wall = wall_step - cpu_step * contention. A
-                    # sleeping agent (cpu ~= 0) has excess ≈ wall_step; an
-                    # agent legitimately slowed by contention has cpu *
-                    # contention ≈ wall_step, so excess ≈ 0.
+                if self._wall_accumulating_enabled and response_wall_ns > 0:
+                    # excess_wall = response_wall - cpu_step * contention.
+                    # response_wall is this snake's own time-to-respond, not
+                    # the global wall_step, so a fast snake stuck behind a
+                    # slow neighbour doesn't get billed for that neighbour's
+                    # delay (its response_wall stays small).
                     expected_wall_ns = int(delta_ns * contention)
-                    excess_ns = max(0, wall_step_ns - expected_wall_ns)
+                    excess_ns = max(0, response_wall_ns - expected_wall_ns)
                     tracker.wall_bank_remaining_ns += self._wall_accumulating_step_ns - excess_ns
                     if tracker.wall_bank_remaining_ns > self._wall_accumulating_max_ns:
                         tracker.wall_bank_remaining_ns = self._wall_accumulating_max_ns
@@ -396,6 +411,21 @@ class AgentContainerManager(ILoopObserver):
                 self._on_exec_times(data.step, step_times)
             except Exception:
                 log.warning("on_exec_times callback failed", exc_info=True)
+
+    def notify_decision(self, snake_id: int):
+        """Called by the sim (via the socket observable) the moment a snake's
+        decision arrives back at the sim, before notify_step fires for the
+        step. Removes the snake from the wall-clock guards' kill set for the
+        remainder of this step — a snake that has already answered cannot be
+        what's holding up the sim, no matter how big the global wall_step
+        gets thanks to a slow neighbour."""
+        now_wall = time.monotonic_ns()
+        with self._lock:
+            tracker = self._trackers.get(snake_id)
+            if tracker is None or tracker.killed:
+                return
+            tracker.responded_this_step = True
+            tracker.response_wall_ns = now_wall
 
     def get_exec_times(self) -> dict[int, list[float]]:
         """Return accumulated per-step CPU times (ms) keyed by snake_id."""
@@ -438,11 +468,9 @@ class AgentContainerManager(ILoopObserver):
             "accumulating_max_seconds": self._accumulating_max_ns / 1e9,
             "wall_clock_safety_factor": self._wall_clock_safety_factor,
             "wall_clock_hard_floor_seconds": self._wall_clock_hard_floor_ns / 1e9,
-            "wall_clock_sleep_threshold_seconds": self._wall_clock_sleep_threshold_ns / 1e9,
             "wall_clock_psi_scale_k": self._wall_clock_psi_scale_k,
             "wall_clock_fallback_contention": self._wall_clock_fallback_contention,
             "wall_clock_max_contention": self._wall_clock_max_contention,
-            "wall_clock_contention_min_cpu_seconds": self._wall_clock_contention_min_cpu_ns / 1e9,
             "wall_clock_min_history": float(self._wall_clock_min_history),
             "wall_accumulating_step_seconds": self._wall_accumulating_step_ns / 1e9,
             "wall_accumulating_initial_seconds": self._wall_accumulating_initial_ns / 1e9,
@@ -496,14 +524,6 @@ class AgentContainerManager(ILoopObserver):
                         return None
         return None
 
-    def _per_step_wall_budget_ns_locked(self) -> int:
-        """The current per-step wall-clock budget. Caller must hold the lock."""
-        contention = self._contention_factor_locked()
-        budget = int(
-            self._per_step_budget_ns * contention * self._wall_clock_safety_factor
-        )
-        return max(self._wall_clock_hard_floor_ns, budget)
-
     def notify_stop(self, data: LoopStopData):
         self._shutdown()
 
@@ -525,11 +545,19 @@ class AgentContainerManager(ILoopObserver):
         log.info("cpu budget poll loop started")
         while not self._stop_event.is_set():
             with self._lock:
-                # Compute the per-step wall budget once per iteration — it's
-                # the same for every tracker, and we don't want to read PSI N
-                # times per cycle.
+                # Compute contention + wall budget once per iteration — same
+                # for every tracker, and reading PSI N times per cycle is
+                # wasteful. Contention is also used by the projected
+                # sustained-wall check below.
+                contention = (
+                    self._contention_factor_locked()
+                    if self._wall_clock_enabled else 1.0
+                )
                 wall_budget_ns = (
-                    self._per_step_wall_budget_ns_locked()
+                    max(
+                        self._wall_clock_hard_floor_ns,
+                        int(self._per_step_budget_ns * contention * self._wall_clock_safety_factor),
+                    )
                     if self._wall_clock_enabled else 0
                 )
                 for snake_id, tracker in self._trackers.items():
@@ -585,52 +613,25 @@ class AgentContainerManager(ILoopObserver):
                         )
 
                     # Wall-clock guard: catches agents that block the sim past
-                    # the wall-clock budget. This is the ONLY enforcement that
-                    # fires without depending on a future notify_step, so it
-                    # has to cover both kinds of "blocking the sim":
-                    #   (a) cpu ≈ 0:  agent is sleeping / blocked on I/O.
-                    #   (b) cpu > step_budget:  agent has burned more than a
-                    #       single step's worth of cpu AND the sim hasn't
-                    #       advanced — i.e. one slow step inside the gRPC
-                    #       handler, not a delayed notify_step over many fast
-                    #       steps.
-                    # The gap between sleep_threshold and step_budget is left
-                    # alone: that's "moderate cpu, under per-step budget" and
-                    # the sim might just be slow due to load.
+                    # the wall-clock budget. Only considers snakes the sim is
+                    # still waiting on (notify_decision has not arrived for
+                    # this step) — a snake that already answered cannot be
+                    # the cause of a stuck sim, even if global wall is huge
+                    # because a neighbour is hanging.
                     if (
                         self._wall_clock_enabled
                         and not tracker.in_startup
+                        and not tracker.responded_this_step
                         and tracker.step_start_wall_ns
                     ):
                         wall_elapsed = time.monotonic_ns() - tracker.step_start_wall_ns
                         cpu_in_window = current - tracker.step_start_cpu_ns
-                        # cpu/wall ratio is a more robust "is this snake
-                        # doing anything" check than an absolute sleep
-                        # threshold: time.sleep(N) ends up with cpu just
-                        # above 1 ms (gRPC deserialisation + interpreter
-                        # tick) but the ratio stays tiny.
-                        cpu_ratio = (
-                            cpu_in_window / wall_elapsed
-                            if wall_elapsed > 0 else 1.0
-                        )
-                        stalled = (
-                            cpu_in_window <= self._wall_clock_sleep_threshold_ns
-                            or cpu_ratio < _WALL_CLOCK_STALL_RATIO
-                        )
                         if wall_elapsed > wall_budget_ns:
-                            if stalled:
-                                log.warning(
-                                    "snake %s (%s) wall-clock %.3fs > budget "
-                                    "%.3fs, cpu only %.3fs (ratio %.4f) -> "
-                                    "killing (sleeping/hung)",
-                                    snake_id, tracker.name,
-                                    wall_elapsed / 1e9, wall_budget_ns / 1e9,
-                                    cpu_in_window / 1e9, cpu_ratio,
-                                )
-                                tracker.killed = True
-                                tracker.kill_reason = "wall_clock"
-                                self._kill_container(tracker.container)
-                            elif cpu_in_window > tracker.step_budget_ns:
+                            # Disambiguate the kill reason for the dev
+                            # console: cpu way over per-step budget means a
+                            # single slow step holding the sim; otherwise
+                            # the snake is presumed sleeping / blocked.
+                            if cpu_in_window > tracker.step_budget_ns:
                                 log.warning(
                                     "snake %s (%s) stuck: cpu %.3fs > step "
                                     "budget %.3fs in wall %.3fs > %.3fs -> "
@@ -640,14 +641,103 @@ class AgentContainerManager(ILoopObserver):
                                     tracker.step_budget_ns / 1e9,
                                     wall_elapsed / 1e9, wall_budget_ns / 1e9,
                                 )
-                                tracker.killed = True
-                                # "per_step" — same banner: the snake exceeded
-                                # the per-step CPU budget. We just couldn't
-                                # detect it via the fast path because the
-                                # busy_ratio was low, so the wall-clock guard
-                                # caught it after wall_budget elapsed.
                                 tracker.kill_reason = "per_step"
-                                self._kill_container(tracker.container)
+                            else:
+                                log.warning(
+                                    "snake %s (%s) wall-clock %.3fs > budget "
+                                    "%.3fs, cpu only %.3fs -> killing "
+                                    "(sleeping/hung, still pending)",
+                                    snake_id, tracker.name,
+                                    wall_elapsed / 1e9, wall_budget_ns / 1e9,
+                                    cpu_in_window / 1e9,
+                                )
+                                tracker.kill_reason = "wall_clock"
+                            tracker.killed = True
+                            self._kill_container(tracker.container)
+                            continue
+
+                    # Projected sustained CPU kill: replicates the bank
+                    # computation that runs at notify_step but uses the
+                    # in-progress cpu delta. If the bank would go negative
+                    # at end-of-step (current bank + refill − used_so_far),
+                    # kill now instead of waiting for the snake to finish
+                    # its move — otherwise the snake's response for this
+                    # step makes it into the sim's state and we end up with
+                    # a "ghost" frame after the kill.
+                    #
+                    # Gated on responded_this_step the same way as the wall
+                    # guards: once the snake has answered, its move is
+                    # already in the sim's state (no ghost frame to
+                    # prevent) and `used_this_step` may include cpu from
+                    # subsequent fast steps the runner hasn't processed a
+                    # notify_step for yet — both reasons to leave the kill
+                    # to the next notify_step's per-step debit.
+                    if (
+                        self._accumulating_enabled
+                        and not tracker.in_startup
+                        and not tracker.responded_this_step
+                    ):
+                        projected_bank = (
+                            tracker.accumulating_remaining_ns
+                            + self._accumulating_step_ns
+                            - used_this_step
+                        )
+                        if projected_bank < 0:
+                            log.warning(
+                                "snake %s (%s) projected over accumulating cpu "
+                                "budget (bank %.3fs + refill %.3fs − used %.3fs "
+                                "= %.3fs) -> killing (mid-step)",
+                                snake_id, tracker.name,
+                                tracker.accumulating_remaining_ns / 1e9,
+                                self._accumulating_step_ns / 1e9,
+                                used_this_step / 1e9,
+                                projected_bank / 1e9,
+                            )
+                            tracker.killed = True
+                            tracker.kill_reason = "sustained"
+                            self._kill_container(tracker.container)
+                            continue
+
+                    # Projected sustained wall kill: same idea as the CPU
+                    # projection, but for the wall bank. excess wall =
+                    # wall − cpu * contention; if the bank would go negative
+                    # given the in-progress wall window, kill now.
+                    #
+                    # Only consider snakes that are still pending this step
+                    # (no notify_decision yet) — a snake that already
+                    # responded isn't accumulating response wall and isn't
+                    # the cause of any remaining slowness.
+                    if (
+                        self._wall_accumulating_enabled
+                        and not tracker.in_startup
+                        and not tracker.responded_this_step
+                        and tracker.step_start_wall_ns
+                    ):
+                        wall_so_far = time.monotonic_ns() - tracker.step_start_wall_ns
+                        expected_wall_so_far = int(used_this_step * contention)
+                        excess_so_far = max(0, wall_so_far - expected_wall_so_far)
+                        projected_wall_bank = (
+                            tracker.wall_bank_remaining_ns
+                            + self._wall_accumulating_step_ns
+                            - excess_so_far
+                        )
+                        if projected_wall_bank < 0:
+                            log.warning(
+                                "snake %s (%s) projected over sustained wall "
+                                "budget (bank %.3fs + refill %.3fs − excess "
+                                "%.3fs = %.3fs, contention %.2f) -> killing "
+                                "(mid-step)",
+                                snake_id, tracker.name,
+                                tracker.wall_bank_remaining_ns / 1e9,
+                                self._wall_accumulating_step_ns / 1e9,
+                                excess_so_far / 1e9,
+                                projected_wall_bank / 1e9,
+                                contention,
+                            )
+                            tracker.killed = True
+                            tracker.kill_reason = "sustained_wall"
+                            self._kill_container(tracker.container)
+                            continue
 
             self._stop_event.wait(self._poll_interval_s)
         log.info("cpu budget poll loop stopped")
