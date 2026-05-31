@@ -281,7 +281,12 @@ def run_match(
     agent_mem_limit: str = "512m",
     agent_cpus: float = 1.0,
     agent_pids_limit: int = 128,
-    grpc_ready_timeout_s: int = 2,
+    # Total budget for *both* the docker-status check and the actual gRPC
+    # port probe. The docker check exits early on success so this is
+    # really the cap for slow-starting agents (JVM cold start, Go binary
+    # load) to bind their gRPC server. Honest agents finish in <1s; this
+    # cap exists to fail fast on broken images.
+    grpc_ready_timeout_s: int = 10,
     extra_observers: list[ILoopObserver] | None = None,
     on_step_log: Callable[[int, str], None] | None = None,
     on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
@@ -309,7 +314,7 @@ def run_match(
                 log.warning("on_result callback failed", exc_info=True)
         return result
 
-    def _init_failure(error: str) -> MatchResult:
+    def _init_failure(error: str, init_failed_seats: list[int] | None = None) -> MatchResult:
         agent_logs = _collect_agent_logs(agent_containers, log_streamers)
         dev_step_logs = (
             _dev_step_logs(agent_logs.get(agent_containers[0].name))
@@ -319,6 +324,7 @@ def run_match(
             success=False,
             agent_logs=agent_logs,
             dev_agent_step_logs=dev_step_logs,
+            init_failed_seats=init_failed_seats,
             error=error,
         ))
 
@@ -412,38 +418,38 @@ def run_match(
                 log.info("agent %s crashed during startup — failing fast", c.name)
                 return _init_failure("agent exited during startup")
 
+        # Confirm every agent's gRPC port is actually accepting connections
+        # before launching the sim. Without this, slow-starting runtimes
+        # (Java/Go cold start) miss the sim's 1s ext-conn-timeout and the
+        # whole match falls through with all seats absent. The probe tells
+        # us *which* targets failed so the daemon can quarantine those
+        # submitted images — see MatchResult.init_failed_seats.
+        log.info("probing agents' gRPC ports")
+        failed_targets = _wait_for_grpc_ready(
+            d_client,
+            sim_image,
+            targets,
+            networks[: len(agent_containers)],
+            match_id,
+            timeout_s=float(grpc_ready_timeout_s),
+        )
+        if failed_targets:
+            failed_set = set(failed_targets)
+            failed_seats = [i for i, t in enumerate(targets) if t in failed_set]
+            return _init_failure(
+                "agents' gRPC ports not ready within timeout",
+                init_failed_seats=failed_seats,
+            )
+        
         # Notify all observers (cpu + extra) that containers are ready so they
         # can start monitoring from the very first gRPC init call.
         seat_to_container = {i: c for i, c in enumerate(agent_containers)}
 
-        def _disconnect_sim_from_seat(seat_id: int) -> None:
-            # Fired by AgentContainerManager just before it kills a snake's
-            # container. `container.kill()` is async — docker daemon →
-            # containerd → SIGKILL delivery adds ~10–50 ms of latency, and
-            # in that window the sim is happily exchanging gRPC frames
-            # with the (still-alive) snake. Disconnecting the sim from
-            # this snake's private network breaks that TCP connection
-            # right away, so the sim's next request fails with
-            # ConnectionError instead of getting a valid (and now-banned)
-            # decision back.
-            if sim_container is None:
-                return  # sim not started yet — pre-match init_failure path
-            if seat_id >= len(agent_containers):
-                return
-            net = networks[seat_id]
-            try:
-                net.disconnect(sim_container, force=True)
-            except (NotFound, APIError) as e:
-                log.debug(
-                    "disconnect sim from seat %d network failed: %s",
-                    seat_id, e,
-                )
-
         cpu_observer = AgentContainerManager(
             snake_name_to_container=target_to_container,
             per_step_budget_seconds=per_step_budget_seconds,
-            initial_budget_seconds=0.2,
-            startup_budget_seconds=0.2,
+            initial_budget_seconds=per_step_budget_seconds * 4,
+            startup_budget_seconds=per_step_budget_seconds * 4,
             # CPU accumulating long-run rate: bank grows 10ms/step (vs 50ms
             # per-step cap), starts at per_step_budget, capped at 500ms.
             # Catches agents that stay under the per-step cap but average
@@ -463,7 +469,6 @@ def run_match(
             wall_accumulating_max_seconds=per_step_budget_seconds * 20,
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
-            on_seat_killed=_disconnect_sim_from_seat,
             kill_opponents_after_dev_dies_steps=kill_opponents_after_dev_dies_steps,
         )
         cpu_observer.set_agent_containers(seat_to_container)
@@ -480,8 +485,8 @@ def run_match(
         full_sim_args = [
             "compute",
             "--ext-targets", *targets,
-            "--ext-conn-timeout", "1.0",    # time to ESTABLISH the gRPC channel (agent boot)
-            "--ext-init-timeout", "0.05",   # per-call deadline once connected
+            "--ext-conn-timeout", "3.0",    # time to ESTABLISH the gRPC channel (agent boot)
+            "--ext-init-timeout", "1.0",   # per-call deadline once connected
             "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
             "--no-render",
             "--no-record",
@@ -588,7 +593,123 @@ def run_match(
         )
 
 
+# gRPC-channel-ready probe run inside a short-lived helper container. We
+# specifically *don't* do a plain TCP connect — JVM-backed gRPC servers
+# bind their TCP listener earlier than they finish HTTP/2 setup, so a
+# TCP probe says "ready" while the sim's `grpc.channel_ready_future`
+# still times out. Mirror the exact check the sim does
+# (snake_sim/snakes/grpc_proxy_snake.py:_wait_for_connection) so that
+# probe-success ⇒ sim-init-success.
+#
+# Output contract: always prints a single `NOT_READY <space-separated
+# targets>` line on stdout — empty list when all targets are healthy.
+# The caller parses that line to know *which* specific agents failed
+# (used to quarantine submitted images that slipped past the test gate
+# but crash in production).
+_GRPC_PROBE_SCRIPT = (
+    "import grpc, sys, time\n"
+    "deadline = time.monotonic() + float(sys.argv[1])\n"
+    "pending = list(sys.argv[2:])\n"
+    "while pending and time.monotonic() < deadline:\n"
+    "    still = []\n"
+    "    for t in pending:\n"
+    "        ch = grpc.insecure_channel(t)\n"
+    "        try:\n"
+    "            grpc.channel_ready_future(ch).result(timeout=0.3)\n"
+    "        except (grpc.FutureTimeoutError, grpc.RpcError):\n"
+    "            still.append(t)\n"
+    "        ch.close()\n"
+    "    pending = still\n"
+    "    if pending:\n"
+    "        time.sleep(0.1)\n"
+    "sys.stdout.write('NOT_READY ' + ' '.join(pending) + '\\n')\n"
+    "sys.exit(1 if pending else 0)\n"
+)
+
+
+def _wait_for_grpc_ready(
+    d_client: DockerClient,
+    sim_image: str,
+    targets: list[str],
+    agent_networks: list[Network],
+    match_id: str,
+    timeout_s: float,
+) -> list[str]:
+    """Confirm every agent is actually listening on its gRPC port before
+    the sim opens connections to them. `container.status == "running"`
+    only tells us PID 1 launched — for slow runtimes (JVM cold start, Go
+    binary loading) the gRPC port can bind seconds later, and the sim's
+    1s per-snake conn-timeout was failing all six in 6-player matches.
+
+    Returns the list of targets that never became ready (empty = all
+    healthy). On infrastructure failure (helper container won't start,
+    can't read stdout, etc.) we return *all* targets so the caller fails
+    the match instead of silently quarantining a wrong subset on a probe
+    outage.
+
+    Implementation: spin up a short-lived helper container reusing the
+    sim_image (already present on the host, has python). Attach it to
+    each agent's private network — only the helper crosses the boundary,
+    the agent containers stay on their single internal network. The
+    helper runs a python gRPC-probe loop; we parse its stdout to know
+    which targets timed out.
+    """
+    if not targets:
+        return []
+    probe_name = f"{match_id}-grpc-probe"
+    try:
+        probe = d_client.containers.create(
+            sim_image,
+            entrypoint=["python", "-c", _GRPC_PROBE_SCRIPT],
+            command=[str(timeout_s), *targets],
+            name=probe_name,
+            network=agent_networks[0].name,
+            detach=True,
+        )
+    except APIError as e:
+        log.warning("gRPC probe: container create failed: %s", e)
+        return list(targets)
+    try:
+        for net in agent_networks[1:]:
+            try:
+                net.connect(probe)
+            except APIError as e:
+                log.warning("gRPC probe: connect to %s failed: %s", net.name, e)
+                return list(targets)
+        probe.start()
+        try:
+            probe.wait(timeout=timeout_s + 5)
+        except Exception as e:
+            log.warning("gRPC probe: wait failed: %s", e)
+            return list(targets)
+        try:
+            stdout = probe.logs(stdout=True, stderr=False).decode(errors="replace")
+        except Exception:
+            stdout = ""
+        # Parse the last NOT_READY line. Anything else is probe-script
+        # malfunction; treat as "all failed" so we don't quarantine the
+        # wrong subset on partial output.
+        failed: list[str] | None = None
+        for line in stdout.splitlines():
+            if line.startswith("NOT_READY"):
+                failed = line.split()[1:]
+        if failed is None:
+            log.warning("gRPC probe: missing NOT_READY line, stdout=%r", stdout)
+            return list(targets)
+        if failed:
+            log.warning("gRPC probe: agents not ready: %s", failed)
+        return failed
+    finally:
+        try:
+            probe.remove(force=True)
+        except (NotFound, APIError):
+            pass
+
+
 def _wait_for_agents_ready(containers: list[Container], timeout: int) -> bool:
+    """Poll until every container is in docker `running` state. Note: this
+    only confirms the entrypoint started — actual gRPC port readiness is
+    confirmed separately by `_wait_for_grpc_ready`."""
     deadline = time.monotonic() + timeout
     for c in containers:
         while time.monotonic() < deadline:
@@ -602,7 +723,6 @@ def _wait_for_agents_ready(containers: list[Container], timeout: int) -> bool:
         else:
             log.error("agent %s did not become running within timeout", c.name)
             return False
-    time.sleep(0.5)
     return True
 
 

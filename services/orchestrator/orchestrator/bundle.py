@@ -9,6 +9,8 @@ Bundle contents:
   wall_step_times.json– wall time between notify_step events, in ms
                         (one entry per step, shared across snakes)
   budgets.json        – CPU budget config (seconds) that was in force for this run
+  sim_logs.txt        – raw stdout/stderr of the sim container (useful for
+                        post-mortem of init failures and crashes)
 
 Both assemble_bundle (writer) and read_bundle (reader) live here so that any
 change to the bundle format is a single-file edit.
@@ -39,6 +41,7 @@ class BundleContents:
     exec_times: dict[int, list[float]]            # seat -> [cpu ms per step]
     wall_step_times: dict[int, list[float]]       # seat -> [wall ms per step], same shape as exec_times
     budgets: dict[str, float]                     # everything AgentContainerManager.get_budgets() wrote
+    sim_logs: str                                 # raw sim container stdout/stderr
 
     @property
     def budget_ms(self) -> float:
@@ -56,7 +59,7 @@ def read_bundle(bundle_bytes: bytes) -> BundleContents:
         names = set(zf.namelist())
         for required in (
             "replay.json", "analysis.json", "exec_times.json",
-            "wall_step_times.json", "budgets.json",
+            "wall_step_times.json", "budgets.json", "sim_logs.txt",
         ):
             if required not in names:
                 raise ValueError(f"bundle missing required file: {required}")
@@ -74,6 +77,7 @@ def read_bundle(bundle_bytes: bytes) -> BundleContents:
         wall_step_times = {int(k): v for k, v in wall_step_times_raw.items()}
 
         agent_logs = json.loads(zf.read("agent_logs.json")) if "agent_logs.json" in names else None
+        sim_logs = zf.read("sim_logs.txt").decode(errors="replace")
 
     return BundleContents(
         replay=replay,
@@ -82,12 +86,14 @@ def read_bundle(bundle_bytes: bytes) -> BundleContents:
         exec_times=exec_times,
         wall_step_times=wall_step_times,
         budgets=budgets,
+        sim_logs=sim_logs,
     )
 
 
 def assemble_bundle(
     replay_path: Path,
     run_analysis: RunAnalysis | None,
+    sim_logs: str,
     dev_step_logs: list[str] | None = None,
     exec_times: dict[int, list[float]] | None = None,
     wall_step_times: dict[int, list[float]] | None = None,
@@ -111,4 +117,5 @@ def assemble_bundle(
             )
         if budgets is not None:
             zf.writestr("budgets.json", json.dumps(budgets).encode())
+        zf.writestr("sim_logs.txt", sim_logs.encode(errors="replace"))
     return buf.getvalue()

@@ -172,13 +172,6 @@ class AgentContainerManager(ILoopObserver):
         wall_accumulating_max_seconds: float = 1.0,
         poll_interval_s: float = 0.01,
         on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
-        # Called synchronously before the snake's container is killed.
-        # Use it to break the sim's network connection to the snake (e.g.
-        # disconnect sim_container from the snake's private docker network)
-        # so the sim can't get any more responses out of the dying snake.
-        # Without it, `container.kill()` is async at the docker level and
-        # the snake may answer 1–2 more steps before the kill takes effect.
-        on_seat_killed: Callable[[int], None] | None = None,
         # For test matches: once the dev agent (seat 0) dies, end the
         # match for the opponents after this many *additional* sim steps
         # so the replay still shows a few frames of context after the
@@ -219,7 +212,6 @@ class AgentContainerManager(ILoopObserver):
         self._last_notify_step_wall_ns: int = 0
         self._poll_interval_s = poll_interval_s
         self._on_exec_times = on_exec_times
-        self._on_seat_killed = on_seat_killed
         self._kill_opp_after_dev_dies_steps = kill_opponents_after_dev_dies_steps
         # First sim step number at which seat 0 was observed dead. Set
         # once and used as the reference point for the opponent-cleanup
@@ -312,6 +304,8 @@ class AgentContainerManager(ILoopObserver):
             # Seats that didn't make it into the match were dropped during init
             # (e.g. gRPC init timeout). Kill their containers now.
             for seat, tracker in self._trackers.items():
+                print(f"active snake IDs at notify_start: {active_ids}")
+                print(f"tracker snake ID: {seat}, killed: {tracker.killed}")
                 if seat not in active_ids and not tracker.killed:
                     log.info("seat %d absent from match start (init failure) — killing container", seat)
                     tracker.killed = True
@@ -815,25 +809,18 @@ class AgentContainerManager(ILoopObserver):
         return -1
 
     def _kill_seat(self, seat_id: int) -> None:
-        """Kill the snake's container, firing on_seat_killed first so the
-        caller can drop the sim→snake network connection synchronously.
-        Without that hook, container.kill() is async enough that the sim
-        can keep getting valid responses from the dying snake for a step
-        or two — see Match46 / fix-B in match.py."""
+        """Send SIGKILL to the seat's container. SIGKILL is uncatchable
+        in user space, so the snake's process is torn down regardless of
+        any signal handlers it tried to install; the kernel closes its
+        TCP sockets on the way out, which lets the sim's gRPC stream
+        error normally and the sim then exits when no batches remain.
+        Async at the docker layer (~10–50 ms), so the snake may answer
+        1–2 more in-flight steps before its process actually dies."""
         tracker = self._trackers.get(seat_id)
         if tracker is None:
             return
-        if self._on_seat_killed is not None:
-            try:
-                self._on_seat_killed(seat_id)
-            except Exception:
-                log.warning("on_seat_killed hook for seat %d failed", seat_id, exc_info=True)
-        self._kill_container(tracker.container)
-
-    @staticmethod
-    def _kill_container(container: Container) -> None:
         try:
-            container.kill()
+            tracker.container.kill()
         except NotFound:
             pass  # already gone — goal state met
         except APIError as e:
@@ -843,6 +830,6 @@ class AgentContainerManager(ILoopObserver):
             # .response.status_code is no longer present, we *want* the
             # AttributeError to surface so we know to update the pin.
             if e.response.status_code == 409:
-                log.debug("container %s already stopped", container.name)
+                log.debug("container %s already stopped", tracker.container.name)
             else:
-                log.warning("failed to kill container %s: %s", container.name, e)
+                log.warning("failed to kill container %s: %s", tracker.container.name, e)

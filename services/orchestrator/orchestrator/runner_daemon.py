@@ -43,6 +43,7 @@ from sa_common.db.match_jobs import (
 from sa_common.db.matches import record_match_result
 from sa_common.db.modes import get_mode
 from sa_common.db.connection import get_conn
+from sa_common.db.projects import mark_submitted_crashed
 from sa_common.types import SimArgs
 
 from snake_sim.loop_observers.file_persist_observer import FilePersistObserver
@@ -112,6 +113,21 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             extra_observers=[file_observer],
         )
 
+        # Quarantine any submitted image that failed the gRPC probe. The
+        # matchmaker excludes `submitted_crashed = TRUE` projects until the
+        # user pushes a new submit, so we stop wasting cycles re-queuing a
+        # version that crashes at boot.
+        if result.init_failed_seats:
+            for seat in result.init_failed_seats:
+                project_id = setup.project_by_name.get(setup.specs[seat].name)
+                if project_id is None:
+                    continue
+                log.warning(
+                    "job id=%d: marking project %d submitted_crashed (seat %d failed gRPC init)",
+                    job.id, project_id, seat,
+                )
+                mark_submitted_crashed(conn, project_id)
+
         file_observer.close()  # flush the replay before reading it back
 
         # Analyze the captured replay so participants get per-snake outcomes
@@ -144,6 +160,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
                 exec_times=result.exec_times,
                 wall_step_times=result.wall_step_times,
                 budgets=result.budgets,
+                sim_logs=result.sim_logs,
             )
             config.bundler.put(bundle_key, bundle_bytes)
             saved_key = bundle_key

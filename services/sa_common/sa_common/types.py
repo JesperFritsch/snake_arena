@@ -9,7 +9,7 @@ from snake_sim.analyze.scripts.run_analyzer import RunAnalysis
 @dataclass
 class MatchResult:
     success: bool
-    sim_logs: str | None = None
+    sim_logs: str = ""
     agent_logs: dict[str, str] | None = None
     tags_to_names: dict[str, str] | None = None
     run_analysis: RunAnalysis | None = None
@@ -29,6 +29,11 @@ class MatchResult:
     kill_reasons: dict[int, str | None] | None = None
     # Final body length per snake_id (from replay), populated after analysis.
     final_lengths: dict[int, int] | None = None
+    # Seats whose gRPC server never came up before the match started, as
+    # detected by the pre-sim probe. Daemons map these back to project_ids
+    # and quarantine those submitted images so the matchmaker stops picking
+    # them until the next submit.
+    init_failed_seats: list[int] | None = None
     error: str | None = None
 
 

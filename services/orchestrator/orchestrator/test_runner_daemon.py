@@ -36,6 +36,7 @@ from sa_common.db.projects import (
     get_project_meta,
     record_dev_build_validated,
     record_dev_build_crashed,
+    mark_submitted_crashed,
 )
 from sa_common.db.test_match_jobs import (
     claim_one_queued_test_job,
@@ -202,6 +203,24 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             kill_opponents_after_dev_dies_steps=5,
         )
 
+        # Quarantine any opponent's submitted image that failed the gRPC
+        # probe. Seat 0 is the dev agent — handled separately via
+        # record_dev_build_crashed (status 'crashed' on the dev side).
+        # Seats >= 1 are submitted opponents: same flag the ranked runner
+        # uses, so a flaky submission gets caught even from a test run.
+        if result.init_failed_seats:
+            for seat in result.init_failed_seats:
+                if seat == 0:
+                    continue
+                project_id = setup.project_by_name.get(setup.specs[seat].name)
+                if project_id is None:
+                    continue
+                log.warning(
+                    "test job id=%d: marking opponent project %d submitted_crashed (seat %d failed gRPC init)",
+                    job.id, project_id, seat,
+                )
+                mark_submitted_crashed(conn, project_id)
+
         # Flush the in-process replay writer before reading the file back.
         # (Live viewers already got the verdict + stop/status via on_match_result,
         # and the dev-build verdict was persisted there too.)
@@ -234,6 +253,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 exec_times=result.exec_times,
                 wall_step_times=result.wall_step_times,
                 budgets=result.budgets,
+                sim_logs=result.sim_logs,
             )
             config.bundler.put(bundle_key, bundle_bytes)
             saved_key = bundle_key

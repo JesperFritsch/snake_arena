@@ -74,8 +74,15 @@ def list_underplayed_versions(
 
 
 def _count_submitted(conn: psycopg.Connection) -> int:
+    """Count submitted versions eligible for scheduling. Excludes versions
+    flagged `submitted_crashed` — those don't participate in new matches
+    until the user pushes a new submit (see mark_submitted_crashed /
+    promote_to_submitted)."""
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM projects WHERE submitted_version > 0")
+        cur.execute(
+            "SELECT COUNT(*) FROM projects "
+            "WHERE submitted_version > 0 AND submitted_crashed = FALSE"
+        )
         row = cur.fetchone()
         return int(row[0]) if row else 0
 
@@ -90,6 +97,7 @@ def _underplayed_solo(conn: psycopg.Connection, mode: Mode) -> list[VersionStats
                 SELECT id AS project_id, submitted_version AS version, submitted_at
                 FROM projects
                 WHERE submitted_version > 0
+                  AND submitted_crashed = FALSE
             ),
             played AS (
                 -- Success matches.
@@ -150,6 +158,7 @@ def _underplayed_multi(conn: psycopg.Connection, mode: Mode) -> list[VersionStat
                 SELECT id AS project_id, submitted_version AS version, submitted_at
                 FROM projects
                 WHERE submitted_version > 0
+                  AND submitted_crashed = FALSE
             ),
             -- Match appearances (success + in-flight). Each row = one
             -- match this version participated in (or is about to).

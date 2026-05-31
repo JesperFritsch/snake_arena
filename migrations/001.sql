@@ -34,6 +34,7 @@ CREATE TABLE projects (
     submitted_image_tag    TEXT,                             -- unique-per-version tag
     submitted_version      INT NOT NULL DEFAULT 0,           -- 0 = never submitted
     submitted_at           TIMESTAMPTZ,
+    submitted_crashed      BOOLEAN NOT NULL DEFAULT FALSE,   -- set when the submitted image fails gRPC init in any match; cleared by promote_to_submitted on next submit
 
     created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -60,6 +60,7 @@ class Project:
     submitted_image_tag: str | None
     submitted_version: int
     submitted_at: datetime | None
+    submitted_crashed: bool
     created_at: datetime
     updated_at: datetime
 
@@ -90,6 +91,7 @@ class ProjectMeta:
     submitted_image_tag: str | None
     submitted_version: int
     submitted_at: datetime | None
+    submitted_crashed: bool
     created_at: datetime
     updated_at: datetime
 
@@ -97,7 +99,7 @@ class ProjectMeta:
 _META_COLUMNS = """
     id, user_id, name, language, source,
     dev_image_tag, dev_build_status, dev_built_at,
-    submitted_image_tag, submitted_version, submitted_at,
+    submitted_image_tag, submitted_version, submitted_at, submitted_crashed,
     created_at, updated_at
 """
 
@@ -324,6 +326,21 @@ def record_dev_build_failure(conn: Connection, project_id: int) -> None:
         )
 
 
+def mark_submitted_crashed(conn: Connection, project_id: int) -> None:
+    """The submitted image failed gRPC init in a real match. Flag it so the
+    matchmaker stops picking it; cleared by promote_to_submitted on next
+    submit. No-op if the project has no submitted version."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE projects
+            SET submitted_crashed = TRUE
+            WHERE id = %s AND submitted_version > 0
+            """,
+            (project_id,),
+        )
+
+
 # --------------------------------------------------------------------------
 # SUBMIT — promote dev to submitted, bump version. Deliberate user action.
 #
@@ -356,7 +373,8 @@ def promote_to_submitted(conn: Connection, project_id: int) -> int | None:
             SET submitted_code_archive = dev_code_archive,
                 submitted_image_tag    = dev_image_tag,
                 submitted_version      = submitted_version + 1,
-                submitted_at           = NOW()
+                submitted_at           = NOW(),
+                submitted_crashed      = FALSE
             WHERE id = %s
               AND dev_build_status = 'ready'
               AND dev_built_at >= updated_at
