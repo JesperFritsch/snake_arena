@@ -291,11 +291,16 @@ def run_match(
     on_step_log: Callable[[int, str], None] | None = None,
     on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
     on_result: Callable[[MatchResult], None] | None = None,
-    # Test-match opponent cleanup: once seat 0 (the dev agent) dies,
-    # end the match for any remaining opponents after this many extra
-    # sim steps. None disables (use for ranked / multi-agent matches
-    # where the bracket should keep playing).
+    # Test-match opponent cleanup: once the dev agent dies, end the
+    # match for any remaining opponents after this many extra sim
+    # steps. None disables (use for ranked / multi-agent matches where
+    # the bracket should keep playing). Requires `dev_seat` to be set.
     kill_opponents_after_dev_dies_steps: int | None = None,
+    # Seat index of the dev agent for test matches; None for ranked.
+    # Drives the opponent-cleanup knob above and anchors the kill banner
+    # in the dev console. Caller's contract is that the seat exists in
+    # `agents` (it indexes `agents[dev_seat]`).
+    dev_seat: int | None = None,
 ) -> MatchResult:
     networks: list[Network] = []
     agent_containers: list[Container] = []
@@ -442,11 +447,13 @@ def run_match(
             )
         
         # Notify all observers (cpu + extra) that containers are ready so they
-        # can start monitoring from the very first gRPC init call.
+        # can start monitoring from the very first gRPC init call. Both maps
+        # are keyed by seat — the seat is the runner's stable identity for
+        # each agent (independent of whatever snake_id the sim assigns).
         seat_to_container = {i: c for i, c in enumerate(agent_containers)}
+        target_by_seat = {i: targets[i] for i in range(len(agent_containers))}
 
         cpu_observer = AgentContainerManager(
-            snake_name_to_container=target_to_container,
             per_step_budget_seconds=per_step_budget_seconds,
             initial_budget_seconds=per_step_budget_seconds * 4,
             startup_budget_seconds=per_step_budget_seconds * 4,
@@ -470,8 +477,9 @@ def run_match(
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
             kill_opponents_after_dev_dies_steps=kill_opponents_after_dev_dies_steps,
+            dev_seat=dev_seat,
         )
-        cpu_observer.set_agent_containers(seat_to_container)
+        cpu_observer.set_agent_containers(seat_to_container, target_by_seat)
         for obs in (extra_observers or []):
             if hasattr(obs, "set_agent_containers"):
                 obs.set_agent_containers(seat_to_container)
@@ -544,8 +552,8 @@ def run_match(
         # *where the kill happened*, not at the last step the harness emitted
         # a separator for — a sleeper that never reaches its first print
         # would otherwise put the banner on the previous step.
-        if agent_containers:
-            note = _budget_kill_note(cpu_observer.get_kill_reason(0), cpu_observer.get_budgets())
+        if dev_seat is not None and agent_containers:
+            note = _budget_kill_note(cpu_observer.get_kill_reason(dev_seat), cpu_observer.get_budgets())
             if note:
                 # Land the banner *at or after* the last step the agent
                 # actually emitted output for. Two cases the max() handles:
@@ -561,7 +569,7 @@ def run_match(
                 if dev_step_logs is None:
                     dev_step_logs = []
                 kill_step = max(
-                    len(cpu_observer.get_exec_times().get(0, [])),
+                    len(cpu_observer.get_exec_times().get(dev_seat, [])),
                     len(dev_step_logs),
                 )
                 while len(dev_step_logs) < kill_step:
@@ -571,6 +579,14 @@ def run_match(
             seat: cpu_observer.get_kill_reason(seat)
             for seat in range(len(agents))
         }
+        # Seats whose containers never reached match start (sim's gRPC
+        # init dropped them) get killed inside the manager with reason
+        # "init_failure". Surface them so daemons can quarantine the
+        # corresponding submitted images. Same field the gRPC probe path
+        # writes to — the probe early-returns before reaching this code,
+        # so the two paths don't overlap.
+        manager_init_failed = cpu_observer.get_init_failed_seats()
+        seat_by_snake_id = cpu_observer.get_seat_by_snake_id()
         return _finish(MatchResult(
             success=exit_code == 0,
             sim_logs=sim_logs,
@@ -581,6 +597,8 @@ def run_match(
             wall_step_times=cpu_observer.get_wall_step_times(),
             budgets=cpu_observer.get_budgets(),
             kill_reasons=kill_reasons,
+            init_failed_seats=manager_init_failed or None,
+            seat_by_snake_id=seat_by_snake_id or None,
         ))
 
     finally:

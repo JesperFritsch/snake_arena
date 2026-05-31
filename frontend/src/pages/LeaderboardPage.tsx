@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApi } from "../api/client";
-import { RankedMatchPlayer } from "../components/RankedMatchPlayer";
+import { BundleSimPlayer } from "../components/BundleSimPlayer";
 import type {
   LeaderboardEntry,
   Mode,
@@ -465,10 +465,14 @@ function MatchModal({
 
           <div className="lb-match-player">
             {selectedMatch ? (
-              <RankedMatchPlayer
+              <BundleSimPlayer
                 key={selectedMatch.id}
-                match={selectedMatch}
+                bundleKey={selectedMatch.id}
                 getBundleUrl={getBundleUrl}
+                participantNames={selectedMatch.participants
+                  .slice()
+                  .sort((a, b) => a.seat - b.seat)
+                  .map((p) => p.project_name)}
               />
             ) : (
               <div className="lb-match-player-placeholder">

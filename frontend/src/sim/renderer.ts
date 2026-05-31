@@ -25,7 +25,18 @@ export class SimRenderer {
     this.ctx = ctx;
   }
 
-  render(state: SimState, meta: SimStartData): void {
+  /**
+   * @param state    Reconstructed sim state at this frame.
+   * @param meta     Start metadata (grid size, base map).
+   * @param seatBySnakeId  Maps each sim snake_id to the runner-assigned
+   *                       seat. Color comes from the seat, not the snake_id —
+   *                       the sim is free to pick whatever snake_ids it
+   *                       wants and we don't want the colors to drift away
+   *                       from the seat-indexed labels in the legend / exec
+   *                       times bar. Pass an empty map to fall back to
+   *                       coloring by snake_id (legacy behavior).
+   */
+  render(state: SimState, meta: SimStartData, seatBySnakeId: Map<number, number>): void {
     const { width: gW, height: gH } = meta;
     const cW = this.canvas.width;
     const cH = this.canvas.height;
@@ -81,7 +92,8 @@ export class SimRenderer {
     const bodyPad = Math.max(1, Math.floor(Math.min(cellW, cellH) * 0.1));
 
     for (const [id, snake] of state.snakes) {
-      const palette   = PALETTES[id % PALETTES.length];
+      const seat      = seatBySnakeId.get(id) ?? id;
+      const palette   = PALETTES[seat % PALETTES.length];
       const bodyColor = snake.alive ? palette.body : DEAD_COLOR;
       const body      = snake.body;
 
@@ -93,15 +105,13 @@ export class SimRenderer {
         const toPrevDx = px - gx;
         const toPrevDy = py - gy;
 
-        // Toward tail; extrapolate for the tail segment so it renders as a
-        // straight cap rather than a stub ending at the cell centre.
         let toNextDx: number, toNextDy: number;
         if (i + 1 < body.length) {
           toNextDx = body[i + 1][0] - gx;
           toNextDy = body[i + 1][1] - gy;
         } else {
-          toNextDx = -toPrevDx;
-          toNextDy = -toPrevDy;
+          toNextDx = toPrevDx;
+          toNextDy = toPrevDy;
         }
 
         _drawPipeSegment(

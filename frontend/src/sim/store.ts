@@ -17,6 +17,9 @@ export interface Annotation {
 
 export class SimStore {
   startData: SimStartData | null = null;
+  /** sim snake_id -> runner seat. Falls back to identity (snake_id is the
+   *  seat) when the start event omits it, e.g. for old replays. */
+  seatBySnakeId: Map<number, number> = new Map();
   private steps: SimStepData[] = [];
   private finalStep: number | null = null;
   annotations: Annotation[] = [];
@@ -36,6 +39,20 @@ export class SimStore {
     switch (msg.type) {
       case "start":
         this.startData = msg.data.env_meta_data;
+        this.seatBySnakeId = new Map();
+        if (msg.data.seat_by_snake_id) {
+          for (const [sid, seat] of Object.entries(msg.data.seat_by_snake_id)) {
+            this.seatBySnakeId.set(Number(sid), seat);
+          }
+        } else {
+          // Fallback: identity (assumes sim assigned ids 0..N-1 matching seat
+          // order). Wrong if the sim picks non-sequential ids — backend
+          // should always send seat_by_snake_id.
+          for (const idStr of Object.keys(msg.data.env_meta_data.snake_tags)) {
+            const sid = Number(idStr);
+            this.seatBySnakeId.set(sid, sid);
+          }
+        }
         this.steps = [];
         this.finalStep = null;
         break;
@@ -96,6 +113,7 @@ export class SimStore {
 
   reset(): void {
     this.startData = null;
+    this.seatBySnakeId = new Map();
     this.steps = [];
     this.finalStep = null;
     this.annotations = [];

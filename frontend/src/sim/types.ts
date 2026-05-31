@@ -39,10 +39,15 @@ export type SimMessage =
   | { type: "snapshot";  data: { job_status: JobStatus | "unknown"; build_status: string | null; error: string | null } }
   | { type: "build";     data: { status: BuildEvent; error?: string } }
   | { type: "status";    data: { status: JobStatus } }
-  | { type: "start";     data: { env_meta_data: SimStartData } }
+  // seat_by_snake_id: sim snake_id (string) -> runner seat. Backend may omit
+  // it for very old replays / when target_by_seat was never wired; consumer
+  // falls back to identity (snake_id == seat), which is wrong if the sim
+  // assigns non-sequential ids but matches pre-change behavior.
+  | { type: "start";     data: { env_meta_data: SimStartData; seat_by_snake_id?: Record<string, number> } }
   | { type: "step";      data: SimStepData }
   | { type: "stop";      data: SimStopData }
   | { type: "step_log";  data: { step: number; log: string } }
+  // times: seat (as a stringified int) -> CPU ms this step.
   | { type: "exec_time"; data: { step: number; times: Record<string, number> } }
   | { type: "error";     data: { message: string } };
 

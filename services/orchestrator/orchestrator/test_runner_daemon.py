@@ -183,6 +183,12 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         # The dev agent is seat 0; tell the observer its DNS name so it can
         # detect whether the dev (not an opponent) reached the match start.
         observer.dev_name = setup.specs[0].name
+        # Tell the observer how seats map to sim-side tags so it can publish
+        # snake_id -> seat in the start event for the frontend.
+        observer.target_by_seat = {
+            seat: f"{setup.specs[seat].name}:50051"
+            for seat in range(len(setup.specs))
+        }
 
         result = run_match(
             sim_image=config.sim_image,
@@ -201,6 +207,10 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             # noise. Keep 5 extra frames of context for the replay then
             # end the match.
             kill_opponents_after_dev_dies_steps=5,
+            # resolve_test_agents places the player at seat 0 — the manager
+            # uses this to know whose death triggers opponent cleanup and
+            # whose exec_times anchor the dev console's kill banner.
+            dev_seat=0,
         )
 
         # Quarantine any opponent's submitted image that failed the gRPC
@@ -254,6 +264,7 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 wall_step_times=result.wall_step_times,
                 budgets=result.budgets,
                 sim_logs=result.sim_logs,
+                seat_by_snake_id=result.seat_by_snake_id,
             )
             config.bundler.put(bundle_key, bundle_bytes)
             saved_key = bundle_key

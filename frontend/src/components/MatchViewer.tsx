@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { TestMatchJob } from "../api/types";
 import { useApi } from "../api/client";
-import { SimPlayer } from "./SimPlayer";
+import { LiveSimPlayer } from "./LiveSimPlayer";
 
 const WIDE_THRESHOLD = 520;
 const MAX_PINNED = 9;
@@ -223,10 +223,11 @@ export function MatchViewer({
         </div>
       );
     }
-    // Mount SimPlayer for queued/running jobs too — it owns the WebSocket that
-    // drives status updates, so it must connect even before the match starts.
+    // Mount LiveSimPlayer for queued/running jobs too — it owns the WebSocket
+    // that drives status updates, so it must connect even before the match
+    // starts.
     return (
-      <SimPlayer
+      <LiveSimPlayer
         job={activeJob}
         onConsoleLog={setConsoleLog}
         onExecTimes={setExecTimes}

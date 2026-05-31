@@ -34,6 +34,12 @@ class MatchResult:
     # and quarantine those submitted images so the matchmaker stops picking
     # them until the next submit.
     init_failed_seats: list[int] | None = None
+    # Sim-assigned snake_id → runner-assigned seat. Populated once the sim
+    # publishes its snake_tags at notify_start. Lets downstream consumers
+    # (bundle, frontend) join sim-side data (replay, alive_states) with
+    # runner-side data (participants, exec_times) without hardcoding the
+    # snake_id == seat assumption.
+    seat_by_snake_id: dict[int, int] | None = None
     error: str | None = None
 
 

@@ -1,141 +1,92 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useAuth } from "@clerk/clerk-react";
-import { unzipSync } from "fflate";
-import { useApi } from "../api/client";
-import { SimStore } from "../sim/store";
 import { SimRenderer } from "../sim/renderer";
-import type { SimMessage } from "../sim/types";
-import type { TestMatchJob } from "../api/types";
-
-const BASE_WS_URL = (import.meta.env.VITE_API_BASE_URL ?? "")
-  .replace(/\/$/, "")
-  .replace(/^http/, "ws");
+import type { SimStore } from "../sim/store";
+import type { SimSource } from "../sim/source";
+import type { Highlight } from "../sim/highlights";
 
 const SPEEDS = [1, 2, 4, 8];
 const MS_PER_STEP_1X = 100;
-
-interface Highlight {
-  step: number;
-  kind: "death" | "trap";
-  snakeIdx: number;
-  trappingIdx?: number; // only for trap kind
-}
-
-function parseHighlights(data: Uint8Array): Highlight[] {
-  const analysis = JSON.parse(new TextDecoder().decode(data)) as {
-    fatal_steps?: Record<string, number>;
-    traps_mapping?: Record<string, Array<{ trapped_ids: number[]; trapping_ids: number[] }>>;
-  };
-  const highlights: Highlight[] = [];
-  for (const [snakeId, step] of Object.entries(analysis.fatal_steps ?? {})) {
-    highlights.push({ step, kind: "death", snakeIdx: Number(snakeId) });
-  }
-  for (const [stepStr, trapInfos] of Object.entries(analysis.traps_mapping ?? {})) {
-    const step = Number(stepStr);
-    for (const trap of trapInfos) {
-      highlights.push({ step, kind: "trap", snakeIdx: trap.trapped_ids[0] ?? 0, trappingIdx: trap.trapping_ids[0] });
-    }
-  }
-  return highlights;
-}
+const SNAKE_COLORS = ["#b8ff3c", "#60a5fa", "#f87171", "#fb923c", "#a78bfa", "#34d399"];
 
 interface Props {
-  job: TestMatchJob;
-  onConsoleLog?: (log: string | null) => void;
-  onExecTimes?: (times: Record<string, number> | null) => void;
-  onJobStatus?: (status: string) => void;   // running / success / failure
-  onBuildStatus?: (status: string) => void;  // dev_build_status: building/built/ready/crashed/failed
+  source: SimSource;
+  /** Display names indexed by seat (matches SimRenderer's coloring). */
+  participantNames: string[];
+  /** Optional seat label decorator (e.g. add " (dev)" to seat 0). */
+  labelForSeat?: (seat: number, name: string) => string;
+  /** Show a "● LIVE" badge while live & playback is at the latest frame. */
+  showLiveBadge?: boolean;
+  /** Render the per-step CPU times row inside the player footer. */
+  showExecTimesBar?: boolean;
+  /** Fires when the rendered step changes or when new step-keyed data
+   *  (step_log / exec_time) arrives for the current step. Wrappers use this
+   *  to forward dev logs / exec times to a sibling console pane. */
+  onStepChange?: (step: number, store: SimStore) => void;
 }
 
-type Status = "connecting" | "live" | "loading" | "ended" | "failed" | "error";
+export function SimPlayer({
+  source,
+  participantNames,
+  labelForSeat,
+  showLiveBadge = false,
+  showExecTimesBar = false,
+  onStepChange,
+}: Props) {
+  const { store, status, errorMsg, totalSteps, highlights, gridSize, liveTick } = source;
 
-export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuildStatus }: Props) {
-  const { getToken } = useAuth();
-  const api = useApi();
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const storeRef     = useRef(new SimStore());
-  const rendererRef  = useRef<SimRenderer | null>(null);
-  // Grid dimensions from the "start" message — null until known.
-  const gridSizeRef  = useRef<{ width: number; height: number } | null>(null);
+  const rendererRef = useRef<SimRenderer | null>(null);
 
   const currentStepRef = useRef(0);
-  const totalStepsRef  = useRef(0);
-
-  const [status, setStatus]           = useState<Status>("connecting");
-  const [totalSteps, setTotalSteps]   = useState(0);
-  const [currentStep, setCurrentStep] = useState(0);
-  const [playing, setPlaying]         = useState(false);
-  const [speedIdx, setSpeedIdx]       = useState(0);
-  const [errorMsg, setErrorMsg]       = useState("");
-  const [highlights, setHighlights]   = useState<Highlight[]>([]);
-  const [hoveredMark, setHoveredMark] = useState<Highlight | null>(null);
+  const totalStepsRef = useRef(0);
   const highlightsRef = useRef<Highlight[]>([]);
-  highlightsRef.current = highlights;
+
+  const [currentStep, setCurrentStep] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speedIdx, setSpeedIdx] = useState(0);
+  const [hoveredMark, setHoveredMark] = useState<Highlight | null>(null);
 
   currentStepRef.current = currentStep;
-  totalStepsRef.current  = totalSteps;
+  totalStepsRef.current = totalSteps;
+  highlightsRef.current = highlights;
 
   const speed = SPEEDS[speedIdx];
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────────────
   const renderStep = useCallback((step: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (!rendererRef.current) rendererRef.current = new SimRenderer(canvas);
-    const meta  = storeRef.current.startData;
-    const state = storeRef.current.getStateAtStep(step);
-    if (meta && state) rendererRef.current.render(state, meta);
-  }, []);
+    const meta = store.startData;
+    const state = store.getStateAtStep(step);
+    if (meta && state) rendererRef.current.render(state, meta, store.seatBySnakeId);
+  }, [store]);
 
-  // ── Canvas sizing — fit grid aspect ratio inside the container ────────────
-  // All sizing is done in JS so it works regardless of CSS overflow context.
-  // The container (flex: 1) always fills the available pane space. We compute
-  // the largest rectangle with the grid's aspect ratio that fits inside it,
-  // then set both the pixel buffer and inline style dimensions on the canvas.
+  // ── Canvas sizing — fit grid aspect ratio inside the container ───────────
   const resizeCanvas = useCallback(() => {
-    const wrap   = containerRef.current;
+    const wrap = containerRef.current;
     const canvas = canvasRef.current;
     if (!wrap || !canvas) return;
     const cw = wrap.clientWidth;
     const ch = wrap.clientHeight;
     if (cw <= 0 || ch <= 0) return;
-
-    const gs = gridSizeRef.current;
     let pw: number, ph: number;
-    if (gs) {
-      const scale = Math.min(cw / gs.width, ch / gs.height);
-      pw = Math.round(gs.width  * scale);
-      ph = Math.round(gs.height * scale);
+    if (gridSize) {
+      const scale = Math.min(cw / gridSize.width, ch / gridSize.height);
+      pw = Math.round(gridSize.width * scale);
+      ph = Math.round(gridSize.height * scale);
     } else {
       pw = Math.round(cw);
       ph = Math.round(ch);
     }
-    canvas.width        = pw;
-    canvas.height       = ph;
-    canvas.style.width  = `${pw}px`;
+    canvas.width = pw;
+    canvas.height = ph;
+    canvas.style.width = `${pw}px`;
     canvas.style.height = `${ph}px`;
     renderStep(currentStepRef.current);
-  }, [renderStep]);
+  }, [renderStep, gridSize]);
 
-  // Stable refs so WS closures always call the latest callbacks without
-  // being included in connectWs's dependency array (which would restart the WS).
-  const resizeCanvasRef = useRef(resizeCanvas);
-  resizeCanvasRef.current = resizeCanvas;
-
-  const onConsoleLogRef = useRef(onConsoleLog);
-  onConsoleLogRef.current = onConsoleLog;
-
-  const onExecTimesRef = useRef(onExecTimes);
-  onExecTimesRef.current = onExecTimes;
-
-  const onJobStatusRef = useRef(onJobStatus);
-  onJobStatusRef.current = onJobStatus;
-
-  const onBuildStatusRef = useRef(onBuildStatus);
-  onBuildStatusRef.current = onBuildStatus;
-
-  // ── Re-size whenever the container changes dimensions ────────────────────
   useEffect(() => {
     const wrap = containerRef.current;
     if (!wrap) return;
@@ -144,237 +95,33 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
     return () => obs.disconnect();
   }, [resizeCanvas]);
 
-  // ── Render and update console/exec-times whenever current step changes ────
+  // Re-size whenever the grid dimensions become known (or change).
+  useEffect(() => { resizeCanvas(); }, [gridSize, resizeCanvas]);
+
+  // Re-render whenever the displayed step changes.
+  useEffect(() => { renderStep(currentStep); }, [currentStep, renderStep]);
+
+  // ── Notify parent of step changes / live data arrival ────────────────────
+  const onStepChangeRef = useRef(onStepChange);
+  onStepChangeRef.current = onStepChange;
   useEffect(() => {
-    renderStep(currentStep);
-    onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStep));
-    onExecTimesRef.current?.(storeRef.current.getExecTimes(currentStep));
-  }, [currentStep, renderStep]);
+    onStepChangeRef.current?.(currentStep, store);
+  }, [currentStep, liveTick, store]);
 
-  // ── Load bundle from file host (completed matches) ────────────────────────
-  const fetchBundleFiles = useCallback(async (jobId: number) => {
-    let urlResult: Awaited<ReturnType<typeof api.getTestMatchBundleUrl>>;
-    for (let i = 0; ; i++) {
-      try {
-        urlResult = await api.getTestMatchBundleUrl(jobId);
-        break;
-      } catch (e) {
-        if (i >= 8) throw e;
-        await new Promise((r) => setTimeout(r, 750));
-      }
-    }
-    const { url } = urlResult!;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(
-      resp.status === 404
-        ? "replay recording not found — it may have been deleted from storage"
-        : `failed to fetch replay (${resp.status})`,
-    );
-    return unzipSync(new Uint8Array(await resp.arrayBuffer()));
-  }, [api]);
-
-  // Called after a live WS stream ends — only loads highlights without
-  // resetting the store or rewinding playback.
-  const loadAnalysis = useCallback(async (jobId: number) => {
-    try {
-      const files = await fetchBundleFiles(jobId);
-      const analysisFile = files["analysis.json"];
-      if (!analysisFile) return;
-      setHighlights(parseHighlights(analysisFile));
-    } catch {
-      // highlights are non-critical
-    }
-  }, [fetchBundleFiles]);
-
-  const loadAnalysisRef = useRef(loadAnalysis);
-  loadAnalysisRef.current = loadAnalysis;
-
-  const loadBundle = useCallback(async (jobId: number) => {
-    setStatus("loading");
-    try {
-      const files = await fetchBundleFiles(jobId);
-      const replayText = new TextDecoder().decode(files["replay.json"]);
-      // replay.json is JSONL — one {type,data} message per line.
-      const messages: SimMessage[] = replayText
-        .split("\n")
-        .filter((line) => line.trim() !== "")
-        .map((line) => JSON.parse(line) as SimMessage);
-
-      storeRef.current.reset();
-      for (const msg of messages) {
-        storeRef.current.addMessage(msg);
-        if (msg.type === "start") {
-          const d = msg.data.env_meta_data;
-          gridSizeRef.current = { width: d.width, height: d.height };
-        }
-      }
-      // Load agent logs from the bundle if present (separate file to keep
-      // replay.json lean — the logs aren't needed for playback itself).
-      const agentLogsFile = files["agent_logs.json"];
-      if (agentLogsFile) {
-        const agentLogs = JSON.parse(new TextDecoder().decode(agentLogsFile)) as Record<string, string[]>;
-        (agentLogs["0"] ?? []).forEach((log, step) => {
-          storeRef.current.addMessage({ type: "step_log", data: { step, log } });
-        });
-      }
-      const execTimesFile = files["exec_times.json"];
-      if (execTimesFile) {
-        const execTimesData = JSON.parse(new TextDecoder().decode(execTimesFile)) as Record<string, number[]>;
-        const stepCount = Math.max(0, ...Object.values(execTimesData).map((a) => a.length));
-        for (let step = 0; step < stepCount; step++) {
-          const times: Record<string, number> = {};
-          for (const [snakeId, arr] of Object.entries(execTimesData)) {
-            if (arr[step] !== undefined) times[snakeId] = arr[step];
-          }
-          storeRef.current.addMessage({ type: "exec_time", data: { step, times } });
-        }
-      }
-      const analysisFile = files["analysis.json"];
-      if (analysisFile) {
-        try {
-          setHighlights(parseHighlights(analysisFile));
-        } catch (err) {
-          console.error("analysis.json parse error", err);
-        }
-      }
-
-      setTotalSteps(storeRef.current.frameCount);
+  // ── Autoplay on first data: totalSteps transitions from 0 → positive. ────
+  // Catches both bundle-loaded ("loading" → "ended") and live ("connecting"
+  // → "live" with frame 0). Mid-stream growth (e.g. 5 → 6 as steps stream
+  // in) doesn't re-trigger because prevTotalRef is already positive.
+  const prevTotalRef = useRef(0);
+  useEffect(() => {
+    if (prevTotalRef.current === 0 && totalSteps > 0) {
       setCurrentStep(0);
-      setStatus("ended");
       setPlaying(true);
-      resizeCanvas(); // sizes canvas correctly + renders frame 0
-      onConsoleLogRef.current?.(storeRef.current.getDevLogs(0));
-      onExecTimesRef.current?.(storeRef.current.getExecTimes(0));
-    } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : "failed to load bundle");
-      setStatus("error");
     }
-  }, [fetchBundleFiles, resizeCanvas]);
+    prevTotalRef.current = totalSteps;
+  }, [totalSteps]);
 
-  // Stable ref so the WS handler can trigger a bundle load (on a snapshot that
-  // shows the match already finished) without depending on loadBundle.
-  const loadBundleRef = useRef(loadBundle);
-  loadBundleRef.current = loadBundle;
-
-  // ── WebSocket for live matches ────────────────────────────────────────────
-  const connectWs = useCallback((jobId: number) => {
-    storeRef.current.reset();
-    setStatus("connecting");
-    setTotalSteps(0);
-    setCurrentStep(0);
-    setPlaying(false);
-
-    let ws: WebSocket | null = null;
-    let cancelled = false;
-
-    getToken().then((token) => {
-      if (cancelled || !token) return;
-      ws = new WebSocket(
-        `${BASE_WS_URL}/test-matches/${jobId}/ws?token=${encodeURIComponent(token)}`,
-      );
-
-      ws.onmessage = (evt) => {
-        const msg = JSON.parse(evt.data as string) as SimMessage;
-        storeRef.current.addMessage(msg);
-
-        if (msg.type === "snapshot") {
-          // Current state on connect. Reflect build status; if already done,
-          // the live stream is over — fetch the bundle instead.
-          if (msg.data.build_status) onBuildStatusRef.current?.(msg.data.build_status);
-          if (["success", "failure", "cancelled"].includes(msg.data.job_status)) {
-            ws?.close();
-            if (msg.data.job_status === "failure") {
-              setStatus("failed");
-              setErrorMsg(msg.data.error ?? "match failed");
-            } else {
-              void loadBundleRef.current(jobId);
-            }
-          }
-        } else if (msg.type === "build") {
-          // data.status is the dev_build_status value directly.
-          onBuildStatusRef.current?.(msg.data.status);
-          if (msg.data.status === "failed") {
-            setStatus("failed");
-            const err = msg.data.error ?? "build failed";
-            setErrorMsg(err);
-            onConsoleLogRef.current?.(err);
-          }
-        } else if (msg.type === "status") {
-          onJobStatusRef.current?.(msg.data.status);
-          if (msg.data.status === "success") {
-            void loadAnalysisRef.current(jobId);
-          }
-        } else if (msg.type === "start") {
-          const d = msg.data.env_meta_data;
-          gridSizeRef.current = { width: d.width, height: d.height };
-          resizeCanvasRef.current();
-          setStatus("live");
-          setCurrentStep(0);
-          setTotalSteps(storeRef.current.frameCount); // frame 0 = start state
-          setPlaying(true);
-        } else if (msg.type === "step") {
-          setPlaying(true);
-          setTotalSteps(storeRef.current.frameCount);
-        } else if (msg.type === "step_log") {
-          // Step log arrived — refresh the console for the current step.
-          onConsoleLogRef.current?.(storeRef.current.getDevLogs(currentStepRef.current));
-        } else if (msg.type === "exec_time") {
-          onExecTimesRef.current?.(storeRef.current.getExecTimes(currentStepRef.current));
-        } else if (msg.type === "stop") {
-          setStatus("ended");
-        } else if (msg.type === "error") {
-          setStatus("failed");
-          setErrorMsg(msg.data.message);
-        }
-      };
-
-      ws.onerror = () => setStatus("error");
-      ws.onclose = () => {
-        if (!cancelled) setStatus((s) => s === "live" ? "ended" : s);
-      };
-    });
-
-    return () => {
-      cancelled = true;
-      ws?.close();
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [getToken]);
-
-  // ── Route: live WS vs file fetch ──────────────────────────────────────────
-  useEffect(() => {
-    storeRef.current.reset();
-    gridSizeRef.current = null;
-    setTotalSteps(0);
-    setCurrentStep(0);
-    setPlaying(false);
-    setErrorMsg("");
-    setHighlights([]);
-    onConsoleLogRef.current?.(null);
-
-    if (job.status === "failure") {
-      setErrorMsg(job.error ?? "match failed");
-      setStatus("failed");
-      return;
-    }
-
-    if (job.status === "cancelled") {
-      setErrorMsg("test match was cancelled");
-      setStatus("failed");
-      return;
-    }
-
-    if (job.status === "queued" || job.status === "running") {
-      return connectWs(job.id);
-    }
-
-    void loadBundle(job.id);
-  // Only re-run when the job itself changes, not on status updates —
-  // a live WS stream that received "stop" already has all the data it needs.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job.id]);
-
-  // ── Playback interval ─────────────────────────────────────────────────────
+  // ── Playback loop ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!playing) return;
     let id: number;
@@ -382,7 +129,7 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
       const total = totalStepsRef.current;
       const current = currentStepRef.current;
       if (total === 0 || current >= total - 1) {
-        // No new step yet — poll quickly rather than stopping.
+        // No new step yet — poll quickly so we resume the moment one arrives.
         id = window.setTimeout(tick, 5);
       } else {
         setCurrentStep(current + 1);
@@ -393,7 +140,7 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
     return () => window.clearTimeout(id);
   }, [playing, speed]);
 
-  // ── Controls ──────────────────────────────────────────────────────────────
+  // ── Controls ─────────────────────────────────────────────────────────────
   const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
     setCurrentStep(Number(e.target.value));
     setPlaying(false);
@@ -403,8 +150,7 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
     if (totalStepsRef.current <= 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const step = Math.round(ratio * (totalStepsRef.current - 1));
-    setCurrentStep(step);
+    setCurrentStep(Math.round(ratio * (totalStepsRef.current - 1)));
     setPlaying(false);
   }, []);
 
@@ -414,7 +160,6 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
     if (total <= 1 || hl.length === 0) { setHoveredMark(null); return; }
     const rect = e.currentTarget.getBoundingClientRect();
     const cursorStep = ((e.clientX - rect.left) / rect.width) * (total - 1);
-    // Snap to nearest mark within 3% of total steps (min 2 steps).
     const threshold = Math.max(2, total * 0.03);
     let best: Highlight | null = null;
     let bestDist = Infinity;
@@ -430,59 +175,62 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
     setPlaying((p) => !p);
   };
 
-  const cycleSpeed = () => setSpeedIdx((i) => (i + 1) % SPEEDS.length);
-
-  const showControls = totalSteps > 0;
-  const snakeLegend  = storeRef.current.startData?.snake_tags;
-  const SNAKE_COLORS = ["#b8ff3c","#60a5fa","#f87171","#fb923c","#a78bfa","#34d399"];
-
-  const agentName = (idx: number) => {
-    const name = job.participant_names[idx] ?? `snake ${idx}`;
-    return idx === 0 ? `${name} (dev)` : name;
+  // ── Label helpers ────────────────────────────────────────────────────────
+  // Highlight markers carry sim snake_ids; translate to seat so labels and
+  // colors join consistently with the legend / participantNames.
+  const seatForSnake = (snakeIdx: number) => store.seatBySnakeId.get(snakeIdx) ?? snakeIdx;
+  const seatLabel = (seat: number) => {
+    const name = participantNames[seat] ?? `seat ${seat}`;
+    return labelForSeat ? labelForSeat(seat, name) : name;
   };
   const markLabel = (h: Highlight) => {
-    if (h.kind === "death") return `${agentName(h.snakeIdx)} died · step ${h.step + 1}`;
-    if (h.trappingIdx !== undefined)
-      return `${agentName(h.snakeIdx)} trapped by ${agentName(h.trappingIdx)} · step ${h.step + 1}`;
-    return `${agentName(h.snakeIdx)} trapped · step ${h.step + 1}`;
+    const seat = seatForSnake(h.snakeIdx);
+    if (h.kind === "death") return `${seatLabel(seat)} died · step ${h.step + 1}`;
+    if (h.trappingIdx !== undefined) {
+      const trapperSeat = seatForSnake(h.trappingIdx);
+      return `${seatLabel(seat)} trapped by ${seatLabel(trapperSeat)} · step ${h.step + 1}`;
+    }
+    return `${seatLabel(seat)} trapped · step ${h.step + 1}`;
   };
+
+  const overlayText = (() => {
+    if (status === "connecting") return "connecting…";
+    if (status === "loading")    return "loading replay…";
+    if (status === "failed")     return errorMsg || "match failed";
+    if (status === "error")      return errorMsg || "failed to load replay";
+    return null;
+  })();
+  const overlayIsError = status === "failed" || status === "error";
+  const showControls = totalSteps > 0;
+  const execTimes = showExecTimesBar ? store.getExecTimes(currentStep) : null;
+  const hasExecTimes = execTimes && Object.keys(execTimes).length > 0;
+  const atLatestFrame = currentStep >= totalSteps - 1 && totalSteps > 0;
 
   return (
     <div className="sim-player">
       <div className="sim-canvas-wrap" ref={containerRef}>
         <canvas ref={canvasRef} className="sim-canvas" />
-        {(status === "connecting" || status === "loading") && (
-          <div className="sim-overlay">
-            {status === "loading" ? "loading replay…" : "connecting…"}
+        {overlayText && (
+          <div className={`sim-overlay${overlayIsError ? " sim-overlay-err" : ""}`}>
+            {overlayText}
           </div>
         )}
-        {status === "failed" && (
-          <div className="sim-overlay sim-overlay-err">{errorMsg || "match failed"}</div>
-        )}
-        {status === "error" && (
-          <div className="sim-overlay sim-overlay-err">{errorMsg || "connection error"}</div>
-        )}
-        {status === "live" && currentStep >= totalSteps - 1 && totalSteps > 0 && (
+        {showLiveBadge && status === "live" && atLatestFrame && (
           <div className="sim-live-badge">● LIVE</div>
         )}
       </div>
 
-      {snakeLegend && (
+      {participantNames.length > 0 && (
         <div className="sim-legend">
-          {Object.entries(snakeLegend).map(([id]) => {
-            const seat = Number(id);
-            const baseName = job.participant_names[seat] ?? id;
-            const label = seat === 0 ? `${baseName} (dev)` : baseName;
-            return (
-              <span key={id} className="sim-legend-item">
-                <span
-                  className="sim-legend-dot"
-                  style={{ background: SNAKE_COLORS[seat % SNAKE_COLORS.length] }}
-                />
-                {label}
-              </span>
-            );
-          })}
+          {participantNames.map((name, seat) => (
+            <span key={seat} className="sim-legend-item">
+              <span
+                className="sim-legend-dot"
+                style={{ background: SNAKE_COLORS[seat % SNAKE_COLORS.length] }}
+              />
+              {labelForSeat ? labelForSeat(seat, name) : name}
+            </span>
+          ))}
         </div>
       )}
 
@@ -526,9 +274,34 @@ export function SimPlayer({ job, onConsoleLog, onExecTimes, onJobStatus, onBuild
             </div>
           </div>
           <span className="sim-step-counter">{currentStep + 1} / {totalSteps}</span>
-          <button className="btn ghost sim-ctrl-btn" onClick={cycleSpeed} title="playback speed">
+          <button
+            className="btn ghost sim-ctrl-btn"
+            onClick={() => setSpeedIdx((i) => (i + 1) % SPEEDS.length)}
+            title="playback speed"
+          >
             {speed}×
           </button>
+        </div>
+      )}
+
+      {showExecTimesBar && hasExecTimes && (
+        <div className="exec-times-bar">
+          <span className="exec-times-label">CPU / step</span>
+          {Object.entries(execTimes!).map(([id, ms]) => {
+            const seat = Number(id);
+            return (
+              <span key={id} className="exec-times-entry">
+                <span
+                  className="exec-times-dot"
+                  style={{ background: SNAKE_COLORS[seat % SNAKE_COLORS.length] }}
+                />
+                <span className="exec-times-name">
+                  {labelForSeat ? labelForSeat(seat, participantNames[seat] ?? `snake ${seat}`) : (participantNames[seat] ?? `snake ${seat}`)}
+                </span>
+                <span className="exec-times-ms">{ms.toFixed(1)}ms</span>
+              </span>
+            );
+          })}
         </div>
       )}
     </div>
