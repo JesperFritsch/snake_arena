@@ -85,6 +85,12 @@ export function EditorPage() {
       setViewMode("dev");
       setSubmittedFiles([]);
       setSubmittedActivePath(null);
+      if (m.source === "external_image") {
+        setFiles([]);
+        setOriginalSig("[]");
+        setActivePath(null);
+        return;
+      }
       setLoadingFiles(true);
       try {
         const { files: fetched } = await api.getFiles(id);
@@ -92,7 +98,7 @@ export function EditorPage() {
         setOriginalSig(serialize(fetched));
         setActivePath(fetched[0]?.path ?? null);
       } catch (e) {
-        // external_image projects (and brand-new ones) may have no editable code
+        // Brand-new browser projects may not have any files yet.
         setFiles([]);
         setOriginalSig("[]");
         setActivePath(null);
