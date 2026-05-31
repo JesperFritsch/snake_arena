@@ -1,21 +1,31 @@
 # services/api/api/routers/leaderboard.py
 """Leaderboard endpoints.
 
-  GET /leaderboard/overall          — cross-mode normalised ranking
-  GET /leaderboard?mode=<slug>      — per-mode ranking
+  GET /leaderboard/overall          — cross-group normalised ranking
+  GET /leaderboard/group?group=…    — per-group ranking (aggregate of modes in group)
+  GET /leaderboard?mode=<slug>      — per-mode ranking (sub-tab drill-in)
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from psycopg import Connection
 
-from sa_common.db.leaderboard import get_mode_leaderboard, get_overall_leaderboard
+from sa_common.db.leaderboard import (
+    get_group_leaderboard,
+    get_mode_leaderboard,
+    get_overall_leaderboard,
+)
+from sa_common.db.mode_groups import get_group
 from sa_common.db.modes import get_mode_by_slug
 from sa_common.db.users import User
 
 from api.auth import get_current_user
 from api.db import get_db
-from api.schemas import LeaderboardEntry, OverallLeaderboardEntry
+from api.schemas import (
+    GroupLeaderboardEntry,
+    LeaderboardEntry,
+    OverallLeaderboardEntry,
+)
 
 router = APIRouter(tags=["leaderboard"])
 
@@ -36,6 +46,32 @@ def overall_leaderboard(
             user_display_name=e.user_display_name,
             overall_score=e.overall_score,
             total_matches=e.total_matches,
+            modes_played=e.modes_played,
+        )
+        for e in entries
+    ]
+
+
+@router.get("/leaderboard/group", response_model=list[GroupLeaderboardEntry])
+def group_leaderboard(
+    group: str = Query(..., description="group slug, e.g. solo"),
+    limit: int = Query(100, ge=1, le=500),
+    conn: Connection = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[GroupLeaderboardEntry]:
+    g = get_group(conn, group)
+    if g is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"group not found: {group}")
+    entries = get_group_leaderboard(conn, group_slug=g.slug, limit=limit)
+    return [
+        GroupLeaderboardEntry(
+            rank=e.rank,
+            project_id=e.project_id,
+            project_name=e.project_name,
+            language=e.language,
+            user_display_name=e.user_display_name,
+            group_score=e.group_score,
+            matches_played=e.matches_played,
             modes_played=e.modes_played,
         )
         for e in entries

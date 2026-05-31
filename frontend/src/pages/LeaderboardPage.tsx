@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApi } from "../api/client";
 import { BundleSimPlayer } from "../components/BundleSimPlayer";
 import type {
+  GroupLeaderboardEntry,
   LeaderboardEntry,
   Mode,
+  ModeGroup,
   OverallLeaderboardEntry,
   RankedMatchParticipant,
   RankedMatchSummary,
@@ -17,8 +19,21 @@ const LANG_COLORS: Record<string, string> = {
   go: "#79d4f7",
 };
 
-// "overall" pseudo-tab — anything else is a mode slug
-type Tab = "overall" | string;
+// One tab per leaderboard view.
+//   - "overall"           — cross-group normalised
+//   - { kind: "group", slug }      — a mode_group; aggregated across its modes
+//   - { kind: "mode",  slug }      — a single mode (ungrouped, OR a sub-tab inside a group)
+type Tab =
+  | { kind: "overall" }
+  | { kind: "group"; slug: string }
+  | { kind: "mode"; slug: string };
+
+const OVERALL_TAB: Tab = { kind: "overall" };
+
+function tabKey(t: Tab): string {
+  if (t.kind === "overall") return "overall";
+  return `${t.kind}:${t.slug}`;
+}
 
 function LangBadge({ lang }: { lang: string }) {
   const color = LANG_COLORS[lang.toLowerCase()] ?? "var(--text-faint)";
@@ -73,9 +88,11 @@ function SurvivalBadge({ rank, total }: { rank: number | null; total: number }) 
 export function LeaderboardPage() {
   const api = useApi();
   const [modes, setModes] = useState<Mode[] | null>(null);
-  const [tab, setTab] = useState<Tab>("overall");
+  const [groups, setGroups] = useState<ModeGroup[] | null>(null);
+  const [tab, setTab] = useState<Tab>(OVERALL_TAB);
 
   const [overall, setOverall] = useState<OverallLeaderboardEntry[] | null>(null);
+  const [groupEntries, setGroupEntries] = useState<GroupLeaderboardEntry[] | null>(null);
   const [modeEntries, setModeEntries] = useState<LeaderboardEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,32 +102,92 @@ export function LeaderboardPage() {
   const [matchListLoading, setMatchListLoading] = useState(false);
   const [selectedMatch, setSelectedMatch] = useState<RankedMatchSummary | null>(null);
 
-  // Load modes once.
+  // Load modes + groups once.
   useEffect(() => {
     let cancelled = false;
-    api.getModes()
-      .then((data) => { if (!cancelled) setModes(data); })
+    Promise.all([api.getModes(), api.getModeGroups()])
+      .then(([ms, gs]) => {
+        if (cancelled) return;
+        setModes(ms);
+        setGroups(gs);
+      })
       .catch((e) => { if (!cancelled) setError(String(e)); });
     return () => { cancelled = true; };
   }, []);
+
+  // Build the tab list: Overall, then groups (sorted), then ungrouped modes.
+  // Within each multi-mode group the sub-tabs are: "All maps" (the group view)
+  // and each member mode.
+  const { topTabs, subTabsByGroup, modesByGroup } = useMemo(() => {
+    const modesByGroup = new Map<string, Mode[]>();
+    const ungroupedModes: Mode[] = [];
+    for (const m of modes ?? []) {
+      if (!m.enabled) continue;
+      if (m.group_slug) {
+        const arr = modesByGroup.get(m.group_slug) ?? [];
+        arr.push(m);
+        modesByGroup.set(m.group_slug, arr);
+      } else {
+        ungroupedModes.push(m);
+      }
+    }
+    const orderedGroups = (groups ?? [])
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order || a.slug.localeCompare(b.slug))
+      .filter((g) => (modesByGroup.get(g.slug)?.length ?? 0) > 0);
+
+    const topTabs: Tab[] = [
+      OVERALL_TAB,
+      ...orderedGroups.map<Tab>((g) => ({ kind: "group", slug: g.slug })),
+      ...ungroupedModes.map<Tab>((m) => ({ kind: "mode", slug: m.slug })),
+    ];
+
+    const subTabsByGroup = new Map<string, Tab[]>();
+    for (const g of orderedGroups) {
+      const ms = modesByGroup.get(g.slug) ?? [];
+      if (ms.length <= 1) continue;
+      subTabsByGroup.set(g.slug, [
+        { kind: "group", slug: g.slug },
+        ...ms.map<Tab>((m) => ({ kind: "mode", slug: m.slug })),
+      ]);
+    }
+    return { topTabs, subTabsByGroup, modesByGroup };
+  }, [modes, groups]);
+
+  // Active *top-level* tab: when a sub-tab (mode inside a group) is selected,
+  // the top tab is the group it belongs to.
+  const activeTopTab: Tab = useMemo(() => {
+    if (tab.kind === "mode") {
+      const m = modes?.find((mm) => mm.slug === tab.slug);
+      if (m?.group_slug && subTabsByGroup.has(m.group_slug)) {
+        return { kind: "group", slug: m.group_slug };
+      }
+    }
+    return tab;
+  }, [tab, modes, subTabsByGroup]);
 
   // Load the current tab's data whenever it changes.
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    if (tab === "overall") {
+    if (tab.kind === "overall") {
       setOverall(null);
       api.getOverallLeaderboard(100)
         .then((data) => { if (!cancelled) setOverall(data); })
         .catch((e) => { if (!cancelled) setError(String(e)); });
+    } else if (tab.kind === "group") {
+      setGroupEntries(null);
+      api.getGroupLeaderboard(tab.slug, 100)
+        .then((data) => { if (!cancelled) setGroupEntries(data); })
+        .catch((e) => { if (!cancelled) setError(String(e)); });
     } else {
       setModeEntries(null);
-      api.getModeLeaderboard(tab, 100)
+      api.getModeLeaderboard(tab.slug, 100)
         .then((data) => { if (!cancelled) setModeEntries(data); })
         .catch((e) => { if (!cancelled) setError(String(e)); });
     }
     return () => { cancelled = true; };
-  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tabKey(tab)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const closeModal = useCallback(() => {
     setSelectedProject(null);
@@ -119,21 +196,25 @@ export function LeaderboardPage() {
   }, []);
 
   // When a project is selected, load its match history. Scope to the active
-  // mode when opened from a per-mode tab — otherwise the modal's row count
-  // can disagree with the leaderboard row's `matches_played` (the leaderboard
-  // is per-mode, history would otherwise span every mode).
+  // mode/group when opened from a per-mode or per-group tab.
   useEffect(() => {
     if (!selectedProject) return;
     let cancelled = false;
     setMatchList(null);
     setSelectedMatch(null);
     setMatchListLoading(true);
-    const modeId = tab === "overall" ? undefined : modes?.find((m) => m.slug === tab)?.id;
-    api.listProjectRankedMatches(selectedProject.id, { modeId, limit: 50 })
+    let modeIds: number[] | undefined;
+    if (tab.kind === "mode") {
+      const id = modes?.find((m) => m.slug === tab.slug)?.id;
+      modeIds = id != null ? [id] : undefined;
+    } else if (tab.kind === "group") {
+      modeIds = (modesByGroup.get(tab.slug) ?? []).map((m) => m.id);
+    }
+    api.listProjectRankedMatches(selectedProject.id, { modeIds, limit: 50 })
       .then((data) => { if (!cancelled) { setMatchList(data); setMatchListLoading(false); } })
       .catch(() => { if (!cancelled) { setMatchList([]); setMatchListLoading(false); } });
     return () => { cancelled = true; };
-  }, [selectedProject?.id, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedProject?.id, tabKey(tab)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Escape closes the modal.
   useEffect(() => {
@@ -148,7 +229,18 @@ export function LeaderboardPage() {
     [api, selectedMatch?.id],
   );
 
-  const activeMode = modes?.find((m) => m.slug === tab) ?? null;
+  const activeMode = tab.kind === "mode"
+    ? modes?.find((m) => m.slug === tab.slug) ?? null
+    : null;
+  const activeGroup = tab.kind === "group"
+    ? groups?.find((g) => g.slug === tab.slug) ?? null
+    : null;
+  const activeGroupModes = activeGroup
+    ? modesByGroup.get(activeGroup.slug) ?? []
+    : null;
+  const activeTopSubTabs = activeTopTab.kind === "group"
+    ? subTabsByGroup.get(activeTopTab.slug) ?? null
+    : null;
 
   return (
     <div className="page-pad">
@@ -156,25 +248,32 @@ export function LeaderboardPage() {
         <h1>Leaderboard</h1>
         <p className="sub">The best snakes in the arena.</p>
 
-        {/* Tabs */}
-        {modes && modes.length > 0 && (
+        {modes && groups && (
           <div className="lb-tabs">
-            <button
-              className={`lb-tab${tab === "overall" ? " active" : ""}`}
-              onClick={() => setTab("overall")}
-            >
-              Overall
-            </button>
-            {modes.map((m) => (
-              <button
-                key={m.slug}
-                className={`lb-tab${tab === m.slug ? " active" : ""}`}
-                onClick={() => setTab(m.slug)}
-                title={m.description ?? undefined}
-              >
-                {m.name}
-                <span className="lb-tab-sub">{m.participant_count}p</span>
-              </button>
+            {topTabs.map((t) => (
+              <TabButton
+                key={tabKey(t)}
+                tab={t}
+                active={tabKey(t) === tabKey(activeTopTab)}
+                onClick={() => setTab(t)}
+                modes={modes}
+                groups={groups}
+                modesByGroup={modesByGroup}
+              />
+            ))}
+          </div>
+        )}
+
+        {activeTopSubTabs && (
+          <div className="lb-subtabs">
+            {activeTopSubTabs.map((t) => (
+              <SubTabButton
+                key={tabKey(t)}
+                tab={t}
+                active={tabKey(t) === tabKey(tab)}
+                onClick={() => setTab(t)}
+                modes={modes ?? []}
+              />
             ))}
           </div>
         )}
@@ -185,8 +284,7 @@ export function LeaderboardPage() {
           </div>
         )}
 
-        {/* Overall view */}
-        {tab === "overall" && (
+        {tab.kind === "overall" && (
           <OverallTable
             entries={overall}
             error={error}
@@ -194,8 +292,17 @@ export function LeaderboardPage() {
           />
         )}
 
-        {/* Per-mode view */}
-        {tab !== "overall" && (
+        {tab.kind === "group" && (
+          <GroupTable
+            entries={groupEntries}
+            error={error}
+            group={activeGroup}
+            memberModes={activeGroupModes ?? []}
+            onSelectProject={setSelectedProject}
+          />
+        )}
+
+        {tab.kind === "mode" && (
           <ModeTable
             entries={modeEntries}
             error={error}
@@ -219,6 +326,90 @@ export function LeaderboardPage() {
       )}
     </div>
   );
+}
+
+// ── Tab buttons ──────────────────────────────────────────────────────────────
+
+function TabButton({
+  tab,
+  active,
+  onClick,
+  modes,
+  groups,
+  modesByGroup,
+}: {
+  tab: Tab;
+  active: boolean;
+  onClick: () => void;
+  modes: Mode[];
+  groups: ModeGroup[];
+  modesByGroup: Map<string, Mode[]>;
+}) {
+  if (tab.kind === "overall") {
+    return (
+      <button className={`lb-tab${active ? " active" : ""}`} onClick={onClick}>
+        Overall
+      </button>
+    );
+  }
+  if (tab.kind === "group") {
+    const g = groups.find((x) => x.slug === tab.slug);
+    const count = modesByGroup.get(tab.slug)?.length ?? 0;
+    return (
+      <button
+        className={`lb-tab${active ? " active" : ""}`}
+        onClick={onClick}
+        title={g?.description ?? undefined}
+      >
+        {g?.name ?? tab.slug}
+        {count > 1 && <span className="lb-tab-sub">{count} maps</span>}
+      </button>
+    );
+  }
+  const m = modes.find((x) => x.slug === tab.slug);
+  return (
+    <button
+      className={`lb-tab${active ? " active" : ""}`}
+      onClick={onClick}
+      title={m?.description ?? undefined}
+    >
+      {m?.name ?? tab.slug}
+      {m && <span className="lb-tab-sub">{m.participant_count}p</span>}
+    </button>
+  );
+}
+
+function SubTabButton({
+  tab,
+  active,
+  onClick,
+  modes,
+}: {
+  tab: Tab;
+  active: boolean;
+  onClick: () => void;
+  modes: Mode[];
+}) {
+  if (tab.kind === "group") {
+    return (
+      <button className={`lb-subtab${active ? " active" : ""}`} onClick={onClick}>
+        All maps
+      </button>
+    );
+  }
+  if (tab.kind === "mode") {
+    const m = modes.find((x) => x.slug === tab.slug);
+    return (
+      <button
+        className={`lb-subtab${active ? " active" : ""}`}
+        onClick={onClick}
+        title={m?.description ?? undefined}
+      >
+        {m?.name ?? tab.slug}
+      </button>
+    );
+  }
+  return null;
 }
 
 // ── Overall table ────────────────────────────────────────────────────────────
@@ -255,7 +446,7 @@ function OverallTable({ entries, error, onSelectProject }: OverallTableProps) {
             <th className="lb-th lb-rank">#</th>
             <th className="lb-th lb-agent">Agent</th>
             <th className="lb-th lb-author">Author</th>
-            <th className="lb-th lb-num" title="Mean of per-mode scores normalised to the mode leader (0–100)">
+            <th className="lb-th lb-num" title="Mean of per-group normalised scores (each group equally weighted)">
               Overall
             </th>
             <th className="lb-th lb-num" title="Total ranked matches across all modes">Matches</th>
@@ -293,9 +484,96 @@ function OverallTable({ entries, error, onSelectProject }: OverallTableProps) {
         </tbody>
       </table>
       <p className="lb-footnote">
-        Overall score normalises each mode's avg_score to 0–100 (relative to that
-        mode's leader) and averages across modes. Eligible only if you've played
-        ≥ half the target matches in every enabled mode.
+        Overall normalises each mode's avg_score to 0–100 (relative to the mode
+        leader), averages per group, then averages across groups — so a
+        multi-map group counts the same as a single-mode tab. Eligible only if
+        you've played ≥ half the target matches in every enabled mode.
+      </p>
+    </>
+  );
+}
+
+// ── Per-group table ──────────────────────────────────────────────────────────
+
+interface GroupTableProps {
+  entries: GroupLeaderboardEntry[] | null;
+  error: string | null;
+  group: ModeGroup | null;
+  memberModes: Mode[];
+  onSelectProject: (p: { id: number; name: string; language: string; user_display_name: string }) => void;
+}
+
+function GroupTable({ entries, error, group, memberModes, onSelectProject }: GroupTableProps) {
+  if (entries === null && !error) {
+    return <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Loading…</div>;
+  }
+  if (entries !== null && entries.length === 0) {
+    return (
+      <div className="placeholder-card">
+        <div className="big">no matches yet</div>
+        <div>The scheduler hasn't run scored matches in this group yet.</div>
+      </div>
+    );
+  }
+  if (entries === null) return null;
+
+  return (
+    <>
+      {group?.description && (
+        <p className="lb-mode-desc">
+          {group.description}{" "}
+          <span className="muted">
+            ({memberModes.length} {memberModes.length === 1 ? "mode" : "modes"})
+          </span>
+        </p>
+      )}
+      <table className="lb-table">
+        <thead>
+          <tr>
+            <th className="lb-th lb-rank">#</th>
+            <th className="lb-th lb-agent">Agent</th>
+            <th className="lb-th lb-author">Author</th>
+            <th className="lb-th lb-num" title="Mean of per-mode normalised scores within this group (0–100)">
+              Score
+            </th>
+            <th className="lb-th lb-num" title="Total matches across modes in this group">Matches</th>
+            <th className="lb-th lb-num" title="Distinct modes in this group the agent has scored in">Modes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((e) => (
+            <tr
+              key={e.project_id}
+              className={`lb-row lb-row-clickable ${e.rank <= 3 ? "lb-row-top" : ""}`}
+              onClick={() =>
+                onSelectProject({
+                  id: e.project_id,
+                  name: e.project_name,
+                  language: e.language,
+                  user_display_name: e.user_display_name,
+                })
+              }
+            >
+              <td className="lb-td lb-rank">
+                <span className="lb-rank-num">{e.rank}</span>
+                <RankMedal rank={e.rank} />
+              </td>
+              <td className="lb-td lb-agent">
+                <span className="lb-name">{e.project_name}</span>
+                <LangBadge lang={e.language} />
+              </td>
+              <td className="lb-td lb-author">{e.user_display_name}</td>
+              <td className="lb-td lb-num lb-score">{fmt(e.group_score, 1)}</td>
+              <td className="lb-td lb-num">{e.matches_played}</td>
+              <td className="lb-td lb-num">{e.modes_played}/{memberModes.length}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="lb-footnote">
+        Group score normalises each mode's avg_score to 0–100 of the mode
+        leader, then averages across the agent's modes in this group. Pick a
+        sub-tab above to drill into a single map's leaderboard.
       </p>
     </>
   );

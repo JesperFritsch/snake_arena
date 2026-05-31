@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import { UserButton } from "@clerk/clerk-react";
 
 export function Layout() {
@@ -24,6 +24,11 @@ export function Layout() {
       <main className="main">
         <Outlet />
       </main>
+      <footer className="footer">
+        <Link to="/terms">Terms</Link>
+        <Link to="/privacy">Privacy</Link>
+        <Link to="/acceptable-use">Acceptable Use</Link>
+      </footer>
     </div>
   );
 }

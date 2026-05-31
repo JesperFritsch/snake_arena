@@ -281,7 +281,7 @@ def cli(argv) -> argparse.Namespace:
     )
     enq.add_argument(
         "--mode-id", type=int, required=True,
-        help="mode id this match belongs to (see `python -m sa_common.db.modes`)",
+        help="mode id this match belongs to (see `db_modes list`)",
     )
     enq.add_argument(
         "--food", required=True,

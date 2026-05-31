@@ -885,6 +885,17 @@ button {
   min-height: 0;
 }
 
+.sim-player:focus {
+  outline: none;
+}
+
+.sim-player .sim-ctrl-btn {
+  /* prevent the iOS/Android tap-and-hold context menu on hold-to-fast-forward */
+  -webkit-touch-callout: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
 .sim-canvas-wrap {
   flex: 1;
   min-height: 0;
@@ -1274,6 +1285,34 @@ button {
   color: var(--text-faint);
 }
 
+.lb-subtabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: -8px 0 16px;
+}
+
+.lb-subtab {
+  padding: 3px 10px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: color 80ms, border-color 80ms, background 80ms;
+}
+
+.lb-subtab:hover {
+  color: var(--text);
+}
+
+.lb-subtab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .lb-mode-desc {
   font-size: 12px;
   color: var(--text-dim);
@@ -1426,4 +1465,157 @@ button {
   white-space: nowrap;
   color: var(--accent);
   padding-right: 16px;
+}
+
+/* ---- footer ------------------------------------------------------------- */
+
+.footer {
+  display: flex;
+  justify-content: center;
+  gap: 22px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-faint);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.footer a {
+  color: var(--text-dim);
+}
+.footer a:hover {
+  color: var(--text);
+}
+
+/* ---- sign-in gate consent text ----------------------------------------- */
+
+.gate-consent {
+  color: var(--text-faint);
+  font-size: 12px;
+  max-width: 360px;
+}
+.gate-consent a {
+  color: var(--text-dim);
+  text-decoration: underline;
+}
+.gate-consent a:hover {
+  color: var(--text);
+}
+
+/* ---- legal pages -------------------------------------------------------- */
+
+.legal-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+}
+.legal-topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 18px;
+  height: 54px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+.legal-topbar .brand {
+  font-family: var(--serif);
+  font-size: 22px;
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+.legal-nav {
+  display: flex;
+  gap: 18px;
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.legal-nav a:hover {
+  color: var(--text);
+}
+.legal-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 36px 18px 60px;
+}
+.legal-article {
+  max-width: 760px;
+  margin: 0 auto;
+  font-family: var(--mono);
+  color: var(--text);
+  line-height: 1.65;
+  font-size: 13px;
+}
+.legal-article h1 {
+  font-family: var(--serif);
+  font-size: 34px;
+  margin: 0 0 24px;
+  letter-spacing: 0.3px;
+}
+.legal-article h2 {
+  font-family: var(--serif);
+  font-size: 22px;
+  margin: 32px 0 12px;
+  color: var(--text);
+}
+.legal-article h3 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--accent-dim);
+  margin: 24px 0 8px;
+}
+.legal-article p {
+  margin: 0 0 14px;
+}
+.legal-article a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.legal-article strong {
+  color: var(--text);
+}
+.legal-article code {
+  background: var(--bg-input);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.legal-article ul,
+.legal-article ol {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+.legal-article li {
+  margin-bottom: 6px;
+}
+.legal-article hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 28px 0;
+}
+.legal-article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 18px;
+  font-size: 12px;
+}
+.legal-article th,
+.legal-article td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.legal-article th {
+  color: var(--text-dim);
+  font-weight: 600;
+  background: var(--bg-panel);
 }

@@ -13,6 +13,8 @@ db_project = "sa_common.db.projects:main"
 db_match_jobs = "sa_common.db.match_jobs:main"
 db_build_jobs = "sa_common.db.build_jobs:main"
 db_matches = "sa_common.db.matches:main"
+db_modes = "sa_common.db.modes:main"
+db_mode_groups = "sa_common.db.mode_groups:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -152,13 +152,24 @@ class LeaderboardEntry(BaseModel):
     avg_length: float | None
 
 
+class GroupLeaderboardEntry(BaseModel):
+    rank: int
+    project_id: int
+    project_name: str
+    language: str
+    user_display_name: str
+    group_score: float           # 0..100, mean of per-mode normalised scores within the group
+    matches_played: int
+    modes_played: int
+
+
 class OverallLeaderboardEntry(BaseModel):
     rank: int
     project_id: int
     project_name: str
     language: str
     user_display_name: str
-    overall_score: float          # 0..100, mean of per-mode normalised scores
+    overall_score: float          # 0..100, mean of per-group normalised scores
     total_matches: int
     modes_played: int
 
@@ -168,9 +179,17 @@ class ModeOut(BaseModel):
     slug: str
     name: str
     description: str | None
+    group_slug: str | None
     participant_count: int
     sim_args: dict[str, Any]
     map_slug: str | None
     budget_ms: float
     target_matches_per_version: int
     enabled: bool
+
+
+class GroupOut(BaseModel):
+    slug: str
+    name: str
+    description: str | None
+    sort_order: int

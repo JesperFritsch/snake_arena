@@ -7,5 +7,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    fs: {
+      // Allow reading the markdown files in ../docs/legal via ?raw imports.
+      allow: [".."],
+    },
   },
 });

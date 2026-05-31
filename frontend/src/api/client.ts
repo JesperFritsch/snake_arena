@@ -1,9 +1,11 @@
 import { useAuth } from "@clerk/clerk-react";
 import { useMemo } from "react";
 import type {
+  GroupLeaderboardEntry,
   LanguageInfo,
   LeaderboardEntry,
   Mode,
+  ModeGroup,
   OverallLeaderboardEntry,
   ProjectCreate,
   ProjectFiles,
@@ -72,7 +74,9 @@ export interface ApiClient {
   getLanguages(): Promise<LanguageInfo[]>;
   me(): Promise<UserOut>;
   getModes(): Promise<Mode[]>;
+  getModeGroups(): Promise<ModeGroup[]>;
   getModeLeaderboard(modeSlug: string, limit?: number): Promise<LeaderboardEntry[]>;
+  getGroupLeaderboard(groupSlug: string, limit?: number): Promise<GroupLeaderboardEntry[]>;
   getOverallLeaderboard(limit?: number): Promise<OverallLeaderboardEntry[]>;
   listProjects(): Promise<ProjectMeta[]>;
   createProject(body: ProjectCreate): Promise<ProjectMeta>;
@@ -93,7 +97,7 @@ export interface ApiClient {
   pinTestMatch(jobId: number, pinned: boolean): Promise<TestMatchJob>;
   cancelTestMatch(jobId: number): Promise<void>;
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
-  listProjectRankedMatches(projectId: number, opts?: { modeId?: number; limit?: number }): Promise<RankedMatchSummary[]>;
+  listProjectRankedMatches(projectId: number, opts?: { modeIds?: number[]; limit?: number }): Promise<RankedMatchSummary[]>;
   getMatchBundleUrl(matchId: number): Promise<{ url: string }>;
 }
 
@@ -144,8 +148,11 @@ export function useApi(): ApiClient {
       getLanguages: () => request(g, "GET", "/languages"),
       me: () => request(g, "GET", "/me"),
       getModes: () => request(g, "GET", "/modes"),
+      getModeGroups: () => request(g, "GET", "/mode-groups"),
       getModeLeaderboard: (modeSlug, limit = 100) =>
         request(g, "GET", `/leaderboard?mode=${encodeURIComponent(modeSlug)}&limit=${limit}`),
+      getGroupLeaderboard: (groupSlug, limit = 100) =>
+        request(g, "GET", `/leaderboard/group?group=${encodeURIComponent(groupSlug)}&limit=${limit}`),
       getOverallLeaderboard: (limit = 100) =>
         request(g, "GET", `/leaderboard/overall?limit=${limit}`),
       listProjects: () => request(g, "GET", "/projects"),
@@ -179,7 +186,7 @@ export function useApi(): ApiClient {
           project_id: String(projectId),
           limit: String(opts?.limit ?? 20),
         });
-        if (opts?.modeId != null) params.set("mode_id", String(opts.modeId));
+        for (const id of opts?.modeIds ?? []) params.append("mode_ids", String(id));
         return request(g, "GET", `/matches/for-project?${params.toString()}`);
       },
       getMatchBundleUrl: (matchId) =>

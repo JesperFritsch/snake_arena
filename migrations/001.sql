@@ -69,6 +69,19 @@ CREATE TABLE projects (
     )
 );
 
+-- Mode groups: a leaderboard-facing label that bundles modes together. The
+-- canonical case is solo: a group "solo" contains several solo modes that
+-- differ in map / dimensions but share a tab in the leaderboard and a single
+-- contribution to the overall normalised score. Modes can be ungrouped
+-- (group_slug NULL) — those render as their own standalone tab.
+CREATE TABLE mode_groups (
+    slug         TEXT PRIMARY KEY,                 -- e.g. 'solo'
+    name         TEXT NOT NULL,                    -- display name, e.g. 'Solo'
+    description  TEXT,
+    sort_order   INT NOT NULL DEFAULT 0,           -- tab order; lower comes first
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Modes: persistent evaluation configurations. Each ranked match belongs to
 -- exactly one mode. Test matches have mode_id = NULL. See docs/09_ranking_system.md.
 CREATE TABLE modes (
@@ -76,6 +89,7 @@ CREATE TABLE modes (
     slug                        TEXT UNIQUE NOT NULL,         -- e.g. 'multi-4-standard'
     name                        TEXT NOT NULL,                -- display name
     description                 TEXT,
+    group_slug                  TEXT REFERENCES mode_groups(slug) ON DELETE SET NULL,
     participant_count           INT NOT NULL,                 -- 1 for solo, 2+ for multi
     sim_args                    JSONB NOT NULL,               -- {food, grid_width, grid_height}
     map_slug                    TEXT,                         -- NULL = clear map (no walls); maps not yet implemented
@@ -88,6 +102,8 @@ CREATE TABLE modes (
     CONSTRAINT modes_target_positive            CHECK (target_matches_per_version >= 1),
     CONSTRAINT modes_budget_positive            CHECK (budget_ms > 0)
 );
+
+CREATE INDEX idx_modes_group_slug ON modes(group_slug) WHERE group_slug IS NOT NULL;
 
 -- Matches: the durable record
 CREATE TABLE matches (
@@ -190,8 +206,13 @@ CREATE INDEX idx_matches_unscored
 CREATE INDEX idx_matches_mode_status
     ON matches(mode_id, status) WHERE mode_id IS NOT NULL;
 
--- Seed modes. Solo modes are added once map support lands in the sim (see
--- docs/09_ranking_system.md "Forward path").
+-- Seed groups. Solo gets its own group; multi-* modes start ungrouped (each
+-- is its own tab). Add solo modes via `db_modes create --group-slug solo ...`
+-- once map support lands in the sim (see docs/09_ranking_system.md "Forward path").
+INSERT INTO mode_groups (slug, name, description, sort_order) VALUES
+    ('solo', 'Solo', 'Single-snake runs across a rotating set of maps.', 100);
+
+-- Seed modes.
 INSERT INTO modes
     (slug,                name,                  description,                                  participant_count, sim_args,                                       budget_ms, scoring_config,                                    target_matches_per_version)
 VALUES

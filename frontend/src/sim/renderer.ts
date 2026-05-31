@@ -1,13 +1,5 @@
 import type { SimStartData, SimState } from "./types";
-
-const PALETTES = [
-  { head: "#b8ff3c", body: "#4d7a10" }, // player — accent
-  { head: "#60a5fa", body: "#1d4ed8" }, // blue
-  { head: "#f87171", body: "#b91c1c" }, // red
-  { head: "#fb923c", body: "#c2410c" }, // orange
-  { head: "#a78bfa", body: "#6d28d9" }, // purple
-  { head: "#34d399", body: "#065f46" }, // teal
-];
+import { colorForSeat } from "./colors";
 
 const DEAD_COLOR = "#5e646b";
 const WALL_COLOR = "#2a2e35";
@@ -91,9 +83,10 @@ export class SimRenderer {
     const tube    = Math.min(cellW, cellH) * TUBE_RATIO;
     const bodyPad = Math.max(1, Math.floor(Math.min(cellW, cellH) * 0.1));
 
+    const totalSnakes = seatBySnakeId.size || state.snakes.size;
     for (const [id, snake] of state.snakes) {
       const seat      = seatBySnakeId.get(id) ?? id;
-      const palette   = PALETTES[seat % PALETTES.length];
+      const palette   = colorForSeat(seat, totalSnakes);
       const bodyColor = snake.alive ? palette.body : DEAD_COLOR;
       const body      = snake.body;
 

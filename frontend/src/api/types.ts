@@ -154,6 +154,17 @@ export interface LeaderboardEntry {
   avg_length: number | null;
 }
 
+export interface GroupLeaderboardEntry {
+  rank: number;
+  project_id: number;
+  project_name: string;
+  language: string;
+  user_display_name: string;
+  group_score: number;
+  matches_played: number;
+  modes_played: number;
+}
+
 export interface OverallLeaderboardEntry {
   rank: number;
   project_id: number;
@@ -170,10 +181,18 @@ export interface Mode {
   slug: string;
   name: string;
   description: string | null;
+  group_slug: string | null;
   participant_count: number;
   sim_args: Record<string, unknown>;
   map_slug: string | null;
   budget_ms: number;
   target_matches_per_version: number;
   enabled: boolean;
+}
+
+export interface ModeGroup {
+  slug: string;
+  name: string;
+  description: string | null;
+  sort_order: number;
 }

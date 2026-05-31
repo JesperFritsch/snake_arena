@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { SimRenderer } from "../sim/renderer";
+import { colorForSeat } from "../sim/colors";
 import type { SimStore } from "../sim/store";
 import type { SimSource } from "../sim/source";
 import type { Highlight } from "../sim/highlights";
 
 const SPEEDS = [1, 2, 4, 8];
 const MS_PER_STEP_1X = 100;
-const SNAKE_COLORS = ["#b8ff3c", "#60a5fa", "#f87171", "#fb923c", "#a78bfa", "#34d399"];
+// Long-press behavior on prev/next buttons: first step fires on press,
+// then after this delay we begin auto-repeating at the interval below.
+const HOLD_DELAY_MS = 350;
+const HOLD_INTERVAL_MS = 50;
 
 interface Props {
   source: SimSource;
@@ -36,6 +40,7 @@ export function SimPlayer({
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<SimRenderer | null>(null);
 
   const currentStepRef = useRef(0);
@@ -141,6 +146,87 @@ export function SimPlayer({
   }, [playing, speed]);
 
   // ── Controls ─────────────────────────────────────────────────────────────
+  const stepBy = useCallback((delta: number) => {
+    setPlaying(false);
+    setCurrentStep((s) => {
+      const total = totalStepsRef.current;
+      if (total <= 0) return s;
+      return Math.max(0, Math.min(total - 1, s + delta));
+    });
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    const total = totalStepsRef.current;
+    if (total <= 0) return;
+    setPlaying((p) => {
+      if (!p && currentStepRef.current >= total - 1) setCurrentStep(0);
+      return !p;
+    });
+  }, []);
+
+  // Long-press auto-repeat for the prev/next buttons. Pointer-based so it
+  // works for both mouse and touch; pointer capture keeps the "up" event on
+  // the same target even if the finger drifts off the button.
+  const holdRef = useRef<{ initial: number | null; interval: number | null }>({
+    initial: null,
+    interval: null,
+  });
+  const stopHold = useCallback(() => {
+    if (holdRef.current.initial != null) {
+      window.clearTimeout(holdRef.current.initial);
+      holdRef.current.initial = null;
+    }
+    if (holdRef.current.interval != null) {
+      window.clearInterval(holdRef.current.interval);
+      holdRef.current.interval = null;
+    }
+  }, []);
+  const startHold = useCallback((delta: number) => {
+    stopHold();
+    stepBy(delta);
+    holdRef.current.initial = window.setTimeout(() => {
+      holdRef.current.interval = window.setInterval(() => stepBy(delta), HOLD_INTERVAL_MS);
+    }, HOLD_DELAY_MS);
+  }, [stepBy, stopHold]);
+  useEffect(() => stopHold, [stopHold]);
+
+  const holdHandlers = (delta: number) => ({
+    onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      startHold(delta);
+    },
+    onPointerUp: stopHold,
+    onPointerCancel: stopHold,
+    onLostPointerCapture: stopHold,
+  });
+
+  // Keyboard control — works whenever focus is anywhere inside the player.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    const isButton = target.tagName === "BUTTON";
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      stepBy(-1);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      stepBy(1);
+    } else if (e.key === " " || e.code === "Space") {
+      // Native button activation already handles Space; don't double-toggle.
+      if (isButton) return;
+      e.preventDefault();
+      togglePlay();
+    }
+  };
+
+  // Make the whole player a focus target: tapping the canvas (or any
+  // non-interactive area) gives focus so keyboard shortcuts start working.
+  const handleRootPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("button, input, [tabindex]")) return;
+    rootRef.current?.focus({ preventScroll: true });
+  };
+
   const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
     setCurrentStep(Number(e.target.value));
     setPlaying(false);
@@ -169,11 +255,6 @@ export function SimPlayer({
     }
     setHoveredMark(bestDist <= threshold ? best : null);
   }, []);
-
-  const togglePlay = () => {
-    if (currentStep >= totalSteps - 1 && !playing) setCurrentStep(0);
-    setPlaying((p) => !p);
-  };
 
   // ── Label helpers ────────────────────────────────────────────────────────
   // Highlight markers carry sim snake_ids; translate to seat so labels and
@@ -207,7 +288,13 @@ export function SimPlayer({
   const atLatestFrame = currentStep >= totalSteps - 1 && totalSteps > 0;
 
   return (
-    <div className="sim-player">
+    <div
+      className="sim-player"
+      ref={rootRef}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onPointerDown={handleRootPointerDown}
+    >
       <div className="sim-canvas-wrap" ref={containerRef}>
         <canvas ref={canvasRef} className="sim-canvas" />
         {overlayText && (
@@ -226,7 +313,7 @@ export function SimPlayer({
             <span key={seat} className="sim-legend-item">
               <span
                 className="sim-legend-dot"
-                style={{ background: SNAKE_COLORS[seat % SNAKE_COLORS.length] }}
+                style={{ background: colorForSeat(seat, participantNames.length).head }}
               />
               {labelForSeat ? labelForSeat(seat, name) : name}
             </span>
@@ -236,8 +323,24 @@ export function SimPlayer({
 
       {showControls && (
         <div className="sim-controls">
+          <button
+            className="btn ghost sim-ctrl-btn"
+            title="step back (hold to fast-rewind)"
+            aria-label="step back"
+            {...holdHandlers(-1)}
+          >
+            ⏮
+          </button>
           <button className="btn ghost sim-ctrl-btn" onClick={togglePlay}>
             {playing ? "⏸" : "▶"}
+          </button>
+          <button
+            className="btn ghost sim-ctrl-btn"
+            title="step forward (hold to fast-forward)"
+            aria-label="step forward"
+            {...holdHandlers(1)}
+          >
+            ⏭
           </button>
           <div className="sim-scrubber-col">
             <input
@@ -293,7 +396,7 @@ export function SimPlayer({
               <span key={id} className="exec-times-entry">
                 <span
                   className="exec-times-dot"
-                  style={{ background: SNAKE_COLORS[seat % SNAKE_COLORS.length] }}
+                  style={{ background: colorForSeat(seat, participantNames.length).head }}
                 />
                 <span className="exec-times-name">
                   {labelForSeat ? labelForSeat(seat, participantNames[seat] ?? `snake ${seat}`) : (participantNames[seat] ?? `snake ${seat}`)}

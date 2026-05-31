@@ -46,12 +46,14 @@ def list_completed_matches(
 @router.get("/matches/for-project", response_model=list[RankedMatchSummary])
 def list_matches_for_project(
     project_id: int = Query(...),
-    mode_id: int | None = Query(None, description="filter to a single mode"),
+    mode_ids: list[int] | None = Query(
+        None, description="filter to one or more modes (repeat the query param)",
+    ),
     limit: int = Query(20, ge=1, le=100),
     conn: Connection = Depends(get_db),
     _: User = Depends(get_current_user),
 ) -> list[RankedMatchSummary]:
-    summaries = list_ranked_matches_for_project(conn, project_id, limit, mode_id=mode_id)
+    summaries = list_ranked_matches_for_project(conn, project_id, limit, mode_ids=mode_ids)
     return [
         RankedMatchSummary(
             id=s.id,
