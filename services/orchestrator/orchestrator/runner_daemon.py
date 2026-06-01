@@ -161,6 +161,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
                 wall_step_times=result.wall_step_times,
                 budgets=result.budgets,
                 sim_logs=result.sim_logs,
+                runner_logs=result.runner_logs,
                 seat_by_snake_id=result.seat_by_snake_id,
             )
             config.bundler.put(bundle_key, bundle_bytes)

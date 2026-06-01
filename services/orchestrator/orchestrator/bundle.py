@@ -11,6 +11,10 @@ Bundle contents:
   budgets.json        – CPU budget config (seconds) that was in force for this run
   sim_logs.txt        – raw stdout/stderr of the sim container (useful for
                         post-mortem of init failures and crashes)
+  runner_logs.txt     – captured runner-side log (match.py +
+                        agent_container_manager + cpu-budget poll thread).
+                        Source of truth for *why* a seat was killed (budget
+                        kill reasons, container lifecycle events).
   seat_by_snake_id.json – {"<snake_id>": seat}; lets the player join sim-side
                         identifiers (snake_id in replay) with runner-side
                         identifiers (seat in participants/exec_times) without
@@ -46,6 +50,7 @@ class BundleContents:
     wall_step_times: dict[int, list[float]]       # seat -> [wall ms per step], same shape as exec_times
     budgets: dict[str, float]                     # everything AgentContainerManager.get_budgets() wrote
     sim_logs: str                                 # raw sim container stdout/stderr
+    runner_logs: str                              # captured runner-side log (see module docstring)
     seat_by_snake_id: dict[int, int]              # sim snake_id -> runner seat; empty if notify_start never fired
 
     @property
@@ -65,7 +70,7 @@ def read_bundle(bundle_bytes: bytes) -> BundleContents:
         for required in (
             "replay.json", "analysis.json", "exec_times.json",
             "wall_step_times.json", "budgets.json", "sim_logs.txt",
-            "seat_by_snake_id.json",
+            "runner_logs.txt", "seat_by_snake_id.json",
         ):
             if required not in names:
                 raise ValueError(f"bundle missing required file: {required}")
@@ -87,6 +92,7 @@ def read_bundle(bundle_bytes: bytes) -> BundleContents:
 
         agent_logs = json.loads(zf.read("agent_logs.json")) if "agent_logs.json" in names else None
         sim_logs = zf.read("sim_logs.txt").decode(errors="replace")
+        runner_logs = zf.read("runner_logs.txt").decode(errors="replace")
 
     return BundleContents(
         replay=replay,
@@ -96,6 +102,7 @@ def read_bundle(bundle_bytes: bytes) -> BundleContents:
         wall_step_times=wall_step_times,
         budgets=budgets,
         sim_logs=sim_logs,
+        runner_logs=runner_logs,
         seat_by_snake_id=seat_by_snake_id,
     )
 
@@ -104,6 +111,7 @@ def assemble_bundle(
     replay_path: Path,
     run_analysis: RunAnalysis | None,
     sim_logs: str,
+    runner_logs: str,
     dev_step_logs: list[str] | None = None,
     exec_times: dict[int, list[float]] | None = None,
     wall_step_times: dict[int, list[float]] | None = None,
@@ -136,4 +144,5 @@ def assemble_bundle(
             json.dumps({str(k): v for k, v in (seat_by_snake_id or {}).items()}).encode(),
         )
         zf.writestr("sim_logs.txt", sim_logs.encode(errors="replace"))
+        zf.writestr("runner_logs.txt", runner_logs.encode(errors="replace"))
     return buf.getvalue()

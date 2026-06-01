@@ -5,6 +5,7 @@ Given a sim image, agent specs, and sim args, this module starts the
 containers, runs the match, collects logs and analysis, and returns a
 MatchResult. Persistence is the orchestrator's job.
 """
+import io
 import logging
 import os
 import socket
@@ -46,6 +47,30 @@ _MATCH_LOG_TRUNCATION_BANNER = (
     "was dropped. Reduce log volume to see your full output.\n"
     "=========================================================\n"
 )
+
+
+class _BufferingLogHandler(logging.Handler):
+    """In-memory handler that accumulates formatted log records.
+
+    Attached to the `runner` parent logger for the duration of a single
+    match so the bundle can carry the runner-side log for post-mortems
+    (budget-kill diagnostics, container lifecycle, observer chain state).
+    Matches run sequentially per daemon process so a single shared logger
+    is safe — the handler is removed in the match's finally block.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self._buf = io.StringIO()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._buf.write(self.format(record) + "\n")
+        except Exception:
+            self.handleError(record)
+
+    def getvalue(self) -> str:
+        return self._buf.getvalue()
 
 
 def _split_step_logs(text: str, budget: int = _STEP_STDOUT_BUDGET) -> list[str]:
@@ -308,7 +333,31 @@ def run_match(
     sim_container: Container | None = None
     loop_observable: ILoopObservable | None = None
 
+    # Capture every log record emitted under the `runner` logger tree
+    # (this module + agent_container_manager + the cpu-budget poll thread)
+    # so the bundle can ship the runner-side log. Without this the only way
+    # to learn *why* the manager killed a seat is to dig through the daemon
+    # process's stdout, which isn't preserved per-match.
+    #
+    # Force the `runner` logger to DEBUG for the duration of the match so
+    # the buffer gets the full diagnostic stream regardless of the daemon's
+    # LOG_LEVEL. Console output is unaffected — DEBUG records still pass
+    # the root logger's handler-level filter (set by basicConfig).
+    runner_log_handler = _BufferingLogHandler()
+    runner_log_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    ))
+    runner_root = logging.getLogger("runner")
+    prev_runner_level = runner_root.level
+    runner_root.setLevel(logging.DEBUG)
+    runner_root.addHandler(runner_log_handler)
+
     def _finish(result: MatchResult) -> MatchResult:
+        # Snapshot the buffered runner logs onto the result before returning.
+        # The handler is detached in the outer finally; doing the snapshot
+        # here (not in finally) means a record emitted during _cleanup
+        # doesn't sneak into a bundle whose result was already returned.
+        result.runner_logs = runner_log_handler.getvalue()
         # Fire on_result before the `finally` teardown so the caller can publish
         # the outcome immediately — Docker network/container teardown is slow
         # (~seconds) and shouldn't sit on the user-visible critical path.
@@ -602,11 +651,13 @@ def run_match(
         ))
 
     finally:
+        runner_root.removeHandler(runner_log_handler)
+        runner_root.setLevel(prev_runner_level)
         _cleanup(
-            sim_container, 
-            agent_containers, 
-            networks, 
-            router, 
+            sim_container,
+            agent_containers,
+            networks,
+            router,
             loop_observable
         )
 

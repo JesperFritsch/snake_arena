@@ -40,6 +40,11 @@ class MatchResult:
     # runner-side data (participants, exec_times) without hardcoding the
     # snake_id == seat assumption.
     seat_by_snake_id: dict[int, int] | None = None
+    # Captured stream of the `runner` logger tree for this match (match.py +
+    # agent_container_manager + cpu-budget poll thread). Populated by
+    # run_match() right before it returns; consumed by assemble_bundle() to
+    # ship runner_logs.txt in the match bundle for post-mortems.
+    runner_logs: str = ""
     error: str | None = None
 
 
