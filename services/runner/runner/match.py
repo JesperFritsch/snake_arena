@@ -317,15 +317,19 @@ def run_match(
     on_step_log: Callable[[int, str], None] | None = None,
     on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
     on_result: Callable[[MatchResult], None] | None = None,
-    # Test-match opponent cleanup: once the dev agent dies, end the
-    # match for any remaining opponents after this many extra sim
-    # steps. None disables (use for ranked / multi-agent matches where
-    # the bracket should keep playing). Requires `dev_seat` to be set.
-    kill_opponents_after_dev_dies_steps: int | None = None,
+    # Ranked/multi-agent stop rule (sim-side): end once exactly one snake
+    # is alive AND it's also the longest. Removes the "suicide for length
+    # lock-in" exploit. Pure game rule, enforced by the sim.
+    end_on_last_standing_when_longest: bool = False,
+    # Test-match stop rule (sim-side): end `end_when_dead_buffer_steps`
+    # steps after the dev agent dies, so the bracket isn't kept running
+    # for opponents that no longer matter. Enforced by the sim.
+    end_when_dead_buffer_steps: int = 0,
     # Seat index of the dev agent for test matches; None for ranked.
-    # Drives the opponent-cleanup knob above and anchors the kill banner
-    # in the dev console. Caller's contract is that the seat exists in
-    # `agents` (it indexes `agents[dev_seat]`).
+    # When set, the runner passes the dev's tag as the sim's
+    # --end-when-dead-tag and anchors the budget-kill banner on its
+    # console. Caller's contract is that the seat exists in `agents`
+    # (it indexes `agents[dev_seat]`).
     dev_seat: int | None = None,
 ) -> MatchResult:
     networks: list[Network] = []
@@ -526,8 +530,6 @@ def run_match(
             sustained_wall_max_seconds=per_step_budget_seconds * 20,
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
-            kill_opponents_after_dev_dies_steps=kill_opponents_after_dev_dies_steps,
-            dev_seat=dev_seat,
         )
         cpu_observer.set_agent_containers(seat_to_container, target_by_seat)
         for obs in (extra_observers or []):
@@ -554,6 +556,16 @@ def run_match(
             "--log-level", "DEBUG",
             *sim_args.to_args(),
         ]
+        if end_on_last_standing_when_longest:
+            full_sim_args.append("--end-on-last-standing-when-longest")
+        if dev_seat is not None:
+            # Snake tag matches the gRPC target the sim was given for that
+            # seat (see `target` above and SnakeConfig wiring in
+            # snake_loop_control._initialize_remote_grpcs).
+            full_sim_args += [
+                "--end-when-dead-tag", targets[dev_seat],
+                "--end-when-dead-buffer-steps", str(end_when_dead_buffer_steps),
+            ]
 
         loop_observable.add_observer(cpu_observer)
         for obs in (extra_observers or []):

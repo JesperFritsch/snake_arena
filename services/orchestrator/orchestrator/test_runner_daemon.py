@@ -204,12 +204,13 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             on_result=on_match_result,
             # Test matches are dev-agent-centric: when the dev (seat 0)
             # is out, the bundle's remaining frames are just opponent
-            # noise. Keep 5 extra frames of context for the replay then
-            # end the match.
-            kill_opponents_after_dev_dies_steps=5,
-            # resolve_test_agents places the player at seat 0 — the manager
-            # uses this to know whose death triggers opponent cleanup and
-            # whose exec_times anchor the dev console's kill banner.
+            # noise. Tell the sim to end the match 5 steps after the dev
+            # dies so the replay still has a short tail of context.
+            end_when_dead_buffer_steps=5,
+            # resolve_test_agents places the player at seat 0 — the runner
+            # uses this to pick the tag passed to the sim's
+            # --end-when-dead-tag and to anchor the dev console's kill
+            # banner.
             dev_seat=0,
         )
 

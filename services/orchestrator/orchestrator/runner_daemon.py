@@ -111,6 +111,10 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             d_client=config.d_client,
             per_step_budget_seconds=per_step_budget_seconds,
             extra_observers=[file_observer],
+            # Ranked matches end once one snake is alive AND longest.
+            # Shortens long tail without making suicide a winning move
+            # (a suicidal snake locks in its length at death).
+            end_on_last_standing_when_longest=True,
         )
 
         # Quarantine any submitted image that failed the gRPC probe. The

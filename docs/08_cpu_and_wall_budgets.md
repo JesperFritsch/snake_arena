@@ -235,11 +235,17 @@ the absolute CPU cap during it.
 | `sustained_wall`   | Sustained wall bank went negative                                                         |
 | `init_failure`     | Sim dropped the seat during gRPC init                                                     |
 | `dead`             | `alive_states[snake] = False` — snake died in-game                                        |
-| `post_dev_cleanup` | Test match only: dev agent died N steps ago, cleaning up opponents                        |
 
 `runner/match.py:_budget_kill_note` translates each reason (except
-`dead` and `post_dev_cleanup`) into a human-readable banner prepended
-to the dev agent's final step log.
+`dead`) into a human-readable banner prepended to the dev agent's
+final step log.
+
+Match-level termination (end the match once the dev dies, or once one
+snake remains alive AND is the longest) is enforced by the sim itself
+via the `--end-when-dead-tag` / `--end-on-last-standing-when-longest`
+flags — not by this manager. When those rules fire, opponent
+containers stay alive until `_cleanup` tears the match down, so they
+end the match with `kill_reason = None`.
 
 ## What this design deliberately does NOT have
 

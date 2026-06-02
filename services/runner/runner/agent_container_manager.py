@@ -77,8 +77,8 @@ class _AgentTracker:
     in_startup: bool = True
     killed: bool = False
     # One of: "startup_cpu", "per_step", "sustained", "wall_clock",
-    # "sustained_wall", "init_failure", "dead", "post_dev_cleanup". None
-    # for alive seats and clean shutdowns.
+    # "sustained_wall", "init_failure", "dead". None for alive seats
+    # and clean shutdowns.
     kill_reason: str | None = None
 
 
@@ -127,10 +127,10 @@ class AgentContainerManager(ILoopObserver):
       during gRPC init (absent from `snake_tags`) get reason
       "init_failure". Surviving seats have their banks initialised and
       `in_startup` cleared.
-    - Test matches: when the dev seat is killed,
-      `kill_opponents_after_dev_dies_steps` additional sim steps later
-      all surviving opponents are killed with reason "post_dev_cleanup"
-      so the replay has a tail to show what happened.
+
+    Match termination based on game state (dev-died-stop-the-match,
+    last-standing-and-longest, etc.) lives in the sim itself, not here
+    — this class is strictly about per-container resource budgets.
 
     No PSI parsing, no adaptive contention, no mid-step projected bank
     kills, no continuous startup-phase CPU monitoring. Rule 1 + rule 2
@@ -153,13 +153,6 @@ class AgentContainerManager(ILoopObserver):
         # by seat so live consumers (redis observer) don't have to know
         # the sim's snake_id assignments.
         on_exec_times: Callable[[int, dict[int, float]], None] | None = None,
-        # For test matches: once the dev agent dies, end the match for
-        # the opponents after this many *additional* sim steps so the
-        # replay still shows a few frames of context. None disables.
-        # Requires `dev_seat` to be set.
-        kill_opponents_after_dev_dies_steps: int | None = None,
-        # Seat index of the dev agent for test matches; None for ranked.
-        dev_seat: int | None = None,
     ):
         super().__init__()
         self._per_step_cpu_budget_ns = int(per_step_cpu_budget_seconds * 1e9)
@@ -173,13 +166,6 @@ class AgentContainerManager(ILoopObserver):
         self._sustained_wall_max_ns = int(sustained_wall_max_seconds * 1e9)
         self._poll_interval_s = poll_interval_s
         self._on_exec_times = on_exec_times
-        self._kill_opp_after_dev_dies_steps = kill_opponents_after_dev_dies_steps
-        if kill_opponents_after_dev_dies_steps is not None and dev_seat is None:
-            raise ValueError(
-                "kill_opponents_after_dev_dies_steps requires dev_seat to be set"
-            )
-        self._dev_seat = dev_seat
-        self._dev_died_at_step: int | None = None
 
         # All match-lifecycle state is keyed by SEAT (the runner's index,
         # stable across the match). The sim assigns its own snake_id
@@ -484,31 +470,6 @@ class AgentContainerManager(ILoopObserver):
                     tracker.killed = True
                     tracker.kill_reason = "dead"
                     self._kill_seat(seat)
-
-            # Test-match opponent cleanup.
-            if self._kill_opp_after_dev_dies_steps is not None:
-                dev = (
-                    self._trackers.get(self._dev_seat)
-                    if self._dev_seat is not None else None
-                )
-                if dev is not None and dev.killed:
-                    if self._dev_died_at_step is None:
-                        self._dev_died_at_step = data.step
-                    elif (
-                        data.step - self._dev_died_at_step
-                        >= self._kill_opp_after_dev_dies_steps
-                    ):
-                        for seat, t in self._trackers.items():
-                            if seat == self._dev_seat or t.killed:
-                                continue
-                            log.info(
-                                "test match: dev died at step %d, "
-                                "ending opponent seat %d at step %d",
-                                self._dev_died_at_step, seat, data.step,
-                            )
-                            t.killed = True
-                            t.kill_reason = "post_dev_cleanup"
-                            self._kill_seat(seat)
 
         if step_times and self._on_exec_times is not None:
             try:
