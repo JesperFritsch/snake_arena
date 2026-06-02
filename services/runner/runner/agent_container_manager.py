@@ -29,11 +29,10 @@ _CGROUP_BASE = Path("/sys/fs/cgroup")
 # "the agent was on-CPU for at least half the window."
 _BUSY_RATIO = 0.5
 
-# CPU floor for the per-step wall kill. If cpu_in_step is below this and
-# wall_in_step is over budget, the agent is sleeping / blocked rather
-# than computing. A real agent unpacking protobuf and returning a move
-# always has > 1 ms of CPU; only an explicit sleep/I/O trip is below.
-_SLEEP_CPU_THRESHOLD_NS = 1_000_000  # 1 ms
+# (No standalone CPU floor for the per-step wall kill — the busy_ratio
+# threshold is the right signal. A long wall with low busy_ratio means
+# the container was mostly idle, regardless of how many absolute ns of
+# background ticks accumulated.)
 
 # Wall-to-CPU multiplier for the sustained-wall bank. The bank debits
 # `max(0, response_wall - cpu * WALL_K)`; a value of 3 allows up to 3×
@@ -628,18 +627,25 @@ class AgentContainerManager(ILoopObserver):
                         self._kill_seat(seat)
                         continue
 
-                    # Rule 2: stalled — long wall, ~no CPU.
+                    # Rule 2: stalled — long wall and the agent isn't
+                    # actively using CPU. The busy_ratio threshold is
+                    # symmetric with rule 1 (which kills only when the
+                    # agent IS busy); here we kill only when the agent
+                    # IS NOT busy. An agent doing real CPU work has
+                    # busy ≈ 1.0 even when slow; a sleeper's busy stays
+                    # near 0 because the container's background CPU is
+                    # tiny compared to wall.
                     if (
                         wall_in_step > self._per_step_wall_budget_ns
-                        and cpu_in_step < _SLEEP_CPU_THRESHOLD_NS
+                        and busy < _BUSY_RATIO
                     ):
                         log.warning(
                             "seat %d (tag=%s) per-step wall %.3fs > budget"
-                            " %.3fs, cpu only %.3fs -> killing (sleeping/hung)",
+                            " %.3fs, busy %.2f (cpu %.3fs) -> killing (sleeping/hung)",
                             seat, tracker.name,
                             wall_in_step / 1e9,
                             self._per_step_wall_budget_ns / 1e9,
-                            cpu_in_step / 1e9,
+                            busy, cpu_in_step / 1e9,
                         )
                         tracker.killed = True
                         tracker.kill_reason = "wall_clock"

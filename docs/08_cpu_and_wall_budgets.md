@@ -29,9 +29,8 @@ sustained_wall_max_seconds        = 1.00    # bank caps at 1 s
 Plus two module-level constants:
 
 ```
-_WALL_K = 3.0                     # wall_excess = max(0, wall - cpu * k)
-_BUSY_RATIO = 0.5                 # cpu/wall threshold for "agent was busy"
-_SLEEP_CPU_THRESHOLD_NS = 1 ms    # below this in window = sleeping
+_WALL_K = 3.0          # wall_excess = max(0, wall - cpu * k)
+_BUSY_RATIO = 0.5      # cpu/wall threshold for "agent was busy"
 ```
 
 ## How the budgets read CPU and wall time
@@ -70,8 +69,8 @@ for seat, tracker in trackers:
     if cpu_in_step > per_step_cpu_budget and busy >= _BUSY_RATIO:
         kill("per_step"); continue
 
-    # Rule 2: stalled — long wall, ~no CPU.
-    if wall_in_step > per_step_wall_budget and cpu_in_step < _SLEEP_CPU_THRESHOLD_NS:
+    # Rule 2: stalled — long wall, agent not actually using CPU.
+    if wall_in_step > per_step_wall_budget and busy < _BUSY_RATIO:
         kill("wall_clock")
 ```
 
@@ -90,11 +89,15 @@ least above 0.5) — the kill fires.
 
 ### Why we don't need adaptive wall
 
-The per-step wall budget is 1 s and only triggers when CPU is
-essentially zero. Legitimate slow agents on a contended host burn CPU
-proportionally to how slow they're being — `cpu_in_step` rises and the
-guard doesn't fire. The CPU-conjunction is what lets us use a fixed
-1 s threshold without false-killing real work.
+The per-step wall budget is 1 s and only triggers when the agent's
+`busy_ratio` over that window is below 0.5 — i.e. the container was
+mostly idle. Legitimate slow agents on a contended host burn CPU
+proportionally to how slow they're being (busy_ratio stays high), so
+they don't trip the guard. A sleeper (or one that's blocked on I/O)
+has busy_ratio near 0 regardless of how big the container's background
+ticks add up to, because the wall denominator grows along with the
+window. That ratio-based check is what lets a fixed 1 s threshold work
+without false-killing real work and without missing 30-second sleepers.
 
 ## Sustained CPU budget
 
