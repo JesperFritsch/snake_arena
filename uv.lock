@@ -1692,7 +1692,7 @@ dependencies = [
 [[package]]
 name = "snake-sim"
 version = "0.1.1"
-source = { git = "https://github.com/JesperFritsch/snake_sim.git?rev=master#c598215fa67cedafffca2de7b9f5a81504f55f00" }
+source = { git = "https://github.com/JesperFritsch/snake_sim.git?rev=master#8f2b402a68d4ce0011ca86ad94be0b86d454cb97" }
 dependencies = [
     { name = "bitarray" },
     { name = "grpcio-tools" },

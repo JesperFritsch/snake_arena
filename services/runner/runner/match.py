@@ -109,14 +109,14 @@ def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str
     key referenced below is unconditionally written by that producer.
     """
     if kill_reason == "per_step":
-        ms = budgets["per_step_seconds"] * 1000
+        ms = budgets["per_step_cpu_seconds"] * 1000
         return (
             f"=== Agent killed: exceeded the per-step CPU budget "
             f"(~{ms:.0f} ms in one step). ===\n"
         )
     if kill_reason == "sustained":
-        step_ms = budgets["accumulating_step_seconds"] * 1000
-        max_ms = budgets["accumulating_max_seconds"] * 1000
+        step_ms = budgets["sustained_cpu_refill_seconds"] * 1000
+        max_ms = budgets["sustained_cpu_max_seconds"] * 1000
         return (
             f"=== Agent killed: exceeded the sustained CPU budget "
             f"(long-run average above {step_ms:.0f} ms/step; up to "
@@ -124,14 +124,15 @@ def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str
             f"the per-step cap but its average over time was too high. ===\n"
         )
     if kill_reason == "wall_clock":
+        ms = budgets["per_step_wall_seconds"] * 1000
         return (
-            "=== Agent killed: did not respond within the per-step wall-clock "
-            "budget while using essentially no CPU. The agent appears to be "
-            "sleeping or blocked on I/O instead of computing — don't sleep. ===\n"
+            f"=== Agent killed: did not respond within the per-step wall-clock "
+            f"budget ({ms:.0f} ms) while using essentially no CPU. The agent "
+            f"appears to be sleeping or blocked on I/O — don't sleep. ===\n"
         )
     if kill_reason == "sustained_wall":
-        step_ms = budgets["wall_accumulating_step_seconds"] * 1000
-        max_ms = budgets["wall_accumulating_max_seconds"] * 1000
+        step_ms = budgets["sustained_wall_refill_seconds"] * 1000
+        max_ms = budgets["sustained_wall_max_seconds"] * 1000
         return (
             f"=== Agent killed: exceeded the sustained wall-clock budget "
             f"(non-CPU wall time grew faster than {step_ms:.0f} ms/step; "
@@ -139,7 +140,7 @@ def _budget_kill_note(kill_reason: str | None, budgets: dict[str, float]) -> str
             f"sleeping just under the per-step wall-clock limit. ===\n"
         )
     if kill_reason == "startup_cpu":
-        ms = budgets["startup_seconds"] * 1000
+        ms = budgets["startup_cpu_seconds"] * 1000
         return (
             f"=== Agent killed during startup: exceeded the startup CPU "
             f"budget (~{ms:.0f} ms). Agent constructor + gRPC init must "
@@ -503,26 +504,26 @@ def run_match(
         target_by_seat = {i: targets[i] for i in range(len(agent_containers))}
 
         cpu_observer = AgentContainerManager(
-            per_step_budget_seconds=per_step_budget_seconds,
-            initial_budget_seconds=per_step_budget_seconds * 4,
-            startup_budget_seconds=per_step_budget_seconds * 4,
-            # CPU accumulating long-run rate: bank grows 10ms/step (vs 50ms
-            # per-step cap), starts at per_step_budget, capped at 500ms.
-            # Catches agents that stay under the per-step cap but average
-            # above the long-run rate.
-            accumulating_step_seconds=per_step_budget_seconds / 5,
-            accumulating_max_seconds=per_step_budget_seconds * 10,
-            # Per-step wall-clock guard: catches agents that block on sleep
-            # / I/O. The effective budget is computed adaptively from
-            # observed contention each poll iteration (see manager docstring).
-            # Defaults: safety×3, hard floor 1s.
-            # Sustained-wall budget: bounds long-run "sleep just under the
-            # per-step threshold" abuse. Bank grows 50ms/step, starts at
+            per_step_cpu_budget_seconds=per_step_budget_seconds,
+            # Per-step wall guard — fixed, generous. The poll loop kills
+            # only when cpu is essentially zero in this window, so the
+            # threshold is for sleepers/hangs, not for slow real work.
+            per_step_wall_budget_seconds=1.0,
+            startup_cpu_budget_seconds=per_step_budget_seconds * 4,
+            # Sustained CPU: bank grows 10ms/step (vs 50ms per-step cap),
+            # starts at per_step_budget, capped at 500ms. Catches agents
+            # that stay under the per-step cap but average above the
+            # long-run rate.
+            sustained_cpu_refill_seconds=per_step_budget_seconds / 5,
+            sustained_cpu_initial_seconds=per_step_budget_seconds,
+            sustained_cpu_max_seconds=per_step_budget_seconds * 10,
+            # Sustained wall: bounds long-run "sleep just under the
+            # per-step threshold" abuse. Bank grows 25ms/step, starts at
             # 500ms, capped at 1s. Strict — a 1.4s/step sleeper drains it
             # in a single step.
-            wall_accumulating_step_seconds=per_step_budget_seconds / 2,
-            wall_accumulating_initial_seconds=per_step_budget_seconds * 10,
-            wall_accumulating_max_seconds=per_step_budget_seconds * 20,
+            sustained_wall_refill_seconds=per_step_budget_seconds / 2,
+            sustained_wall_initial_seconds=per_step_budget_seconds * 10,
+            sustained_wall_max_seconds=per_step_budget_seconds * 20,
             poll_interval_s=0.01,
             on_exec_times=on_exec_times,
             kill_opponents_after_dev_dies_steps=kill_opponents_after_dev_dies_steps,

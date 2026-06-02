@@ -6,8 +6,10 @@ Bundle contents:
   analysis.json       – run_analyzer output ({} if analysis didn't run)
   agent_logs.json     – dev-agent per-step stdout (test matches only)
   exec_times.json     – per-seat per-step CPU times in ms
-  wall_step_times.json– wall time between notify_step events, in ms
-                        (one entry per step, per seat — same shape as exec_times)
+  wall_step_times.json– sim cycle wall time, in ms, per seat per step.
+                        Sourced from LoopStepData.total_time (the sim's own
+                        measurement; lag-immune relative to manager-side
+                        timing). Same shape as exec_times.
   budgets.json        – CPU budget config (seconds) that was in force for this run
   sim_logs.txt        – raw stdout/stderr of the sim container (useful for
                         post-mortem of init failures and crashes)
@@ -55,8 +57,8 @@ class BundleContents:
 
     @property
     def budget_ms(self) -> float:
-        """Per-step CPU budget in ms, derived from budgets['per_step_seconds']."""
-        return float(self.budgets["per_step_seconds"]) * 1000
+        """Per-step CPU budget in ms, derived from budgets['per_step_cpu_seconds']."""
+        return float(self.budgets["per_step_cpu_seconds"]) * 1000
 
 
 def read_bundle(bundle_bytes: bytes) -> BundleContents:

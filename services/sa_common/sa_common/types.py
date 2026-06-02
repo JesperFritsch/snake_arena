@@ -16,11 +16,13 @@ class MatchResult:
     # Per-step stdout chunks for the dev agent (seat 0), split on the harness
     # step separator. Used to build the test-match console view.
     dev_agent_step_logs: list[str] | None = None
-    # Per-step CPU times (ms) keyed by snake_id. snake_id → [ms per step].
+    # Per-step CPU times (ms) keyed by seat. seat → [ms per step].
     exec_times: dict[int, list[float]] | None = None
-    # Wall time between consecutive notify_step events (ms), per snake.
-    # Globally the same at any given step (sim cycle time) but shaped like
-    # exec_times so each snake's list ends when it dies. snake_id → [ms].
+    # Per-step sim cycle wall (ms), per seat. Sourced from the sim's own
+    # `LoopStepData.total_time` so it is lag-immune (not derived from
+    # manager-side receive-time deltas). Globally the same at any given
+    # step but shaped like exec_times so each seat's list ends when it
+    # dies. seat → [ms].
     wall_step_times: dict[int, list[float]] | None = None
     # CPU budget config (seconds) that was in force for this match.
     budgets: dict[str, float] | None = None
