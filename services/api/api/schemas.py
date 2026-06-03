@@ -86,6 +86,25 @@ class SubmitResult(BaseModel):
     submitted_version: int
 
 
+class QuotaStatus(BaseModel):
+    """Per-event quota state exposed to the frontend.
+
+    `next_slot_at` is an epoch second: when the user gets one more slot back
+    (sliding window) or when the count fully resets (fixed window). `null`
+    when nothing is currently consumed.
+    """
+    limit: int
+    used: int
+    remaining: int
+    next_slot_at: int | None
+    window_seconds: int
+
+
+class SubmitQuotaStatus(BaseModel):
+    hourly: QuotaStatus
+    daily: QuotaStatus
+
+
 class PublicProjectSummary(BaseModel):
     id: int
     name: str

@@ -216,8 +216,8 @@ INSERT INTO mode_groups (slug, name, description, sort_order) VALUES
 INSERT INTO modes
     (slug,                name,                  description,                                  participant_count, sim_args,                                                              avg_budget_ms, scoring_kind, target_matches_per_version)
 VALUES
-    ('multi-4-standard',  '4-player Standard',   'Full-board scrum on a 20x15 board.',         4,                 '{"start_length": 1, "food": 5, "grid_width": 20, "grid_height": 15}', 10,            'multi',      5),
-    ('multi-6-standard',  '6-player Standard',   'Full-board scrum on a 20x20 board.',         6,                 '{"start_length": 1, "food": 7, "grid_width": 20, "grid_height": 20}', 10,            'multi',      5),
+    ('multi-4-standard',  '4-player Standard',   'Full-board scrum on a 20x15 board.',         4,                 '{"start_length": 1, "food": 7, "grid_width": 20, "grid_height": 15}', 10,            'multi',      5),
+    ('multi-6-standard',  '6-player Standard',   'Full-board scrum on a 20x20 board.',         6,                 '{"start_length": 1, "food": 10, "grid_width": 20, "grid_height": 20}', 10,            'multi',      5),
     ('solo-mini-items',   'Solo Mini Items',     'Single snake on the mini_items map.',        1,                 '{"start_length": 1, "map": "mini_items", "food": 10}',                10,            'solo',       2),
     ('solo-mini-stairs',  'Solo Mini Stairs',    'Single snake on the mini_stairs map.',       1,                 '{"start_length": 1, "map": "mini_stairs", "food": 10}',               10,            'solo',       2);
 

@@ -193,21 +193,45 @@ Already in place. Configure a coarse rate-limiting rule like 200 req/min per IP,
 
 Anonymous reads are fine for public leaderboards and match views. Every write endpoint requires a valid Clerk JWT. Clerk's signup flow includes its own bot mitigation, making mass account creation impractical.
 
-### Layer 3: Per-user queue quotas (most important)
+### Layer 3: Per-event quotas (most important)
 
-The expensive operation is a match running in Docker, not an API call. A user spamming `POST /matches/jobs` floods the orchestrator and fills the disk with replays, not the API. The right limit isn't requests/min but jobs/hour:
+The expensive operation is a match running in Docker, not an API call. Per-event quotas are per-user and split across two implementations depending on whether the underlying table records every event:
+
+**Test matches — 120/hour** (sliding window, DB-counted).
+
+`test_match_jobs` records `requested_by` and `requested_at` per row, so the count comes straight from SQL:
 
 ```sql
-SELECT count(*) FROM match_jobs
+SELECT count(*),
+       min(requested_at) + interval '1 hour' AS next_slot_at
+FROM test_match_jobs
 WHERE requested_by = $1
   AND requested_at > now() - interval '1 hour'
 ```
 
-Reject if over the cap. Same pattern for `build_jobs` (or whatever its name ends up being). Specific numeric caps are deferred — see Open Decisions.
+The `next_slot_at` returned to the client is when the **oldest in-window job** ages out — the user gets exactly one more slot back, not the full limit. With a sliding window there is no single "reset" boundary. UI: shows `used / limit`, turns yellow under 10 remaining, disables the submit button at 0 with a countdown to `next_slot_at`. Helper lives in `sa_common/db/quotas.py`.
 
-### Layer 4: Per-IP API rate limiting
+**Ranked submissions — 5/hour + 20/day** and **image uploads — 10/day** (fixed window, Redis-counted).
 
-`slowapi` decorators on endpoints (e.g., `@limiter.limit("10/minute")`). In-memory store is fine for single-process; swap to Redis if we ever scale out. Catches spam that slips past Cloudflare.
+`projects.submitted_at` only carries the most recent submission, and image uploads aren't recorded at all, so a DB-counted sliding window would need a new event table. We use Redis fixed-window counters instead (bucket key includes the window-start epoch, `INCR` + `EXPIRE` on each consume). The window boundary is exposed to the UI as a clean reset time.
+
+The Redis quotas use a **peek + consume** pattern: the route checks `remaining > 0` before doing the operation and only INCRs after success, so a 409 ("test your project first") doesn't burn a slot.
+
+Peek endpoints: `GET /test-matches/quota`, `GET /projects/submit-quota`, `GET /projects/upload-image-quota`. Each returns `{ limit, used, remaining, next_slot_at, window_seconds }`. The submit endpoint returns both hourly and daily windows wrapped in `{ hourly, daily }`.
+
+### Layer 4: General per-user / per-IP API rate limit
+
+Belt-and-suspenders behind Cloudflare, applied as ASGI middleware on every request. Auth'd requests are keyed on the Clerk `sub` claim (decoded from the bearer token locally, no DB hit); anonymous requests fall back to the client IP (`CF-Connecting-IP` → `X-Forwarded-For` → socket).
+
+| Principal             | Limit                          |
+| --------------------- | ------------------------------ |
+| Authenticated, reads  | 60 req/min                     |
+| Authenticated, writes | 20 req/min (POST/PUT/PATCH/DELETE) |
+| Anonymous             | 30 req/min per IP              |
+
+Counter storage: Redis fixed-window (`INCR` + `EXPIRE`, single round trip per request). `/health` is exempt so uptime monitors don't compete for slots. 429 responses include `Retry-After`.
+
+The general limiter does **not** decorate every route — the middleware handles all paths uniformly, and per-event quotas (Layer 3) sit on top for the small set of expensive endpoints.
 
 ### Layer 5: Container resource limits
 
@@ -233,7 +257,6 @@ Don't put captchas on API endpoints. Clerk handles bot mitigation on its signup 
 
 ## Still open
 
-- **Per-user quota limits** — no hard caps implemented yet. Cloudflare rate limiting is the only layer active.
 - **Tournament scheduler** — not built.
 - **R2 wiring** — `IBundler` interface exists; R2 implementation and env wiring not done yet.
 - **Replay host / bundle URL** — `REPLAY_HOST` env var wired in settings; production CDN path not finalised.

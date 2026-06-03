@@ -20,11 +20,16 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 from psycopg import Connection
 
 from sa_common.db.projects import get_project_meta, get_project_names, list_all_submitted
+from sa_common.db.quotas import (
+    QuotaWindow,
+    TEST_MATCH_HOURLY_LIMIT,
+    get_test_match_quota,
+)
 from sa_common.db.test_match_jobs import (
     cancel_queued_test_job,
     count_pinned_test_jobs,
@@ -41,7 +46,7 @@ from api.auth import decode_token, get_current_user
 from api.bundler import get_bundler
 from api.db import get_db, get_pool
 from api.redis import get_redis
-from api.schemas import TestMatchCreate, PublicProjectSummary
+from api.schemas import QuotaStatus, TestMatchCreate, PublicProjectSummary
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/test-matches", tags=["test-matches"])
@@ -53,6 +58,26 @@ def _add_names(conn: Connection, job: TestMatchJob) -> TestMatchJob:
     names = get_project_names(conn, all_ids)
     job.participant_names = [names.get(pid, "?") for pid in all_ids]
     return job
+
+
+def _quota_status(window: QuotaWindow) -> QuotaStatus:
+    return QuotaStatus(
+        limit=window.limit,
+        used=window.used,
+        remaining=window.remaining,
+        next_slot_at=int(window.next_slot_at.timestamp()) if window.next_slot_at else None,
+        window_seconds=window.window_seconds,
+    )
+
+
+def _quota_headers(window: QuotaWindow) -> dict[str, str]:
+    headers = {
+        "X-RateLimit-Limit": str(window.limit),
+        "X-RateLimit-Remaining": str(window.remaining),
+    }
+    if window.next_slot_at is not None:
+        headers["X-RateLimit-Reset"] = str(int(window.next_slot_at.timestamp()))
+    return headers
 
 
 @router.get("/opponents", response_model=list[PublicProjectSummary])
@@ -79,12 +104,39 @@ def list_jobs_for_project(
     return [_add_names(conn, j) for j in jobs]
 
 
+@router.get("/quota", response_model=QuotaStatus)
+def get_quota(
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> QuotaStatus:
+    """Current hourly test-match quota for the caller. Read-only — does not
+    consume a slot. The frontend uses this to render the counter on page load
+    and after the user navigates back from a settings page."""
+    return _quota_status(get_test_match_quota(conn, user.id))
+
+
 @router.post("", response_model=TestMatchJob, status_code=status.HTTP_202_ACCEPTED)
 def enqueue(
     body: TestMatchCreate,
+    response: Response,
     conn: Connection = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TestMatchJob:
+    quota = get_test_match_quota(conn, user.id)
+    if quota.used >= quota.limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "quota_exceeded",
+                "message": (
+                    f"Hourly test-match limit reached ({quota.limit}). "
+                    "Next slot opens when the oldest match in your window expires."
+                ),
+                **_quota_status(quota).model_dump(),
+            },
+            headers=_quota_headers(quota),
+        )
+
     player = get_project_meta(conn, body.player_project_id)
     if player is None or player.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "player project not found")
@@ -110,6 +162,10 @@ def enqueue(
         sim_args=body.sim_args,
         requested_by=user.id,
     )
+    # Re-read quota so the headers reflect the slot we just took.
+    for key, value in _quota_headers(get_test_match_quota(conn, user.id)).items():
+        response.headers[key] = value
+
     job = get_test_job(conn, job_id)
     assert job is not None
     return _add_names(conn, job)

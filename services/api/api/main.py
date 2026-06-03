@@ -12,10 +12,12 @@ import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.db import close_pool, init_pool
+from api.rate_limit import apply_general_rate_limit
 from api.redis import close_redis, init_redis
 from api.routers import users, matches, modes, projects, test_matches, download, leaderboard
 from api.settings import load_settings, get_settings, Settings
@@ -53,6 +55,18 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    @app.middleware("http")
+    async def rate_limit_middleware(request: Request, call_next):
+        try:
+            await apply_general_rate_limit(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers or {},
+            )
+        return await call_next(request)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

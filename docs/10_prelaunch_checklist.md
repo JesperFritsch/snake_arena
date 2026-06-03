@@ -68,7 +68,7 @@ Publishing the documents in `docs/legal/` commits us to actually doing the thing
 These were already listed as unbuilt and are the ones that will hurt in production:
 
 - **R2 wiring** — `LocalBundler` only survives until disk pressure. If R2 is delayed, at minimum: disk-usage monitoring + a manual prune procedure.
-- **Rate limiting** (`slowapi`) — Cloudflare alone will not stop a logged-in user from queuing thousands of test matches.
+- ~~**Rate limiting** (`slowapi`) — Cloudflare alone will not stop a logged-in user from queuing thousands of test matches.~~ Implemented: per-user queue quotas (test matches 120/h, submissions 5/h + 20/d, image uploads 10/d) plus a general Redis-backed per-user/per-IP request limiter. See `07_api_frontend_auth.md` §Abuse Prevention.
 - **Stale `running` job reaper** for the ranked match daemon — the test-match daemon already does this at startup; ranked must too, or one orchestrator crash leaves jobs wedged indefinitely.
 - **Image GC cron** — without pruning, Docker storage fills within weeks.
 
@@ -110,4 +110,3 @@ Items from `01_README_state.md` that can ship after, with the leaderboard marked
 4. Operational gaps from §4: Sentry + UptimeRobot + cost alarms.
 5. Feedback form + GitHub Discussions repo.
 6. Policy-change announcement mechanism (banner + email path) — needed before the first material policy update, not necessarily day-one.
-7. Public launch with leaderboard surfaced as "coming soon".

@@ -53,10 +53,21 @@ from sa_common.db.users import User
 from api.auth import get_current_user
 from api.bundler import get_bundler
 from api.db import get_db
+from api.rate_limit import (
+    RateLimitResult,
+    check_submit_quotas_available,
+    check_upload_quota_available,
+    consume_submit_quotas,
+    consume_upload_quota,
+    peek_submit_quotas,
+    peek_upload_quota,
+)
 from api.schemas import (
     ProjectCreate,
     ProjectFile,
     ProjectFiles,
+    QuotaStatus,
+    SubmitQuotaStatus,
     SubmitResult,
 )
 from api.settings import get_settings, Settings
@@ -76,6 +87,16 @@ def _owned_meta(conn: Connection, project_id: int, user: User) -> ProjectMeta:
         # 404 (not 403) so we don't leak which project ids exist.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     return meta
+
+
+def _rl_to_quota(result: RateLimitResult) -> QuotaStatus:
+    return QuotaStatus(
+        limit=result.limit,
+        used=result.used,
+        remaining=result.remaining,
+        next_slot_at=result.reset_at if result.used > 0 else None,
+        window_seconds=result.window_seconds,
+    )
 
 
 def _decode_files(files: list[ProjectFile]) -> list[tuple[str, bytes]]:
@@ -183,6 +204,23 @@ def name_available(
     if project_name_exists(conn, trimmed):
         return {"available": False, "reason": "taken"}
     return {"available": True}
+
+
+@router.get("/submit-quota", response_model=SubmitQuotaStatus)
+async def get_submit_quota(
+    user: User = Depends(get_current_user),
+) -> SubmitQuotaStatus:
+    """Hourly + daily ranked-submission quota for the caller. Read-only."""
+    hourly, daily = await peek_submit_quotas(user.id)
+    return SubmitQuotaStatus(hourly=_rl_to_quota(hourly), daily=_rl_to_quota(daily))
+
+
+@router.get("/upload-image-quota", response_model=QuotaStatus)
+async def get_upload_image_quota(
+    user: User = Depends(get_current_user),
+) -> QuotaStatus:
+    """Daily image-upload quota for the caller. Read-only."""
+    return _rl_to_quota(await peek_upload_quota(user.id))
 
 
 @router.get("/{project_id}", response_model=ProjectMeta)
@@ -317,6 +355,8 @@ async def upload_image(
     user: User = Depends(get_current_user),
 ) -> ProjectMeta:
     """Accept a docker-save tarball, load it, tag it as the dev image."""
+    await check_upload_quota_available(user.id)
+
     meta = _owned_meta(conn, project_id, user)
     if meta.source != "external_image":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "only external_image projects support image upload")
@@ -366,17 +406,23 @@ async def upload_image(
     record_dev_build_start(conn, project_id)
     record_dev_build_success(conn, project_id, image_tag)
 
+    # Consume the daily quota slot only after the upload succeeds. A failed
+    # docker load / 400 / 503 doesn't burn a slot.
+    await consume_upload_quota(user.id)
+
     refreshed = get_project_meta(conn, project_id)
     assert refreshed is not None
     return refreshed
 
 
 @router.post("/{project_id}/submit", response_model=SubmitResult)
-def submit(
+async def submit(
     project_id: int,
     conn: Connection = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SubmitResult:
+    await check_submit_quotas_available(user.id)
+
     meta = _owned_meta(conn, project_id, user)
     new_version = promote_to_submitted(conn, project_id)
     if new_version is None:
@@ -388,6 +434,10 @@ def submit(
         else:
             detail = "Test your project before submitting."
         raise HTTPException(status.HTTP_409_CONFLICT, detail)
+
+    # Consume both windows only after a successful promotion so a 409 ("test
+    # first") doesn't cost the user a slot.
+    await consume_submit_quotas(user.id)
     return SubmitResult(submitted_version=new_version)
 
 
