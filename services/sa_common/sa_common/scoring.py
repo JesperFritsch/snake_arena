@@ -67,6 +67,7 @@ class Category:
 CANONICAL_MULTI_CATEGORIES: list[Category] = [
     Category("survival_rank",  "lower"),
     Category("trapping_count", "higher"),
+    Category("final_length",   "higher"),
 ]
 
 CANONICAL_SOLO_CATEGORIES: list[Category] = [

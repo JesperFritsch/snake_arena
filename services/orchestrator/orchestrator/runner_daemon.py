@@ -31,7 +31,7 @@ from pathlib import Path
 
 import psycopg
 
-from runner.match import run_match
+from runner.match import run_match, sweep_orphan_resources
 from runner.router import router_from_env, Router
 from runner.match_results import build_participants
 from sa_common.bundler import IBundler
@@ -62,9 +62,14 @@ class RunnerDaemonConfig:
         self,
         sim_image: str,
         bundler: IBundler,
+        runner_id: str,
     ):
         self.sim_image = sim_image
         self.bundler = bundler
+        # Stable per-replica identity (hostname). All docker resources this
+        # process creates get labelled with it so a startup sweep can clean
+        # up *this* runner's leftovers without touching other replicas.
+        self.runner_id = runner_id
         self.d_client = docker.from_env()
         self.router = router_from_env(self.d_client)
 
@@ -110,6 +115,7 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             agents=setup.specs,
             sim_args=sim_args,
             match_id=match_uuid,
+            runner_id=config.runner_id,
             router=config.router,
             d_client=config.d_client,
             per_step_budget_seconds=per_step_budget_seconds,
@@ -121,6 +127,15 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             # and "longest" from step 0, so the rule fires immediately and the
             # match ends without ever moving.
             end_on_last_standing_when_longest=mode.participant_count > 1,
+            # Once "alone AND longest" first holds, give the survivor this many
+            # extra steps to actually grow length. Without the buffer the rule
+            # fires the moment the survivor edges past the longest dead snake
+            # (often just 1 apple ahead), so a smart snake gets no time to
+            # demonstrate length over short-lived opponents. None for solo
+            # (companion flag isn't set there either).
+            end_on_last_standing_buffer_steps=(
+                200 if mode.participant_count > 1 else None
+            ),
         )
 
         # Quarantine any submitted image that failed the gRPC probe. The
@@ -231,7 +246,11 @@ def run_forever(
     """
     from sa_common.db.notify import CHANNEL_MATCH_RUNNER, start_listener
 
-    log.info("match runner starting (event-driven)")
+    log.info("match runner starting (event-driven) as %s", config.runner_id)
+    # Reclaim any docker networks/containers this runner left behind on a
+    # prior crash before we start a new match. Without this, repeated crashes
+    # exhaust docker's predefined address pools.
+    sweep_orphan_resources(config.d_client)
     start_listener([CHANNEL_MATCH_RUNNER], wakeup, shutdown)
 
     with get_conn(autocommit=True) as conn:

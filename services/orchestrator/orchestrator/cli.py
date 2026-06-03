@@ -26,6 +26,7 @@ import argparse
 import logging
 import os
 import signal
+import socket
 import sys
 import threading
 from typing import Any, Callable
@@ -121,10 +122,15 @@ def main() -> None:
     )
     log = logging.getLogger(f"orchestrator.{args.command}")
 
+    # Container hostname is compose-assigned and stable across `compose
+    # restart` per replica, so it doubles as the runner's docker-label id.
+    runner_id = socket.gethostname()
+
     if args.command == "match":
         config = RunnerDaemonConfig(
             sim_image=_env_or(args.sim_image, "ORCHESTRATOR_SIM_IMAGE"),
             bundler=bundler_from_env(),
+            runner_id=runner_id,
         )
         run_one, run_forever = run_match_iteration, run_match_forever
 
@@ -132,6 +138,7 @@ def main() -> None:
         config = TestRunnerDaemonConfig(
             sim_image=_env_or(args.sim_image, "ORCHESTRATOR_SIM_IMAGE"),
             bundler=bundler_from_env(),
+            runner_id=runner_id,
             redis_url=_env_or(args.redis_url, "REDIS_URL"),
             registry_prefix=_env_or(args.registry_prefix, "BUILDER_REGISTRY_PREFIX"),
             build_timeout_s=_env_or(args.build_timeout, "BUILDER_BUILD_TIMEOUT_S", int),

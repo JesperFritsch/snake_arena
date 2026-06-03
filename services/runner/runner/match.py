@@ -34,6 +34,71 @@ from runner.router import Router
 
 log = logging.getLogger(__name__)
 
+# Every docker network and container the runner creates carries these
+# labels so a daemon restart can sweep its own leftovers without touching
+# resources owned by a different runner replica on the same docker daemon.
+_RESOURCE_LABEL_KEY = "snake_arena.match_resource"
+_RUNNER_LABEL_KEY = "snake_arena.runner_id"
+
+
+def _resource_labels(runner_id: str) -> dict[str, str]:
+    return {_RESOURCE_LABEL_KEY: "1", _RUNNER_LABEL_KEY: runner_id}
+
+
+def sweep_orphan_resources(d_client: DockerClient) -> None:
+    """Remove match resources whose owning runner is no longer alive.
+
+    "Alive" = a container that exists on this docker daemon, running or
+    not. We use `all=True` so a peer that's mid-restart (SIGTERM → start
+    of new entrypoint) doesn't briefly look dead and get its in-flight
+    match swept. Only a `compose down` (full removal) actually drops a
+    container from this set — which is the right time to reclaim its
+    leftovers.
+
+    Match between live containers and the value we wrote into the
+    runner_id label uses the short container ID (`Id[:12]`). That's what
+    `socket.gethostname()` returns inside a container when no hostname is
+    explicitly set — i.e. the value cli.py passes as runner_id.
+
+    Uses the low-level docker API directly (`api.containers()` /
+    `api.networks()`) rather than the high-level `list()` wrappers,
+    because the wrappers inspect every result one-by-one and 404 on a
+    container that disappears mid-iteration (rolling restart). The raw
+    API returns a single JSON listing and is race-free.
+
+    Safe to run concurrently — remove operations are idempotent against
+    a peer beating us to the same resource."""
+    live_ids = {c["Id"][:12] for c in d_client.api.containers(all=True)}
+    swept_c = 0
+    for c in d_client.api.containers(
+        all=True, filters={"label": _RESOURCE_LABEL_KEY}
+    ):
+        owner = (c.get("Labels") or {}).get(_RUNNER_LABEL_KEY)
+        if not owner or owner in live_ids:
+            continue
+        name = (c.get("Names") or ["?"])[0].lstrip("/")
+        try:
+            d_client.api.remove_container(c["Id"], force=True)
+            swept_c += 1
+        except (NotFound, APIError) as e:
+            log.warning("sweep: failed to remove container %s: %s", name, e)
+    swept_n = 0
+    for net in d_client.api.networks(filters={"label": _RESOURCE_LABEL_KEY}):
+        owner = (net.get("Labels") or {}).get(_RUNNER_LABEL_KEY)
+        if not owner or owner in live_ids:
+            continue
+        try:
+            d_client.api.remove_network(net["Id"])
+            swept_n += 1
+        except (NotFound, APIError) as e:
+            log.warning("sweep: failed to remove network %s: %s", net.get("Name"), e)
+    if swept_c or swept_n:
+        log.info(
+            "sweep: removed %d orphan container(s) and %d orphan network(s)",
+            swept_c, swept_n,
+        )
+
+
 _STEP_SEP = "---STEP_END---\n"  # printed by the agent harness after each update()
 _STEP_STDOUT_BUDGET = 10_000     # bytes per step chunk before truncation notice
 _STARTUP_LOG_BUDGET = 16_000    # bytes kept when an agent crashes before any step
@@ -303,6 +368,7 @@ def run_match(
     router: Router,
     d_client: DockerClient,
     match_id: str,
+    runner_id: str,
     per_step_budget_seconds: float,        # per-step CPU budget enforced by the cgroup observer
     agent_mem_limit: str = "512m",
     agent_cpus: float = 1.0,
@@ -321,6 +387,12 @@ def run_match(
     # is alive AND it's also the longest. Removes the "suicide for length
     # lock-in" exploit. Pure game rule, enforced by the sim.
     end_on_last_standing_when_longest: bool = False,
+    # Optional grace window for the rule above: once "alone AND longest"
+    # first holds, run this many extra steps before stopping so the
+    # survivor can actually grow length instead of locking in the moment
+    # they edge past the longest dead snake. No effect unless
+    # end_on_last_standing_when_longest is also set.
+    end_on_last_standing_buffer_steps: int | None = None,
     # Test-match stop rule (sim-side): end `end_when_dead_buffer_steps`
     # steps after the dev agent dies, so the bracket isn't kept running
     # for opponents that no longer matter. Enforced by the sim.
@@ -388,13 +460,17 @@ def run_match(
         ))
 
 
+    labels = _resource_labels(runner_id)
+
     try:
         # one private network per agent — agents can't see each other
         for agent in agents:
             net_name = f"{match_id}-{agent.name}"
             log.info("creating network %s", net_name)
             networks.append(
-                d_client.networks.create(net_name, driver="bridge", internal=True)
+                d_client.networks.create(
+                    net_name, driver="bridge", internal=True, labels=labels,
+                )
             )
 
         target_to_container: dict[str, Container] = {}
@@ -439,6 +515,7 @@ def run_match(
                     cap_drop=["ALL"],
                     security_opt=["no-new-privileges"],
                     user="1000:1000",
+                    labels=labels,
                 )
                 agent_containers.append(container)
                 target_to_container[target] = container
@@ -491,6 +568,7 @@ def run_match(
             networks[: len(agent_containers)],
             match_id,
             timeout_s=float(grpc_ready_timeout_s),
+            labels=labels,
         )
         if failed_targets:
             failed_set = set(failed_targets)
@@ -536,7 +614,9 @@ def run_match(
             if hasattr(obs, "set_agent_containers"):
                 obs.set_agent_containers(seat_to_container)
 
-        sim_net = d_client.networks.create(f"{match_id}-sim", driver="bridge", internal=False)
+        sim_net = d_client.networks.create(
+            f"{match_id}-sim", driver="bridge", internal=False, labels=labels,
+        )
         networks.append(sim_net)
         router.attach(sim_net)
         loop_observable = SocketObservable()
@@ -545,7 +625,7 @@ def run_match(
         full_sim_args = [
             "compute",
             "--ext-targets", *targets,
-            "--ext-conn-timeout", "3.0",    # time to ESTABLISH the gRPC channel (agent boot)
+            "--ext-conn-timeout", "30.0",    # time to ESTABLISH the gRPC channel keep this high to accomodate high load on the system.
             "--ext-init-timeout", "1.0",   # per-call deadline once connected
             "--decision-timeout-ms", "0", # this is enforced by the AgentContainerManager
             "--no-render",
@@ -558,6 +638,11 @@ def run_match(
         ]
         if end_on_last_standing_when_longest:
             full_sim_args.append("--end-on-last-standing-when-longest")
+            if end_on_last_standing_buffer_steps is not None:
+                full_sim_args += [
+                    "--end-on-last-standing-buffer-steps",
+                    str(end_on_last_standing_buffer_steps),
+                ]
         if dev_seat is not None:
             # Snake tag matches the gRPC target the sim was given for that
             # seat (see `target` above and SnakeConfig wiring in
@@ -583,6 +668,7 @@ def run_match(
             network=sim_net.name,
             name=f"{match_id}-sim",
             mem_limit="2g",
+            labels=labels,
         )
         for net in networks[:-1]:
             net.connect(sim_container)
@@ -716,6 +802,7 @@ def _wait_for_grpc_ready(
     agent_networks: list[Network],
     match_id: str,
     timeout_s: float,
+    labels: dict[str, str],
 ) -> list[str]:
     """Confirm every agent is actually listening on its gRPC port before
     the sim opens connections to them. `container.status == "running"`
@@ -747,6 +834,7 @@ def _wait_for_grpc_ready(
             name=probe_name,
             network=agent_networks[0].name,
             detach=True,
+            labels=labels,
         )
     except APIError as e:
         log.warning("gRPC probe: container create failed: %s", e)
