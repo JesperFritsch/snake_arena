@@ -93,14 +93,15 @@ CREATE TABLE modes (
     participant_count           INT NOT NULL,                 -- 1 for solo, 2+ for multi
     sim_args                    JSONB NOT NULL,               -- {food, grid_width, grid_height}
     map_slug                    TEXT,                         -- NULL = clear map (no walls); maps not yet implemented
-    budget_ms                   DOUBLE PRECISION NOT NULL,    -- per-step CPU budget
-    scoring_config              JSONB NOT NULL,               -- {alpha, beta, w, floor_ms}
+    avg_budget_ms               DOUBLE PRECISION NOT NULL,    -- sustained average CPU budget (= cgroup refill rate); the per-step peak is avg_budget_ms × sa_common.scoring.PER_STEP_BUDGET_MULTIPLIER
+    scoring_kind                TEXT NOT NULL,                -- 'multi' | 'solo'; categories are canonical per kind in sa_common.scoring
     target_matches_per_version  INT NOT NULL,
     enabled                     BOOLEAN NOT NULL DEFAULT TRUE,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT modes_participant_count_positive CHECK (participant_count >= 1),
     CONSTRAINT modes_target_positive            CHECK (target_matches_per_version >= 1),
-    CONSTRAINT modes_budget_positive            CHECK (budget_ms > 0)
+    CONSTRAINT modes_budget_positive            CHECK (avg_budget_ms > 0),
+    CONSTRAINT modes_scoring_kind_valid         CHECK (scoring_kind IN ('multi', 'solo'))
 );
 
 CREATE INDEX idx_modes_group_slug ON modes(group_slug) WHERE group_slug IS NOT NULL;
@@ -116,14 +117,7 @@ CREATE TABLE matches (
     finished_at         TIMESTAMPTZ,
     bundle_key          TEXT,                                       -- bundler storage key, e.g. matches/{uuid}/bundle.zip
     error               TEXT,
-    is_test             BOOLEAN NOT NULL DEFAULT FALSE,             -- TRUE for user-initiated dev test runs
-    -- Scorer state. scoring_started_at is a revertable lease so a transient
-    -- failure (bundler hiccup) doesn't permanently un-score a match. scored_at
-    -- is the terminal success marker. scoring_attempts caps retry on persistent
-    -- failure so the daemon doesn't hot-loop. See docs/09_ranking_system.md.
-    scoring_started_at  TIMESTAMPTZ,
-    scoring_attempts    INT NOT NULL DEFAULT 0,
-    scored_at           TIMESTAMPTZ
+    is_test             BOOLEAN NOT NULL DEFAULT FALSE              -- TRUE for user-initiated dev test runs
 );
 
 -- Participants: who played in a match, and which submitted version of them.
@@ -131,6 +125,12 @@ CREATE TABLE matches (
 -- time. The exact code is gone once a newer submit overwrites
 -- submitted_code_archive, but the version number stays — so history reads
 -- "v3 of agent X played, won by length 47" forever.
+--
+-- `metrics` JSONB carries base per-snake facts the runner writes:
+-- start_length, steps_alive, avg_cpu_ms, trapping_count. final_length and
+-- survival_rank live as native columns (canonical) and are NOT also in
+-- metrics. There are no scorer-written fields here — scoring is computed
+-- on demand by sa_common.db.agent_scores.compute_mode_scores.
 CREATE TABLE match_participants (
     match_id         BIGINT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
     seat             INT NOT NULL,                            -- runner-assigned slot; just a disambiguator
@@ -143,6 +143,10 @@ CREATE TABLE match_participants (
     metrics          JSONB NOT NULL DEFAULT '{}',
     PRIMARY KEY (match_id, seat)
 );
+
+-- Aggregate scores are computed on demand from match_participants by
+-- sa_common.db.agent_scores.compute_mode_scores — there is no agent_scores
+-- table. See docs/09_ranking_system.md.
 
 -- Job queue. mode_id is the mode this job belongs to; the runner copies it
 -- onto the resulting match row so the scorer knows which config to apply.
@@ -196,12 +200,6 @@ CREATE INDEX idx_match_participants_project_version
 CREATE INDEX idx_test_match_jobs_queued
     ON test_match_jobs(requested_at) WHERE status = 'queued';
 
--- Scorer needs to find unscored success matches quickly. Covers both ranked
--- and test matches; mode_id is NULL for test, scorer handles both.
-CREATE INDEX idx_matches_unscored
-    ON matches(id)
-    WHERE scored_at IS NULL AND status = 'success' AND bundle_key IS NOT NULL;
-
 -- Leaderboard and matchmaker queries hit this constantly.
 CREATE INDEX idx_matches_mode_status
     ON matches(mode_id, status) WHERE mode_id IS NOT NULL;
@@ -212,12 +210,18 @@ CREATE INDEX idx_matches_mode_status
 INSERT INTO mode_groups (slug, name, description, sort_order) VALUES
     ('solo', 'Solo', 'Single-snake runs across a rotating set of maps.', 100);
 
--- Seed modes.
+-- Seed modes. scoring_kind selects the canonical category list (see
+-- sa_common.scoring.CANONICAL_*_CATEGORIES) — adding a kind means adding
+-- a category list there.
 INSERT INTO modes
-    (slug,                name,                  description,                                  participant_count, sim_args,                                       budget_ms, scoring_config,                                    target_matches_per_version)
+    (slug,                name,                  description,                                  participant_count, sim_args,                                                              avg_budget_ms, scoring_kind, target_matches_per_version)
 VALUES
-    ('multi-4-standard',  '4-player Standard',   'Full-board scrum on a 20x15 board.',         4,                 '{"food": 5, "grid_width": 20, "grid_height": 15}', 50,        '{"alpha": 0.5, "beta": 2.0, "w": 0.3, "floor_ms": 2.0}', 10),
-    ('multi-6-standard',  '6-player Standard',   'Full-board scrum on a 20x20 board.',         6,                 '{"food": 7, "grid_width": 20, "grid_height": 20}', 50,        '{"alpha": 0.5, "beta": 2.0, "w": 0.3, "floor_ms": 2.0}', 10);
+    ('multi-4-standard',  '4-player Standard',   'Full-board scrum on a 20x15 board.',         4,                 '{"start_length": 1, "food": 5, "grid_width": 20, "grid_height": 15}', 10,            'multi',      5),
+    ('multi-6-standard',  '6-player Standard',   'Full-board scrum on a 20x20 board.',         6,                 '{"start_length": 1, "food": 7, "grid_width": 20, "grid_height": 20}', 10,            'multi',      5),
+    ('solo-mini-items',   'Solo Mini Items',     'Single snake on the mini_items map.',        1,                 '{"start_length": 1, "map": "mini_items", "food": 10}',                10,            'solo',       2),
+    ('solo-mini-stairs',  'Solo Mini Stairs',    'Single snake on the mini_stairs map.',       1,                 '{"start_length": 1, "map": "mini_stairs", "food": 10}',               10,            'solo',       2);
+
+UPDATE modes SET group_slug = 'solo' WHERE slug IN ('solo-mini-items', 'solo-mini-stairs');
 
 -- --------------------------------------------------------------------------
 -- LISTEN/NOTIFY wakeups for event-driven daemons. Triggers fire inside the
@@ -243,13 +247,6 @@ CREATE TRIGGER trg_test_match_jobs_queued
     AFTER INSERT ON test_match_jobs
     FOR EACH ROW WHEN (NEW.status = 'queued')
     EXECUTE FUNCTION fn_notify('test_runner_wakeup');
-
--- Scorer: wake on newly inserted ranked success match (test matches are
--- scored synchronously by the test runner, never by the scorer).
-CREATE TRIGGER trg_matches_unscored
-    AFTER INSERT ON matches
-    FOR EACH ROW WHEN (NEW.status = 'success' AND NEW.mode_id IS NOT NULL)
-    EXECUTE FUNCTION fn_notify('scorer_wakeup');
 
 -- Scheduler: wake on signals that change "what should be queued":
 --   - new submission (more underplayed work)
@@ -280,3 +277,8 @@ CREATE TRIGGER trg_matches_completed
     AFTER INSERT ON matches
     FOR EACH ROW WHEN (NEW.status = 'success' AND NEW.mode_id IS NOT NULL)
     EXECUTE FUNCTION fn_notify('scheduler_wakeup');
+
+-- No agent_scores invalidation trigger: aggregates are computed on demand
+-- by compute_mode_scores, which filters to mp.project_version =
+-- p.submitted_version. Bumping submitted_version simply makes prior-version
+-- matches stop counting on the next leaderboard read.

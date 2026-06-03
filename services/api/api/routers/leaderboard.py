@@ -97,10 +97,8 @@ def mode_leaderboard(
             language=e.language,
             user_display_name=e.user_display_name,
             matches_played=e.matches_played,
-            avg_score=e.avg_score,
-            best_score=e.best_score,
-            avg_rank=e.avg_rank,
-            avg_length=e.avg_length,
+            score=e.score,
+            category_breakdown=e.category_breakdown,
         )
         for e in entries
     ]

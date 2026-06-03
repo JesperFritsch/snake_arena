@@ -90,19 +90,6 @@ services:
       - file-server
     restart: unless-stopped
 
-  # Reads completed ranked match bundles and writes scores into match_participants.
-  scorer:
-    build:
-      context: .
-      dockerfile: Dockerfile.orchestrator
-    command: ["scorer"]
-    environment:
-      <<: [*orchestrator-env, *bundler-env]
-    depends_on:
-      - postgres
-      - file-server
-    restart: unless-stopped
-
   # Enqueues ranked match jobs for submitted agents.
   scheduler:
     build:

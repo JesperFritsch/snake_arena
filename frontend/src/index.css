@@ -1224,7 +1224,15 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+/* The cell stays a normal table-cell so it stretches to the row height
+ * (display:flex on a <td> shrinks the cell to its inline content and the
+ * row separator visibly misaligns from neighbouring cells). The name +
+ * lang-badge get their flex layout from .lb-agent-inner instead. */
 .lb-agent {
+  vertical-align: middle;
+}
+
+.lb-agent-inner {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1333,6 +1341,49 @@ button {
 /* ---- leaderboard: row click affordance ----------------------------------- */
 .lb-row-clickable {
   cursor: pointer;
+}
+
+/* ---- leaderboard: stats header inside match modal ------------------------ */
+.lb-stats-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lb-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.lb-stat-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 70px;
+}
+
+.lb-stat-chip-label {
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.lb-stat-chip-value {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.lb-stats-breakdown {
+  padding-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 2px;
 }
 
 /* ---- leaderboard: match history modal ------------------------------------ */

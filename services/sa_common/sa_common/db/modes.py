@@ -2,7 +2,7 @@
 """DB layer for ranked-match modes.
 
 A mode is one persistent evaluation configuration (participant count, sim
-args, scoring weights, target matches per submission version). Seeded in
+args, scoring kind, target matches per submission version). Seeded in
 migrations/001.sql. Read by scheduler, matchmaker, scorer, API.
 
 See docs/09_ranking_system.md.
@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from sa_common.db.connection import get_conn
+from sa_common.scoring import ScoringKind
 
 
 @dataclass(slots=True)
@@ -32,8 +33,8 @@ class Mode:
     participant_count: int
     sim_args: dict[str, Any]
     map_slug: str | None
-    budget_ms: float
-    scoring_config: dict[str, Any]
+    avg_budget_ms: float
+    scoring_kind: ScoringKind
     target_matches_per_version: int
     enabled: bool
 
@@ -41,12 +42,9 @@ class Mode:
 _MODE_COLUMNS = """
     id, slug, name, description, group_slug,
     participant_count, sim_args, map_slug,
-    budget_ms, scoring_config,
+    avg_budget_ms, scoring_kind,
     target_matches_per_version, enabled
 """
-
-_SIM_ARGS_KEYS = ("food", "grid_width", "grid_height", "map")
-_SCORING_KEYS = ("alpha", "beta", "w", "floor_ms")
 
 
 def _row_to_mode(row: dict[str, Any]) -> Mode:
@@ -59,8 +57,8 @@ def _row_to_mode(row: dict[str, Any]) -> Mode:
         participant_count=row["participant_count"],
         sim_args=row["sim_args"],
         map_slug=row["map_slug"],
-        budget_ms=float(row["budget_ms"]),
-        scoring_config=row["scoring_config"],
+        avg_budget_ms=float(row["avg_budget_ms"]),
+        scoring_kind=row["scoring_kind"],
         target_matches_per_version=row["target_matches_per_version"],
         enabled=row["enabled"],
     )
@@ -114,21 +112,20 @@ def update_mode(
     name: str | None = None,
     description: str | None = None,
     participant_count: int | None = None,
-    budget_ms: float | None = None,
+    avg_budget_ms: float | None = None,
     target_matches_per_version: int | None = None,
     map_slug: str | None = None,
     clear_map_slug: bool = False,
     group_slug: str | None = None,
     clear_group_slug: bool = False,
     sim_args_updates: dict[str, Any] | None = None,
-    scoring_config_updates: dict[str, Any] | None = None,
+    scoring_kind: ScoringKind | None = None,
 ) -> Mode | None:
     """Partial update — only fields explicitly passed are touched.
 
-    `sim_args_updates` / `scoring_config_updates` merge into the existing
-    JSONB blob rather than replacing it. Use `clear_map_slug=True` /
-    `clear_group_slug=True` to set those columns to NULL (since `None`
-    means "leave alone").
+    `sim_args_updates` merges into the existing JSONB blob. Use
+    `clear_map_slug=True` / `clear_group_slug=True` to set those columns
+    to NULL (since `None` means "leave alone").
     """
     current = get_mode(conn, mode_id)
     if current is None:
@@ -146,9 +143,9 @@ def update_mode(
     if participant_count is not None:
         sets.append("participant_count = %s")
         params.append(participant_count)
-    if budget_ms is not None:
-        sets.append("budget_ms = %s")
-        params.append(budget_ms)
+    if avg_budget_ms is not None:
+        sets.append("avg_budget_ms = %s")
+        params.append(avg_budget_ms)
     if target_matches_per_version is not None:
         sets.append("target_matches_per_version = %s")
         params.append(target_matches_per_version)
@@ -166,10 +163,9 @@ def update_mode(
         merged = {**current.sim_args, **sim_args_updates}
         sets.append("sim_args = %s")
         params.append(Jsonb(merged))
-    if scoring_config_updates:
-        merged = {**current.scoring_config, **scoring_config_updates}
-        sets.append("scoring_config = %s")
-        params.append(Jsonb(merged))
+    if scoring_kind is not None:
+        sets.append("scoring_kind = %s")
+        params.append(scoring_kind)
 
     if not sets:
         return current
@@ -190,8 +186,8 @@ def create_mode(
     name: str,
     participant_count: int,
     sim_args: dict[str, Any],
-    budget_ms: float,
-    scoring_config: dict[str, Any],
+    avg_budget_ms: float,
+    scoring_kind: ScoringKind,
     target_matches_per_version: int,
     description: str | None = None,
     group_slug: str | None = None,
@@ -204,7 +200,7 @@ def create_mode(
             """
             INSERT INTO modes (
                 slug, name, description, group_slug, participant_count, sim_args,
-                map_slug, budget_ms, scoring_config,
+                map_slug, avg_budget_ms, scoring_kind,
                 target_matches_per_version, enabled
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -212,7 +208,7 @@ def create_mode(
             """,
             (
                 slug, name, description, group_slug, participant_count, Jsonb(sim_args),
-                map_slug, budget_ms, Jsonb(scoring_config),
+                map_slug, avg_budget_ms, scoring_kind,
                 target_matches_per_version, enabled,
             ),
         )
@@ -254,8 +250,8 @@ def _format_mode_line(m: Mode) -> str:
     return (
         f"[{m.id:>3}] {flag}  {m.slug:<24} group={group:<10} "
         f"p={m.participant_count} target={m.target_matches_per_version} "
-        f"budget={m.budget_ms}ms  sim_args={json.dumps(m.sim_args)}  "
-        f"scoring={json.dumps(m.scoring_config)}"
+        f"avg_budget={m.avg_budget_ms}ms  sim_args={json.dumps(m.sim_args)}  "
+        f"kind={m.scoring_kind}"
     )
 
 
@@ -269,10 +265,10 @@ def _format_mode_detail(m: Mode) -> str:
         f"enabled:                    {m.enabled}",
         f"participant_count:          {m.participant_count}",
         f"map_slug:                   {m.map_slug}",
-        f"budget_ms:                  {m.budget_ms}",
+        f"avg_budget_ms:                  {m.avg_budget_ms}",
         f"target_matches_per_version: {m.target_matches_per_version}",
         f"sim_args:                   {json.dumps(m.sim_args)}",
-        f"scoring_config:             {json.dumps(m.scoring_config)}",
+        f"scoring_kind:               {m.scoring_kind}",
     ])
 
 
@@ -280,7 +276,7 @@ def _add_set_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--name")
     p.add_argument("--description")
     p.add_argument("--participant-count", type=int)
-    p.add_argument("--budget-ms", type=float)
+    p.add_argument("--avg-budget-ms", type=float)
     p.add_argument("--target-matches-per-version", type=int)
     map_group = p.add_mutually_exclusive_group()
     map_group.add_argument("--map-slug", help="set the modes.map_slug column")
@@ -305,11 +301,10 @@ def _add_set_flags(p: argparse.ArgumentParser) -> None:
         "--map", dest="sim_map",
         help="sim_args.map (snake_sim map id; distinct from --map-slug column)",
     )
-    # scoring_config fields
-    p.add_argument("--alpha", type=float)
-    p.add_argument("--beta", type=float)
-    p.add_argument("--w", type=float)
-    p.add_argument("--floor-ms", type=float)
+    p.add_argument(
+        "--scoring-kind", choices=("multi", "solo"),
+        help="change the scoring kind (categories are canonical per kind in sa_common.scoring)",
+    )
 
 
 def _collect_updates(args: argparse.Namespace) -> dict[str, Any]:
@@ -324,28 +319,18 @@ def _collect_updates(args: argparse.Namespace) -> dict[str, Any]:
     if args.sim_map is not None:
         sim_args_updates["map"] = args.sim_map
 
-    scoring_updates: dict[str, Any] = {}
-    if args.alpha is not None:
-        scoring_updates["alpha"] = args.alpha
-    if args.beta is not None:
-        scoring_updates["beta"] = args.beta
-    if args.w is not None:
-        scoring_updates["w"] = args.w
-    if args.floor_ms is not None:
-        scoring_updates["floor_ms"] = args.floor_ms
-
     return {
         "name": args.name,
         "description": args.description,
         "participant_count": args.participant_count,
-        "budget_ms": args.budget_ms,
+        "avg_budget_ms": args.avg_budget_ms,
         "target_matches_per_version": args.target_matches_per_version,
         "map_slug": args.map_slug,
         "clear_map_slug": args.clear_map_slug,
         "group_slug": args.group_slug,
         "clear_group_slug": args.clear_group_slug,
         "sim_args_updates": sim_args_updates or None,
-        "scoring_config_updates": scoring_updates or None,
+        "scoring_kind": args.scoring_kind,
     }
 
 
@@ -376,16 +361,16 @@ def cli(argv) -> argparse.Namespace:
     create_p.add_argument("--slug", required=True)
     create_p.add_argument("--name", required=True)
     create_p.add_argument("--participant-count", type=int, required=True)
-    create_p.add_argument("--budget-ms", type=float, required=True)
+    create_p.add_argument("--avg-budget-ms", type=float, required=True)
     create_p.add_argument("--target-matches-per-version", type=int, required=True)
     create_p.add_argument("--food", type=int, required=True)
     create_p.add_argument("--grid-width", type=int)
     create_p.add_argument("--grid-height", type=int)
     create_p.add_argument("--map", dest="sim_map", help="sim_args.map (snake_sim map id)")
-    create_p.add_argument("--alpha", type=float, default=0.5)
-    create_p.add_argument("--beta", type=float, default=2.0)
-    create_p.add_argument("--w", type=float, default=0.3)
-    create_p.add_argument("--floor-ms", type=float, default=2.0)
+    create_p.add_argument(
+        "--scoring-kind", choices=("multi", "solo"), required=True,
+        help="picks the canonical category list for this mode (see sa_common.scoring)",
+    )
     create_p.add_argument("--description")
     create_p.add_argument(
         "--group-slug",
@@ -445,10 +430,6 @@ def main():
                     sim_args["grid_height"] = args.grid_height
                 if args.sim_map is not None:
                     sim_args["map"] = args.sim_map
-                scoring = {
-                    "alpha": args.alpha, "beta": args.beta,
-                    "w": args.w, "floor_ms": args.floor_ms,
-                }
                 new_id = create_mode(
                     conn,
                     slug=args.slug,
@@ -458,8 +439,8 @@ def main():
                     participant_count=args.participant_count,
                     sim_args=sim_args,
                     map_slug=args.map_slug,
-                    budget_ms=args.budget_ms,
-                    scoring_config=scoring,
+                    avg_budget_ms=args.avg_budget_ms,
+                    scoring_kind=args.scoring_kind,
                     target_matches_per_version=args.target_matches_per_version,
                     enabled=not args.disabled,
                 )

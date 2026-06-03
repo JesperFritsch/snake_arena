@@ -1,19 +1,19 @@
 # services/orchestrator/orchestrator/cli.py
 """Entry point for the orchestrator.
 
-Four daemons share this CLI:
+Three daemons share this CLI:
     match        run queued ranked match jobs from the runner
     test-match   build + run queued dev test matches
-    scorer       score finished ranked matches
     scheduler    enqueue ranked match jobs as work appears
 
-All four are event-driven via Postgres LISTEN/NOTIFY — they have no polling
+All three are event-driven via Postgres LISTEN/NOTIFY — they have no polling
 interval. Triggers in migrations/001.sql wake each daemon the moment its
-queue gains work. See docs/09_ranking_system.md.
+queue gains work. Scoring is no longer a daemon: aggregates are computed on
+demand in sa_common.db.agent_scores.compute_mode_scores. See docs/09_ranking_system.md.
 
 Each supports:
     (default)   long-running daemon, sleeps between NOTIFYs
-    --once      claim and process one job, then exit (match/test-match/scorer only)
+    --once      claim and process one job, then exit (match / test-match only)
 
 Exit codes for --once:
     0   one job processed (whether it succeeded or failed)
@@ -43,11 +43,6 @@ from orchestrator.test_runner_daemon import (
     TestRunnerDaemonConfig,
     run_forever as run_test_forever,
     run_one_iteration as run_test_iteration,
-)
-from orchestrator.scorer_daemon import (
-    ScorerDaemonConfig,
-    run_forever as run_scorer_forever,
-    run_one_iteration as run_scorer_iteration,
 )
 from orchestrator.scheduler_daemon import (
     SchedulerDaemonConfig,
@@ -108,16 +103,6 @@ def main() -> None:
         help="Override per-step CPU budget for test matches (env: STEP_CPU_BUDGET_MS)",
     )
 
-    p_scorer = subparsers.add_parser(
-        "scorer",
-        help="score finished ranked matches. Scoring weights live on each mode's "
-             "scoring_config (modes table); the scorer has no per-formula flags.",
-    )
-    p_scorer.add_argument(
-        "--once", action="store_true",
-        help="Score at most one match, then exit. Exit 2 if none unscored.",
-    )
-
     p_sched = subparsers.add_parser(
         "scheduler",
         help="enqueue ranked match jobs. Match configs (sim_args, target counts, "
@@ -155,10 +140,6 @@ def main() -> None:
         run_one, run_forever = run_test_iteration, run_test_forever
         with get_conn(autocommit=True) as conn:
             reset_stale_running_jobs(conn)
-
-    elif args.command == "scorer":
-        config = ScorerDaemonConfig(bundler=bundler_from_env())
-        run_one, run_forever = run_scorer_iteration, run_scorer_forever
 
     elif args.command == "scheduler":
         config = SchedulerDaemonConfig(

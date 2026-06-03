@@ -15,6 +15,7 @@ db_build_jobs = "sa_common.db.build_jobs:main"
 db_matches = "sa_common.db.matches:main"
 db_modes = "sa_common.db.modes:main"
 db_mode_groups = "sa_common.db.mode_groups:main"
+score_match = "sa_common.scoring_debug:main"
 
 [build-system]
 requires = ["hatchling"]

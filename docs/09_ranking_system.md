@@ -31,7 +31,7 @@ modes (
   participant_count           INT NOT NULL,             -- 1 for solo, 2+ for multi
   sim_args                    JSONB NOT NULL,           -- {food, grid_width, grid_height}
   map_slug                    TEXT,                     -- NULL = clear map (no walls)
-  budget_ms                   DOUBLE PRECISION NOT NULL,-- per-step CPU budget
+  avg_budget_ms               DOUBLE PRECISION NOT NULL,-- sustained CPU budget (per-step peak = avg_budget_ms × PER_STEP_BUDGET_MULTIPLIER)
   scoring_config              JSONB NOT NULL,           -- {alpha, beta, w, floor_ms}
   target_matches_per_version  INT NOT NULL,
   enabled                     BOOLEAN NOT NULL DEFAULT TRUE,
@@ -52,7 +52,7 @@ scoring" below) but never appear on the ranked leaderboards.
 
 The first set of enabled modes:
 
-| slug | participants | grid | food | budget_ms | target | notes |
+| slug | participants | grid | food | avg_budget_ms | target | notes |
 |---|---|---|---|---|---|---|
 | `multi-2-standard` | 2 | 20×20 | 3 | 25 | 15 | head-to-head |
 | `multi-4-standard` | 4 | 20×20 | 3 | 25 | 20 | full-board scrum |

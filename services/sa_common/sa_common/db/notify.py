@@ -33,7 +33,6 @@ log = logging.getLogger(__name__)
 CHANNEL_SCHEDULER     = "scheduler_wakeup"
 CHANNEL_MATCH_RUNNER  = "match_runner_wakeup"
 CHANNEL_TEST_RUNNER   = "test_runner_wakeup"
-CHANNEL_SCORER        = "scorer_wakeup"
 
 
 _RECONNECT_BACKOFF_S = 2.0

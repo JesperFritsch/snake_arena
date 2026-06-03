@@ -1,9 +1,11 @@
 # services/sa_common/sa_common/db/matches.py
 """DB layer for matches and match_participants.
 
-A match belongs to at most one mode (mode_id NULL = test match). The scorer
-uses a lease (scoring_started_at + scored_at) so a transient bundler failure
-doesn't permanently un-score a match. See docs/09_ranking_system.md.
+A match belongs to at most one mode (mode_id NULL = test match). There is
+no scorer step: aggregate scores are computed on demand by
+sa_common.db.agent_scores.compute_mode_scores, so a match counts toward
+the leaderboard the moment record_match_result commits.
+See docs/09_ranking_system.md.
 """
 from __future__ import annotations
 
@@ -20,21 +22,11 @@ from psycopg.types.json import Jsonb
 
 from sa_common.db.connection import get_conn
 from sa_common.types import ParticipantRow, SimArgs
-from sa_common.scoring import ParticipantScore
 
 log = logging.getLogger(__name__)
 
 
 MATCH_STATUSES = ("success", "failure")
-
-# Scorer claim lease: how long after scoring_started_at without a scored_at
-# before another worker can re-claim the row. Survives crashed workers.
-SCORE_LEASE_INTERVAL = "5 minutes"
-
-# Cap on retries — after this many transient failures, the scorer gives up
-# and the row needs manual intervention. Prevents hot-loop on permanent
-# failures (e.g. deleted bundle) in the event-driven (no-poll) daemon.
-MAX_SCORING_ATTEMPTS = 3
 
 
 @dataclass(slots=True)
@@ -51,6 +43,20 @@ class Match:
     is_test: bool = False
 
 
+_PARTICIPANT_COLUMNS = """
+    seat, project_id, project_version,
+    final_length, fatal_step, survival_rank,
+    killed_by_budget, metrics
+"""
+
+
+_MATCH_COLUMNS = """
+    id, match_uuid, status, mode_id, sim_args,
+    started_at, finished_at,
+    bundle_key, error, is_test
+"""
+
+
 def _row_to_match(row: dict[str, Any]) -> Match:
     return Match(
         id=row["id"],
@@ -64,20 +70,6 @@ def _row_to_match(row: dict[str, Any]) -> Match:
         error=row["error"],
         is_test=row["is_test"],
     )
-
-
-_MATCH_COLUMNS = """
-    id, match_uuid, status, mode_id, sim_args,
-    started_at, finished_at,
-    bundle_key, error, is_test
-"""
-
-
-_PARTICIPANT_COLUMNS = """
-    seat, project_id, project_version,
-    final_length, fatal_step, survival_rank,
-    killed_by_budget, metrics
-"""
 
 
 # --------------------------------------------------------------------------
@@ -230,127 +222,6 @@ def get_match_participants(
             (match_id,),
         )
         return [ParticipantRow(**row) for row in cur.fetchall()]
-
-
-# --------------------------------------------------------------------------
-# Scorer lease — claim is revertable so transient failures don't drop matches.
-# --------------------------------------------------------------------------
-
-@dataclass(slots=True)
-class ScoreClaim:
-    match_id: int
-    mode_id: int | None
-    bundle_key: str
-
-
-def claim_unscored_match(conn: psycopg.Connection) -> ScoreClaim | None:
-    """Atomically lease one unscored *ranked* success match for scoring.
-
-    Only ranked matches (mode_id IS NOT NULL) are eligible; test matches are
-    scored synchronously by test_runner_daemon at run time so they don't
-    race with bundle pruning.
-
-    Picks up rows that are either unclaimed (scoring_started_at IS NULL) or
-    whose lease has expired (older than SCORE_LEASE_INTERVAL).
-
-    The caller MUST call release_score_lease() on failure, or mark_match_scored()
-    on success. Returns None if nothing to score.
-    """
-    with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            f"""
-            WITH next AS (
-                SELECT id
-                FROM matches
-                WHERE status = 'success'
-                  AND mode_id IS NOT NULL
-                  AND scored_at IS NULL
-                  AND bundle_key IS NOT NULL
-                  AND scoring_attempts < {MAX_SCORING_ATTEMPTS}
-                  AND (scoring_started_at IS NULL
-                       OR scoring_started_at < NOW() - INTERVAL '{SCORE_LEASE_INTERVAL}')
-                ORDER BY finished_at ASC
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            )
-            UPDATE matches
-            SET scoring_started_at = NOW()
-            FROM next
-            WHERE matches.id = next.id
-            RETURNING matches.id, matches.mode_id, matches.bundle_key
-            """
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return ScoreClaim(
-            match_id=row["id"],
-            mode_id=row["mode_id"],
-            bundle_key=row["bundle_key"],
-        )
-
-
-def release_score_lease(conn: psycopg.Connection, match_id: int) -> None:
-    """Clear scoring_started_at and bump scoring_attempts.
-
-    Called on transient failure (bundler error, etc.). Bumping attempts gives
-    up after MAX_SCORING_ATTEMPTS so a permanent failure can't hot-loop the
-    scorer — important now that the daemon is purely event-driven.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE matches "
-            "SET scoring_started_at = NULL, "
-            "    scoring_attempts = scoring_attempts + 1 "
-            "WHERE id = %s AND scored_at IS NULL",
-            (match_id,),
-        )
-
-
-def mark_match_scored(conn: psycopg.Connection, match_id: int) -> None:
-    """Mark a match as successfully scored. Final terminal state."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE matches SET scored_at = NOW() WHERE id = %s",
-            (match_id,),
-        )
-
-
-def reset_stale_score_leases(conn: psycopg.Connection) -> int:
-    """Daemon startup hook: clear leases older than the lease interval.
-
-    Returns the number of rows reset. Useful when a scorer worker died mid-job
-    before the lease would have expired on its own.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            UPDATE matches
-            SET scoring_started_at = NULL
-            WHERE scored_at IS NULL
-              AND scoring_started_at IS NOT NULL
-              AND scoring_started_at < NOW() - INTERVAL '{SCORE_LEASE_INTERVAL}'
-            """
-        )
-        return cur.rowcount
-
-
-def record_participant_scores(
-    conn: psycopg.Connection,
-    match_id: int,
-    scores: list[ParticipantScore],
-) -> None:
-    """Write computed scores into match_participants.metrics."""
-    with conn.cursor() as cur:
-        for s in scores:
-            cur.execute(
-                """
-                UPDATE match_participants
-                SET metrics = %s
-                WHERE match_id = %s AND seat = %s
-                """,
-                (Jsonb(s.to_metrics()), match_id, s.seat),
-            )
 
 
 # --------------------------------------------------------------------------

@@ -54,7 +54,6 @@ from snake_sim.analyze.scripts.run_analyzer import analyze
 from orchestrator.agents import SetupError, resolve_test_agents
 from orchestrator.bundle import assemble_bundle
 from orchestrator.redis_observer import RedisStreamObserver
-from orchestrator.replay import extract_final_lengths
 
 log = logging.getLogger(__name__)
 
@@ -248,7 +247,6 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         if result.success and observer.step_count > 0 and replay_path.exists():
             run_analysis = analyze(replay_path)
             result.run_analysis = run_analysis
-            result.final_lengths = extract_final_lengths(replay_path)
             participants = build_participants(
                 result=result,
                 project_by_agent_name=setup.project_by_name,

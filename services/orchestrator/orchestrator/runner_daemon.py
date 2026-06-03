@@ -44,6 +44,7 @@ from sa_common.db.matches import record_match_result
 from sa_common.db.modes import get_mode
 from sa_common.db.connection import get_conn
 from sa_common.db.projects import mark_submitted_crashed
+from sa_common.scoring import PER_STEP_BUDGET_MULTIPLIER
 from sa_common.types import SimArgs
 
 from snake_sim.loop_observers.file_persist_observer import FilePersistObserver
@@ -51,7 +52,6 @@ from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from orchestrator.agents import SetupError, resolve_agents
 from orchestrator.bundle import assemble_bundle
-from orchestrator.replay import extract_final_lengths
 
 log = logging.getLogger(__name__)
 
@@ -93,13 +93,16 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
 
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
-        # Mode owns the per-step CPU budget; the runner enforces what the mode
-        # says, and the bundle later captures the actual enforced value for
-        # the scorer to read back.
+        # Mode owns the sustained-average CPU budget; the per-step peak the
+        # runner enforces is derived as avg × PER_STEP_BUDGET_MULTIPLIER. The
+        # bundle captures the actual enforced per-step value for the scorer
+        # to read back.
         mode = get_mode(conn, job.mode_id)
         if mode is None:
             raise SetupError(f"job {job.id} references missing mode_id={job.mode_id}")
-        per_step_budget_seconds = mode.budget_ms / 1000.0
+        per_step_budget_seconds = (
+            mode.avg_budget_ms * PER_STEP_BUDGET_MULTIPLIER / 1000.0
+        )
         setup = resolve_agents(conn, job.project_ids)
         # --- The match itself: no transaction, no row locks held ---
         result = run_match(
@@ -111,10 +114,13 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             d_client=config.d_client,
             per_step_budget_seconds=per_step_budget_seconds,
             extra_observers=[file_observer],
-            # Ranked matches end once one snake is alive AND longest.
-            # Shortens long tail without making suicide a winning move
-            # (a suicidal snake locks in its length at death).
-            end_on_last_standing_when_longest=True,
+            # Multi matches end once one snake is alive AND longest — shortens
+            # the long tail without making suicide a winning move (a suicidal
+            # snake locks in its length at death). MUST NOT be passed for solo
+            # modes: with one snake total, it is trivially both "last standing"
+            # and "longest" from step 0, so the rule fires immediately and the
+            # match ends without ever moving.
+            end_on_last_standing_when_longest=mode.participant_count > 1,
         )
 
         # Quarantine any submitted image that failed the gRPC probe. The
@@ -147,7 +153,6 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             )
         run_analysis = analyze(replay_path)
         result.run_analysis = run_analysis
-        result.final_lengths = extract_final_lengths(replay_path)
 
         participants = build_participants(
             result=result,

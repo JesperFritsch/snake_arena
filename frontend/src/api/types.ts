@@ -148,10 +148,14 @@ export interface LeaderboardEntry {
   language: string;
   user_display_name: string;
   matches_played: number;
-  avg_score: number;
-  best_score: number;
-  avg_rank: number;
-  avg_length: number | null;
+  // 0..1, higher better. Mean of per-match scores for multi modes;
+  // normalised mean cross-agent rank for solo modes.
+  score: number;
+  // Per-category breakdown. Shape per category:
+  //   { raw: number; rank?: number }
+  // `rank` is only set for solo modes (where the score is derived from
+  // cross-agent ranks); multi modes carry only `raw` means here.
+  category_breakdown: Record<string, { raw: number; rank?: number }>;
 }
 
 export interface GroupLeaderboardEntry {
@@ -160,6 +164,7 @@ export interface GroupLeaderboardEntry {
   project_name: string;
   language: string;
   user_display_name: string;
+  // 0..1, higher better. Mean of the player's per-mode scores within the group.
   group_score: number;
   matches_played: number;
   modes_played: number;
@@ -171,6 +176,8 @@ export interface OverallLeaderboardEntry {
   project_name: string;
   language: string;
   user_display_name: string;
+  // 0..1, higher better. Mean of per-group scores (each group itself the
+  // mean of the player's per-mode scores within that group).
   overall_score: number;
   total_matches: number;
   modes_played: number;
@@ -185,7 +192,7 @@ export interface Mode {
   participant_count: number;
   sim_args: Record<string, unknown>;
   map_slug: string | null;
-  budget_ms: number;
+  avg_budget_ms: number;
   target_matches_per_version: number;
   enabled: boolean;
 }

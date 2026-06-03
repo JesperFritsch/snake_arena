@@ -1,139 +1,135 @@
 # services/sa_common/sa_common/scoring.py
-"""Per-participant score computation.
+"""Scoring primitives.
 
-Entry point: compute_scores(exec_times, budget_ms, participants, config)
+Each agent's per-match score is a magnitude-preserving quality score
+multiplied by a CPU-efficiency factor:
 
-One parametric formula covers solo and multiplayer modes:
+    final_m = quality_m * cpu_factor_m
+    aggregate = mean over the agent's matches of final_m
 
-    score = length
-          x (1 + beta x length / max(steps_alive, 1))     [eating-rate bonus]
-          x (1 + alpha x (1 - (rank - 1) / (n - 1)))      [survival bonus]
-          x (budget_ms / max(avg_step_ms, floor_ms)) ^ w  [speed bonus]
+`quality_m` is the mean across the canonical categories of
+`fraction_of_leader`: the agent's raw value as a fraction of the
+population leader. A 40× length gap shows up as a 40× score gap, unlike
+a rank-based score that would compress it. The population differs by
+kind:
 
-  - length is the base — you only grow by eating.
-  - The eating-rate bonus rewards efficient eaters over slow grinders.
-  - The survival bonus rewards outlasting opponents in multiplayer. In solo
-    modes alpha is 0, collapsing the survival factor to 1.
-  - The speed bonus rewards CPU efficiency. floor_ms clamps avg_step_ms so a
-    trivial constant-move agent can't game the multiplier.
+  - multi: participants of the single match.
+  - solo : eligible agents in the mode (each represented by its mean
+    raw per category).
 
-Inputs are taken as truth: missing exec_times, missing final_length, or
-missing survival_rank cause a raise. The scorer catches that, releases the
-lease, increments scoring_attempts, and eventually gives up — much better
-than silently emitting a score from defaults that would mislead the
-leaderboard.
+`cpu_factor` is `1 - CPU_PENALTY * min(avg_cpu_ms / avg_budget_ms, 1)`,
+bounded in `[1 - CPU_PENALTY, 1]`. The avg_budget is the *absolute*
+reference (the sustained-CPU refill rate the cgroup observer enforces),
+so a brainless laggard with near-zero CPU can't squash the factor for
+everyone else. CPU is a bounded modifier, not a primary axis, so a fast
+snake that doesn't play well still loses on quality.
+
+The per-step peak budget (the cgroup hard cap on any single step) is
+derived as `avg_budget_ms * PER_STEP_BUDGET_MULTIPLIER`. The orchestrator
+applies the multiplier when handing the runner a per-step value; the
+runner itself only knows about per-step.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Hashable, Literal, TypeVar
 
-from sa_common.types import ParticipantRow
+
+Direction = Literal["higher", "lower"]
+ScoringKind = Literal["multi", "solo"]
+
+K = TypeVar("K", bound=Hashable)
+
+
+# How much of the quality score CPU can take away at full avg_budget.
+# 0.40 means an agent averaging right at the sustained ceiling keeps
+# 60% of its quality score; a near-zero-CPU agent keeps ~100%.
+CPU_PENALTY: float = 0.40
+
+# Ratio of per-step CPU peak to the sustained average ceiling. The
+# orchestrator multiplies a mode's `avg_budget_ms` by this to derive the
+# per-step cap it hands to the runner. 5× = "you may spend up to 5×
+# your average on a single hard step, the bank refills at the average."
+PER_STEP_BUDGET_MULTIPLIER: float = 5.0
 
 
 @dataclass(frozen=True)
-class ScoringConfig:
-    alpha: float       # survival weight (multi); 0 in solo modes
-    beta: float        # eating-rate weight
-    w: float           # speed multiplier exponent
-    floor_ms: float    # min avg_step_ms; clamps the speed bonus
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ScoringConfig":
-        """Build from modes.scoring_config JSONB. All four keys are required."""
-        return cls(
-            alpha    = float(d["alpha"]),
-            beta     = float(d["beta"]),
-            w        = float(d["w"]),
-            floor_ms = float(d["floor_ms"]),
-        )
+class Category:
+    name: str
+    direction: Direction
 
 
-@dataclass(slots=True)
-class ParticipantScore:
-    seat: int
-    project_id: int
-    score: float
-    avg_step_ms: float
-    min_step_ms: float
-    max_step_ms: float
-    steps_alive: int
-    food_rate: float           # length / max(steps_alive, 1)
-    eating_factor: float       # 1 + beta * food_rate
-    survival_factor: float     # 1 + alpha * (1 - (rank-1)/(n-1))
-    speed_multiplier: float    # (budget_ms / max(avg, floor)) ^ w
+# Canonical quality categories per kind. `avg_cpu_ms` is NOT a category —
+# it enters the score as a multiplicative `cpu_factor`, not as one of N
+# averaged ranks. Adding a category requires the runner to write its base
+# value into match_participants.metrics (or a column) and the category-
+# value lookup in db/agent_scores.py to know where to read it.
+CANONICAL_MULTI_CATEGORIES: list[Category] = [
+    Category("survival_rank",  "lower"),
+    Category("trapping_count", "higher"),
+]
 
-    def to_metrics(self) -> dict[str, Any]:
-        return {
-            "score":            round(self.score, 4),
-            "avg_step_ms":      round(self.avg_step_ms, 3),
-            "min_step_ms":      round(self.min_step_ms, 3),
-            "max_step_ms":      round(self.max_step_ms, 3),
-            "steps_alive":      self.steps_alive,
-            "food_rate":        round(self.food_rate, 4),
-            "eating_factor":    round(self.eating_factor, 4),
-            "survival_factor": round(self.survival_factor, 4),
-            "speed_multiplier": round(self.speed_multiplier, 4),
-        }
+CANONICAL_SOLO_CATEGORIES: list[Category] = [
+    Category("final_length", "higher"),
+    Category("steps_alive",  "higher"),
+]
 
 
-def compute_scores(
-    exec_times: dict[int, list[float]],
-    budget_ms: float,
-    participants: list[ParticipantRow],
-    config: ScoringConfig,
-) -> list[ParticipantScore]:
-    """Compute per-participant scores. Every input is required.
+def categories_for(kind: ScoringKind) -> list[Category]:
+    if kind == "multi":
+        return CANONICAL_MULTI_CATEGORIES
+    if kind == "solo":
+        return CANONICAL_SOLO_CATEGORIES
+    raise ValueError(f"unknown scoring kind: {kind!r}")
 
-    exec_times    must contain a non-empty list for every participant's seat.
-    final_length  must be set on every participant.
-    survival_rank must be set on every participant in multi modes (alpha > 0).
+
+def fraction_of_leader(
+    values: dict[K, float],
+    direction: Direction,
+) -> dict[K, float]:
+    """For each key, the entry's raw value as a fraction of the leader's.
+
+    Higher direction: score = value / max_value. Leader gets 1.0, half-
+    the-leader gets 0.5.
+    Lower direction: score = min_value / value. Leader gets 1.0, double-
+    the-leader gets 0.5.
+
+    Magnitude-preserving (unlike `pairwise_win_rate`): a 40× gap between
+    leader and laggard maps to a 40× score gap rather than collapsing to
+    "winner vs loser." Raises on empty input.
     """
-    n = len(participants)
-    out: list[ParticipantScore] = []
+    if not values:
+        raise ValueError("fraction_of_leader requires at least 1 entry")
+    if direction == "higher":
+        leader = max(values.values())
+        if leader <= 0:
+            # All-zero (or negative) population: no signal to distribute.
+            return {k: 0.0 for k in values}
+        return {k: max(0.0, min(1.0, v / leader)) for k, v in values.items()}
+    # lower
+    leader = min(values.values())
+    if leader <= 0:
+        raise ValueError(
+            f"fraction_of_leader: lower-direction leader must be > 0, got {leader}"
+        )
+    return {
+        k: max(0.0, min(1.0, leader / v)) if v > 0 else 0.0
+        for k, v in values.items()
+    }
 
-    for p in participants:
-        if p.final_length is None:
-            raise ValueError(f"seat={p.seat} has no final_length")
-        if p.seat not in exec_times:
-            raise ValueError(f"seat={p.seat} has no exec_times entry")
-        step_times = exec_times[p.seat]
-        if not step_times:
-            raise ValueError(f"seat={p.seat} has empty exec_times list")
-        if config.alpha > 0 and p.survival_rank is None:
-            raise ValueError(
-                f"seat={p.seat}: survival_rank is required when alpha > 0"
-            )
 
-        length = float(p.final_length)
-        steps_alive = len(step_times)
-        avg_ms = sum(step_times) / steps_alive
-        min_ms = min(step_times)
-        max_ms = max(step_times)
+def cpu_factor(avg_cpu_ms: float, avg_budget_ms: float) -> float:
+    """Multiplicative CPU-efficiency modifier in `[1 - CPU_PENALTY, 1]`.
 
-        food_rate     = length / steps_alive
-        eating_factor = 1.0 + config.beta * food_rate
-
-        if config.alpha == 0 or n == 1:
-            survival_factor = 1.0
-        else:
-            survival_factor = 1.0 + config.alpha * (1.0 - (p.survival_rank - 1) / (n - 1))
-
-        speed_mult = (budget_ms / max(avg_ms, config.floor_ms)) ** config.w
-        score = length * eating_factor * survival_factor * speed_mult
-
-        out.append(ParticipantScore(
-            seat=p.seat,
-            project_id=p.project_id,
-            score=score,
-            avg_step_ms=avg_ms,
-            min_step_ms=min_ms,
-            max_step_ms=max_ms,
-            steps_alive=steps_alive,
-            food_rate=food_rate,
-            eating_factor=eating_factor,
-            survival_factor=survival_factor,
-            speed_multiplier=speed_mult,
-        ))
-
-    return out
+    A snake using zero CPU keeps 100% of its quality score; one averaging
+    right at `avg_budget_ms` keeps `1 - CPU_PENALTY`. The avg budget is
+    the absolute reference (matches the cgroup observer's sustained-CPU
+    refill rate) so a brainless near-zero-CPU agent can't compress
+    everyone else's factor. Agents that go *over* the sustained ceiling
+    get killed by the runner; we still saturate at the budget defensively
+    so a partial overage in the metrics doesn't yield a negative factor.
+    """
+    if avg_budget_ms <= 0:
+        return 1.0
+    ratio = min(max(avg_cpu_ms, 0.0) / avg_budget_ms, 1.0)
+    return 1.0 - CPU_PENALTY * ratio

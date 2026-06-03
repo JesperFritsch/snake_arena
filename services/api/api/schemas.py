@@ -146,10 +146,13 @@ class LeaderboardEntry(BaseModel):
     language: str
     user_display_name: str
     matches_played: int
-    avg_score: float
-    best_score: float
-    avg_rank: float
-    avg_length: float | None
+    # 0..1, higher better. Mean of per-match scores for multi modes;
+    # normalised mean cross-agent rank for solo modes.
+    score: float
+    # {<category>: {"raw": float, "rank": float?}} — per-category breakdown
+    # the inspect view renders. `rank` is set only for solo modes.
+    # Unqualified agents are filtered out before this point.
+    category_breakdown: dict[str, Any]
 
 
 class GroupLeaderboardEntry(BaseModel):
@@ -158,7 +161,7 @@ class GroupLeaderboardEntry(BaseModel):
     project_name: str
     language: str
     user_display_name: str
-    group_score: float           # 0..100, mean of per-mode normalised scores within the group
+    group_score: float           # 0..1, mean of per-mode scores in the group
     matches_played: int
     modes_played: int
 
@@ -169,7 +172,7 @@ class OverallLeaderboardEntry(BaseModel):
     project_name: str
     language: str
     user_display_name: str
-    overall_score: float          # 0..100, mean of per-group normalised scores
+    overall_score: float         # 0..1, mean of per-group scores
     total_matches: int
     modes_played: int
 
@@ -183,7 +186,7 @@ class ModeOut(BaseModel):
     participant_count: int
     sim_args: dict[str, Any]
     map_slug: str | None
-    budget_ms: float
+    avg_budget_ms: float
     target_matches_per_version: int
     enabled: bool
 

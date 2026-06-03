@@ -29,8 +29,6 @@ class MatchResult:
     # Kill reason per seat: "per_step" | "sustained" | "wall_clock" |
     # "sustained_wall" | "startup_cpu" | "init_failure" | "dead" | None
     kill_reasons: dict[int, str | None] | None = None
-    # Final body length per snake_id (from replay), populated after analysis.
-    final_lengths: dict[int, int] | None = None
     # Seats whose gRPC server never came up before the match started, as
     # detected by the pre-sim probe. Daemons map these back to project_ids
     # and quarantine those submitted images so the matchmaker stops picking

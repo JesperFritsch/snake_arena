@@ -83,6 +83,20 @@ function SurvivalBadge({ rank, total }: { rank: number | null; total: number }) 
   );
 }
 
+// Stats shown at the top of the match modal — shape depends on which
+// leaderboard view the row was clicked from.
+type SelectedRowStats =
+  | { kind: "overall"; overall_score: number; total_matches: number; modes_played: number }
+  | { kind: "group"; group_score: number; matches_played: number; modes_played: number; mode_count: number }
+  | { kind: "mode"; score: number; category_breakdown: Record<string, { raw: number; rank?: number }>; matches_played: number };
+
+type SelectedProject = {
+  id: number;
+  name: string;
+  language: string;
+  user_display_name: string;
+};
+
 // ── LeaderboardPage ──────────────────────────────────────────────────────────
 
 export function LeaderboardPage() {
@@ -97,10 +111,19 @@ export function LeaderboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Project-detail modal (uses same shape as before but works for ranked or overall rows)
-  const [selectedProject, setSelectedProject] = useState<{ id: number; name: string; language: string; user_display_name: string } | null>(null);
+  const [selectedProject, setSelectedProject] = useState<SelectedProject | null>(null);
+  const [selectedStats, setSelectedStats] = useState<SelectedRowStats | null>(null);
   const [matchList, setMatchList] = useState<RankedMatchSummary[] | null>(null);
   const [matchListLoading, setMatchListLoading] = useState(false);
   const [selectedMatch, setSelectedMatch] = useState<RankedMatchSummary | null>(null);
+
+  const onSelectRow = useCallback(
+    (project: SelectedProject, stats: SelectedRowStats) => {
+      setSelectedProject(project);
+      setSelectedStats(stats);
+    },
+    [],
+  );
 
   // Load modes + groups once.
   useEffect(() => {
@@ -191,6 +214,7 @@ export function LeaderboardPage() {
 
   const closeModal = useCallback(() => {
     setSelectedProject(null);
+    setSelectedStats(null);
     setMatchList(null);
     setSelectedMatch(null);
   }, []);
@@ -288,7 +312,7 @@ export function LeaderboardPage() {
           <OverallTable
             entries={overall}
             error={error}
-            onSelectProject={setSelectedProject}
+            onSelectRow={onSelectRow}
           />
         )}
 
@@ -298,7 +322,7 @@ export function LeaderboardPage() {
             error={error}
             group={activeGroup}
             memberModes={activeGroupModes ?? []}
-            onSelectProject={setSelectedProject}
+            onSelectRow={onSelectRow}
           />
         )}
 
@@ -307,7 +331,7 @@ export function LeaderboardPage() {
             entries={modeEntries}
             error={error}
             mode={activeMode}
-            onSelectProject={setSelectedProject}
+            onSelectRow={onSelectRow}
           />
         )}
       </div>
@@ -315,6 +339,7 @@ export function LeaderboardPage() {
       {selectedProject && (
         <MatchModal
           project={selectedProject}
+          stats={selectedStats}
           matchList={matchList}
           matchListLoading={matchListLoading}
           selectedMatch={selectedMatch}
@@ -417,10 +442,10 @@ function SubTabButton({
 interface OverallTableProps {
   entries: OverallLeaderboardEntry[] | null;
   error: string | null;
-  onSelectProject: (p: { id: number; name: string; language: string; user_display_name: string }) => void;
+  onSelectRow: (project: SelectedProject, stats: SelectedRowStats) => void;
 }
 
-function OverallTable({ entries, error, onSelectProject }: OverallTableProps) {
+function OverallTable({ entries, error, onSelectRow }: OverallTableProps) {
   if (entries === null && !error) {
     return <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Loading…</div>;
   }
@@ -446,11 +471,6 @@ function OverallTable({ entries, error, onSelectProject }: OverallTableProps) {
             <th className="lb-th lb-rank">#</th>
             <th className="lb-th lb-agent">Agent</th>
             <th className="lb-th lb-author">Author</th>
-            <th className="lb-th lb-num" title="Mean of per-group normalised scores (each group equally weighted)">
-              Overall
-            </th>
-            <th className="lb-th lb-num" title="Total ranked matches across all modes">Matches</th>
-            <th className="lb-th lb-num" title="How many modes this agent competes in">Modes</th>
           </tr>
         </thead>
         <tbody>
@@ -459,12 +479,20 @@ function OverallTable({ entries, error, onSelectProject }: OverallTableProps) {
               key={e.project_id}
               className={`lb-row lb-row-clickable ${e.rank <= 3 ? "lb-row-top" : ""}`}
               onClick={() =>
-                onSelectProject({
-                  id: e.project_id,
-                  name: e.project_name,
-                  language: e.language,
-                  user_display_name: e.user_display_name,
-                })
+                onSelectRow(
+                  {
+                    id: e.project_id,
+                    name: e.project_name,
+                    language: e.language,
+                    user_display_name: e.user_display_name,
+                  },
+                  {
+                    kind: "overall",
+                    overall_score: e.overall_score,
+                    total_matches: e.total_matches,
+                    modes_played: e.modes_played,
+                  },
+                )
               }
             >
               <td className="lb-td lb-rank">
@@ -472,22 +500,22 @@ function OverallTable({ entries, error, onSelectProject }: OverallTableProps) {
                 <RankMedal rank={e.rank} />
               </td>
               <td className="lb-td lb-agent">
-                <span className="lb-name">{e.project_name}</span>
-                <LangBadge lang={e.language} />
+                <div className="lb-agent-inner">
+                  <span className="lb-name">{e.project_name}</span>
+                  <LangBadge lang={e.language} />
+                </div>
               </td>
               <td className="lb-td lb-author">{e.user_display_name}</td>
-              <td className="lb-td lb-num lb-score">{fmt(e.overall_score, 1)}</td>
-              <td className="lb-td lb-num">{e.total_matches}</td>
-              <td className="lb-td lb-num">{e.modes_played}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <p className="lb-footnote">
-        Overall normalises each mode's avg_score to 0–100 (relative to the mode
-        leader), averages per group, then averages across groups — so a
-        multi-map group counts the same as a single-mode tab. Eligible only if
-        you've played ≥ half the target matches in every enabled mode.
+        Overall averages each mode's per-mode score (0..1) within each group,
+        then averages across groups — so a multi-map group counts the same as
+        a single-mode tab. Eligible only once you've qualified in every enabled
+        mode (qualified = played enough matches that the per-mode score is no
+        longer NULL). Click a row to view the agent's stats and match replays.
       </p>
     </>
   );
@@ -500,10 +528,10 @@ interface GroupTableProps {
   error: string | null;
   group: ModeGroup | null;
   memberModes: Mode[];
-  onSelectProject: (p: { id: number; name: string; language: string; user_display_name: string }) => void;
+  onSelectRow: (project: SelectedProject, stats: SelectedRowStats) => void;
 }
 
-function GroupTable({ entries, error, group, memberModes, onSelectProject }: GroupTableProps) {
+function GroupTable({ entries, error, group, memberModes, onSelectRow }: GroupTableProps) {
   if (entries === null && !error) {
     return <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Loading…</div>;
   }
@@ -533,11 +561,6 @@ function GroupTable({ entries, error, group, memberModes, onSelectProject }: Gro
             <th className="lb-th lb-rank">#</th>
             <th className="lb-th lb-agent">Agent</th>
             <th className="lb-th lb-author">Author</th>
-            <th className="lb-th lb-num" title="Mean of per-mode normalised scores within this group (0–100)">
-              Score
-            </th>
-            <th className="lb-th lb-num" title="Total matches across modes in this group">Matches</th>
-            <th className="lb-th lb-num" title="Distinct modes in this group the agent has scored in">Modes</th>
           </tr>
         </thead>
         <tbody>
@@ -546,12 +569,21 @@ function GroupTable({ entries, error, group, memberModes, onSelectProject }: Gro
               key={e.project_id}
               className={`lb-row lb-row-clickable ${e.rank <= 3 ? "lb-row-top" : ""}`}
               onClick={() =>
-                onSelectProject({
-                  id: e.project_id,
-                  name: e.project_name,
-                  language: e.language,
-                  user_display_name: e.user_display_name,
-                })
+                onSelectRow(
+                  {
+                    id: e.project_id,
+                    name: e.project_name,
+                    language: e.language,
+                    user_display_name: e.user_display_name,
+                  },
+                  {
+                    kind: "group",
+                    group_score: e.group_score,
+                    matches_played: e.matches_played,
+                    modes_played: e.modes_played,
+                    mode_count: memberModes.length,
+                  },
+                )
               }
             >
               <td className="lb-td lb-rank">
@@ -559,21 +591,21 @@ function GroupTable({ entries, error, group, memberModes, onSelectProject }: Gro
                 <RankMedal rank={e.rank} />
               </td>
               <td className="lb-td lb-agent">
-                <span className="lb-name">{e.project_name}</span>
-                <LangBadge lang={e.language} />
+                <div className="lb-agent-inner">
+                  <span className="lb-name">{e.project_name}</span>
+                  <LangBadge lang={e.language} />
+                </div>
               </td>
               <td className="lb-td lb-author">{e.user_display_name}</td>
-              <td className="lb-td lb-num lb-score">{fmt(e.group_score, 1)}</td>
-              <td className="lb-td lb-num">{e.matches_played}</td>
-              <td className="lb-td lb-num">{e.modes_played}/{memberModes.length}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <p className="lb-footnote">
-        Group score normalises each mode's avg_score to 0–100 of the mode
-        leader, then averages across the agent's modes in this group. Pick a
-        sub-tab above to drill into a single map's leaderboard.
+        Group score is the mean of the agent's per-mode scores (0..1) across
+        the qualified modes in this group. Pick a sub-tab above to drill into
+        a single map's leaderboard. Click a row to view the agent's stats and
+        match replays.
       </p>
     </>
   );
@@ -585,10 +617,10 @@ interface ModeTableProps {
   entries: LeaderboardEntry[] | null;
   error: string | null;
   mode: Mode | null;
-  onSelectProject: (p: { id: number; name: string; language: string; user_display_name: string }) => void;
+  onSelectRow: (project: SelectedProject, stats: SelectedRowStats) => void;
 }
 
-function ModeTable({ entries, error, mode, onSelectProject }: ModeTableProps) {
+function ModeTable({ entries, error, mode, onSelectRow }: ModeTableProps) {
   if (entries === null && !error) {
     return <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Loading…</div>;
   }
@@ -608,7 +640,7 @@ function ModeTable({ entries, error, mode, onSelectProject }: ModeTableProps) {
         <p className="lb-mode-desc">
           {mode.description}{" "}
           <span className="muted">
-            (target {mode.target_matches_per_version} matches per version, {mode.budget_ms.toFixed(0)} ms budget)
+            (target {mode.target_matches_per_version} matches per version, {mode.avg_budget_ms.toFixed(0)} ms avg CPU budget)
           </span>
         </p>
       )}
@@ -617,12 +649,9 @@ function ModeTable({ entries, error, mode, onSelectProject }: ModeTableProps) {
           <tr>
             <th className="lb-th lb-rank">#</th>
             <th className="lb-th lb-agent">Agent</th>
+            <th className="lb-th" style={{ textAlign: "right", width: 64 }}>Score</th>
+            <th className="lb-th">Categories</th>
             <th className="lb-th lb-author">Author</th>
-            <th className="lb-th lb-num" title="Average score in this mode">Avg score</th>
-            <th className="lb-th lb-num" title="Highest single-match score">Best</th>
-            <th className="lb-th lb-num" title="Average final snake length">Avg length</th>
-            <th className="lb-th lb-num" title="Average survival rank (1 = survived longest)">Avg rank</th>
-            <th className="lb-th lb-num">Matches</th>
           </tr>
         </thead>
         <tbody>
@@ -631,12 +660,20 @@ function ModeTable({ entries, error, mode, onSelectProject }: ModeTableProps) {
               key={e.project_id}
               className={`lb-row lb-row-clickable ${e.rank <= 3 ? "lb-row-top" : ""}`}
               onClick={() =>
-                onSelectProject({
-                  id: e.project_id,
-                  name: e.project_name,
-                  language: e.language,
-                  user_display_name: e.user_display_name,
-                })
+                onSelectRow(
+                  {
+                    id: e.project_id,
+                    name: e.project_name,
+                    language: e.language,
+                    user_display_name: e.user_display_name,
+                  },
+                  {
+                    kind: "mode",
+                    score: e.score,
+                    category_breakdown: e.category_breakdown,
+                    matches_played: e.matches_played,
+                  },
+                )
               }
             >
               <td className="lb-td lb-rank">
@@ -644,33 +681,104 @@ function ModeTable({ entries, error, mode, onSelectProject }: ModeTableProps) {
                 <RankMedal rank={e.rank} />
               </td>
               <td className="lb-td lb-agent">
-                <span className="lb-name">{e.project_name}</span>
-                <LangBadge lang={e.language} />
+                <div className="lb-agent-inner">
+                  <span className="lb-name">{e.project_name}</span>
+                  <LangBadge lang={e.language} />
+                </div>
+              </td>
+              <td className="lb-td" style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                {e.score.toFixed(3)}
+              </td>
+              <td className="lb-td">
+                <CategoryBreakdown breakdown={e.category_breakdown} compact />
               </td>
               <td className="lb-td lb-author">{e.user_display_name}</td>
-              <td className="lb-td lb-num lb-score">{fmt(e.avg_score, 2)}</td>
-              <td className="lb-td lb-num">{fmt(e.best_score, 2)}</td>
-              <td className="lb-td lb-num">
-                {e.avg_length != null ? fmt(e.avg_length, 1) : "—"}
-              </td>
-              <td className="lb-td lb-num">{fmt(e.avg_rank, 2)}</td>
-              <td className="lb-td lb-num">{e.matches_played}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <p className="lb-footnote">
-        Score = length × (1 + β·length/steps) × (1 + α·(1 − (rank−1)/(n−1))) × (budget/avg_step_ms)^w.
-        Click a row to view this agent's match replays.
+        Score is 0..1 (higher = better). Each category chip shows the fraction
+        of the population the agent beats in that category, with ties as
+        half-wins; the chip's bar fills proportionally. Multi modes rank
+        within each match (population = participants of that match); solo
+        modes rank across agents (population = every agent's mean per
+        category). The score is the mean of those per-category
+        scores. Click a row to view this agent's stats and match replays.
       </p>
     </>
+  );
+}
+
+// Per-category chips. Each chip's bar fills 0..1 by `rank` (the fraction of
+// the population this agent beats in that category — ties counted as half).
+// The number on the chip is that same fraction; the tooltip carries the raw
+// mean for context. The aggregate leaderboard score is the mean of these
+// per-category fractions, so the strip explains the score directly.
+function CategoryBreakdown({
+  breakdown,
+  compact = false,
+}: {
+  breakdown: Record<string, unknown>;
+  compact?: boolean;
+}) {
+  const entries = Object.entries(breakdown ?? {});
+  if (entries.length === 0) return <span className="muted">—</span>;
+  const fontSize = compact ? 10 : 11;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, fontSize }}>
+      {entries.map(([name, value]) => {
+        const v = value as { raw?: number; rank?: number };
+        const frac = v.rank;
+        const fillPct = frac !== undefined ? Math.round(frac * 100) : null;
+        return (
+          <span
+            key={name}
+            style={{
+              position: "relative",
+              padding: "1px 6px",
+              borderRadius: 3,
+              border: "1px solid var(--text-faint)",
+              overflow: "hidden",
+              minWidth: 0,
+            }}
+            title={
+              v.rank !== undefined
+                ? `${name}: beats ${(v.rank * 100).toFixed(1)}% of the population · mean raw ${v.raw?.toFixed(3)}`
+                : `${name}: mean ${v.raw?.toFixed(3)}`
+            }
+          >
+            {fillPct !== null && (
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: `${fillPct}%`,
+                  background: "var(--accent)",
+                  opacity: 0.15,
+                  pointerEvents: "none",
+                }}
+              />
+            )}
+            <span style={{ position: "relative", color: "var(--text-faint)" }}>
+              {name.replace(/_/g, " ")}:
+            </span>{" "}
+            <span style={{ position: "relative" }}>
+              {frac !== undefined ? frac.toFixed(2) : v.raw?.toFixed(3) ?? "—"}
+            </span>
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
 // ── Match modal ──────────────────────────────────────────────────────────────
 
 interface MatchModalProps {
-  project: { id: number; name: string; language: string; user_display_name: string };
+  project: SelectedProject;
+  stats: SelectedRowStats | null;
   matchList: RankedMatchSummary[] | null;
   matchListLoading: boolean;
   selectedMatch: RankedMatchSummary | null;
@@ -682,6 +790,7 @@ interface MatchModalProps {
 
 function MatchModal({
   project,
+  stats,
   matchList,
   matchListLoading,
   selectedMatch,
@@ -714,6 +823,8 @@ function MatchModal({
           <button className="btn ghost" onClick={onClose} style={{ padding: "2px 8px" }}>×</button>
         </div>
 
+        {stats && <RowStatsHeader stats={stats} />}
+
         <div className="lb-match-body">
           <div className="lb-match-list">
             {matchListLoading && <div className="lb-match-empty">Loading…</div>}
@@ -725,14 +836,12 @@ function MatchModal({
               const others = m.participants
                 .filter((p) => p.project_id !== project.id)
                 .map((p) => p.project_name);
-              const score = me?.metrics?.score as number | undefined;
               return (
                 <MatchListRow
                   key={m.id}
                   match={m}
                   me={me ?? null}
                   opponents={others}
-                  score={score}
                   modeLabel={modeName(m.mode_id)}
                   active={selectedMatch?.id === m.id}
                   onClick={() => onSelectMatch(m)}
@@ -768,17 +877,64 @@ function MatchModal({
   );
 }
 
+function RowStatsHeader({ stats }: { stats: SelectedRowStats }) {
+  return (
+    <div className="lb-stats-header">
+      <div className="lb-stats-row">
+        {stats.kind === "overall" && (
+          <>
+            <StatChip label="Overall" value={fmt(stats.overall_score, 3)} highlight />
+            <StatChip label="Matches" value={String(stats.total_matches)} />
+            <StatChip label="Modes" value={String(stats.modes_played)} />
+          </>
+        )}
+        {stats.kind === "group" && (
+          <>
+            <StatChip label="Score" value={fmt(stats.group_score, 3)} highlight />
+            <StatChip label="Matches" value={String(stats.matches_played)} />
+            <StatChip label="Modes" value={`${stats.modes_played}/${stats.mode_count}`} />
+          </>
+        )}
+        {stats.kind === "mode" && (
+          <>
+            <StatChip label="Score" value={fmt(stats.score, 3)} highlight />
+            <StatChip label="Matches" value={String(stats.matches_played)} />
+          </>
+        )}
+      </div>
+      {stats.kind === "mode" && Object.keys(stats.category_breakdown ?? {}).length > 0 && (
+        <div className="lb-stats-breakdown">
+          <CategoryBreakdown breakdown={stats.category_breakdown} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatChip({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div className="lb-stat-chip">
+      <span className="lb-stat-chip-label">{label}</span>
+      <span
+        className="lb-stat-chip-value"
+        style={highlight ? { color: "var(--accent)" } : undefined}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
 interface MatchListRowProps {
   match: RankedMatchSummary;
   me: RankedMatchParticipant | null;
   opponents: string[];
-  score: number | undefined;
   modeLabel: string;
   active: boolean;
   onClick: () => void;
 }
 
-function MatchListRow({ match, me, opponents, score, modeLabel, active, onClick }: MatchListRowProps) {
+function MatchListRow({ match, me, opponents, modeLabel, active, onClick }: MatchListRowProps) {
   const total = match.participants.length;
   const oStr  = opponents.length > 0
     ? `vs ${opponents.slice(0, 2).join(", ")}${opponents.length > 2 ? ` +${opponents.length - 2}` : ""}`
@@ -788,13 +944,13 @@ function MatchListRow({ match, me, opponents, score, modeLabel, active, onClick 
       <div className="lb-match-item-top">
         <span className="lb-match-date">{formatDate(match.started_at)}</span>
         <SurvivalBadge rank={me?.survival_rank ?? null} total={total} />
-        {score !== undefined && (
-          <span className="lb-match-score">{score.toFixed(1)}</span>
-        )}
       </div>
       <div className="lb-match-opponents">
         <span className="lb-match-mode">{modeLabel}</span>
         {oStr && <span style={{ marginLeft: 6 }}>· {oStr}</span>}
+        <span className="lb-match-id" style={{ marginLeft: 6, color: "var(--text-faint)" }}>
+          · #{match.id}
+        </span>
       </div>
     </div>
   );

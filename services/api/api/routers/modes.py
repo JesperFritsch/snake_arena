@@ -37,7 +37,7 @@ def list_all_modes(
             participant_count=m.participant_count,
             sim_args=m.sim_args,
             map_slug=m.map_slug,
-            budget_ms=m.budget_ms,
+            avg_budget_ms=m.avg_budget_ms,
             target_matches_per_version=m.target_matches_per_version,
             enabled=m.enabled,
         )

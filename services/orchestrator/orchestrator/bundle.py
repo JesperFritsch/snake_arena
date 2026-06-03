@@ -56,8 +56,9 @@ class BundleContents:
     seat_by_snake_id: dict[int, int]              # sim snake_id -> runner seat; empty if notify_start never fired
 
     @property
-    def budget_ms(self) -> float:
-        """Per-step CPU budget in ms, derived from budgets['per_step_cpu_seconds']."""
+    def per_step_budget_ms(self) -> float:
+        """Per-step CPU peak in ms (what the runner's cgroup observer actually
+        enforced this match), derived from budgets['per_step_cpu_seconds']."""
         return float(self.budgets["per_step_cpu_seconds"]) * 1000
 
 
