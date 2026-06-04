@@ -153,6 +153,12 @@ def get_project_meta(conn: Connection, project_id: int) -> ProjectMeta | None:
         return cur.fetchone()
 
 
+def count_projects_for_user(conn: Connection, user_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM projects WHERE user_id = %s", (user_id,))
+        return cur.fetchone()[0]
+
+
 def list_projects_for_user(conn: Connection, user_id: int) -> list[ProjectMeta]:
     """List a user's projects (no code archives), most recently updated first."""
     with conn.cursor(row_factory=class_row(ProjectMeta)) as cur:

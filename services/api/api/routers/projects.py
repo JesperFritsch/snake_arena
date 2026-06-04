@@ -32,6 +32,7 @@ from psycopg import Connection
 from sa_common.db.projects import (
     Project,
     ProjectMeta,
+    count_projects_for_user,
     create_project,
     delete_project,
     get_project,
@@ -160,6 +161,10 @@ def create(
     user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> ProjectMeta:
+    MAX_PROJECTS = 5
+    if count_projects_for_user(conn, user.id) >= MAX_PROJECTS:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"project limit reached ({MAX_PROJECTS} max)")
+
     if body.source == "external_image" and body.files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "external_image projects must not include files")
 
