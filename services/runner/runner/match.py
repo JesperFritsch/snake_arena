@@ -488,7 +488,7 @@ def run_match(
                     hostname=agent.name,
                     detach=True,
                     remove=False,
-                    # runtime="runsc",
+                    runtime="runsc",
                     read_only=True,
                     tmpfs={"/tmp": "size=64m"},
                     mem_limit=agent_mem_limit,
