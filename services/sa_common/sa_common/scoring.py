@@ -72,7 +72,6 @@ CANONICAL_MULTI_CATEGORIES: list[Category] = [
 
 CANONICAL_SOLO_CATEGORIES: list[Category] = [
     Category("final_length", "higher"),
-    Category("steps_alive",  "higher"),
 ]
 
 

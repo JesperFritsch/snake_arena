@@ -65,45 +65,37 @@ carry. The schema is forward-compatible (`map_slug` exists from day one).
 
 ## Scoring
 
-One parametric formula covers all modes:
-
 ```
-score = length
-      × (1 + β × length / max(steps_alive, 1))        [eating-rate bonus]
-      × (1 + α × (1 − (rank − 1) / (n − 1)))          [survival bonus]
-      × (budget_ms / max(avg_step_ms, floor_ms)) ^ w  [speed bonus]
+final_score = quality × cpu_factor
+
+quality     = mean( fraction_of_leader(category) ) across canonical categories
+cpu_factor  = 1 − CPU_PENALTY × min(avg_cpu_ms / avg_budget_ms, 1)
 ```
 
-Where:
+`CPU_PENALTY = 0.40` — an agent averaging at the sustained budget ceiling keeps
+60 % of its quality score; a near-zero-CPU agent keeps ~100 %.
 
-- **length** — final snake body length. Raw base — you only grow by eating food.
-- **steps_alive** — number of steps the snake stayed alive. `length / steps_alive`
-  is the food-eating rate; rewards efficient eating over slow grinding.
-- **rank** — survival rank within the match (1 = last alive, n = first to die).
-- **avg_step_ms** — mean CPU time per step for this seat across the match.
-- **budget_ms** — the per-step budget for this mode.
+### Quality categories
 
-Per-mode tuning lives in `scoring_config`:
+`fraction_of_leader` for a "higher is better" category is `value / max_value`;
+for "lower is better" it is `min_value / value`. The leader in each category
+always gets 1.0; a 40× gap maps to a 40× score gap (unlike rank-based scoring).
 
-```json
-{ "alpha": 0.5, "beta": 2.0, "w": 0.3, "floor_ms": 2.0 }
-```
+| Mode  | Categories |
+|-------|------------|
+| multi | `survival_rank` (lower), `trapping_count` (higher), `final_length` (higher) |
+| solo  | `final_length` (higher) |
 
-| param | meaning | typical |
-|---|---|---|
-| `alpha` | survival weight (multi only); 0 in solo modes | 0.5 |
-| `beta`  | eating-rate weight | 1.0 – 3.0 |
-| `w`     | speed-bonus exponent | 0.3 |
-| `floor_ms` | clamp on avg_step_ms; prevents trivial agents gaming the speed bonus | 2.0 |
+Solo uses only `final_length` — survival time (`steps_alive`) is intentionally
+excluded because it can be gamed (an agent that learns the starvation cutoff can
+stall just under it, maximising steps without meaningful play).
 
-Solo modes set `alpha = 0`, which collapses the survival factor to 1.
+### CPU factor
 
-### Anti-camping guarantee
-
-The formula penalises camping (no growth → low `length`, low rate). It also
-penalises grinding to outlast opponents without eating (high `steps_alive`,
-small `length` → low rate). Outlasting opponents *while eating* is the
-strictly-dominant strategy.
+`avg_budget_ms` is the sustained-CPU refill rate for the mode (the cgroup
+observer's reference). The per-step peak cap is `avg_budget_ms ×
+PER_STEP_BUDGET_MULTIPLIER` (5×). CPU is a bounded modifier: a fast but
+poor-playing agent still loses on quality.
 
 ### Test matches and scoring
 

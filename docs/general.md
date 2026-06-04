@@ -14,3 +14,15 @@ docker compose up --scale runner=4 --scale builder=2
 
 # build frontend
 cd frontend && VITE_API_BASE_URL=https://gridsnake.com/api npm run build && cd ..
+
+
+# prod
+docker-compose up -d
+
+# dev — api in docker
+docker-compose up -d postgres redis api test-runner && cd frontend && npm run dev
+
+# dev — api on host (with reload)
+docker-compose up -d postgres redis test-runner && API_RELOAD=1 uv run --env-file .env api
+# then in a second terminal:
+cd frontend && npm run dev

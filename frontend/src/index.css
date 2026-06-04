@@ -1708,3 +1708,31 @@ button {
   font-weight: 600;
   background: var(--bg-panel);
 }
+
+/* ---- guide dialog table -------------------------------------------------- */
+
+.guide-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 8px 0;
+}
+
+.guide-table th,
+.guide-table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+
+.guide-table th {
+  color: var(--text-faint);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.guide-table td:first-child {
+  white-space: nowrap;
+}
