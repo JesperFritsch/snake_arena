@@ -80,10 +80,16 @@ export interface TestMatchJob {
   match_number: number | null;  // project-relative sequence number (1 = oldest)
 }
 
+export interface MapInfo {
+  name: string;
+  height: number;
+  width: number;
+}
+
 export interface TestMatchCreate {
   player_project_id: number;
   opponent_project_ids: number[];
-  sim_args: { food: number; grid_width?: number; grid_height?: number };
+  sim_args: { food: number; grid_width?: number; grid_height?: number; map?: string };
 }
 
 export interface PublicProjectSummary {

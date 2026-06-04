@@ -257,11 +257,15 @@ export function EditorPage() {
 
   const runTestMatch = useCallback(async (settings: TestSettings) => {
     if (!meta) return;
-    const w = parseInt(settings.gridWidth);
-    const h = parseInt(settings.gridHeight);
-    const hasGrid = settings.gridWidth !== "" && settings.gridHeight !== "" && !isNaN(w) && !isNaN(h);
-    const sim_args: { food: number; grid_width?: number; grid_height?: number } = { food: settings.food };
-    if (hasGrid) { sim_args.grid_width = w; sim_args.grid_height = h; }
+    const sim_args: { food: number; grid_width?: number; grid_height?: number; map?: string } = { food: settings.food };
+    if (settings.arenaMode === "map" && settings.map) {
+      sim_args.map = settings.map;
+    } else {
+      const w = parseInt(settings.gridWidth);
+      const h = parseInt(settings.gridHeight);
+      sim_args.grid_width = w;
+      sim_args.grid_height = h;
+    }
     try {
       const job = await api.enqueueTestMatch({
         player_project_id: meta.id,

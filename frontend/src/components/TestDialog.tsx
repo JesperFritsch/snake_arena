@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useApi, ApiError } from "../api/client";
-import type { LanguageInfo, ProjectMeta, PublicProjectSummary, QuotaStatus } from "../api/types";
+import { useApi, ApiError, BASE_URL } from "../api/client";
+import type { LanguageInfo, MapInfo, ProjectMeta, PublicProjectSummary, QuotaStatus } from "../api/types";
 import { fmtLang } from "../lib/editor";
 import { QuotaIndicator } from "./QuotaIndicator";
 import { useToast } from "./Toast";
@@ -11,8 +11,10 @@ const MAX_GRID = 20;
 
 export interface TestSettings {
   food: number;
+  arenaMode: "custom" | "map";
   gridWidth: string;
   gridHeight: string;
+  map: string | null;
   opponentIds: number[];
 }
 
@@ -27,14 +29,19 @@ export function saveTestSettings(pid: number, s: TestSettings): void {
   localStorage.setItem(LS_KEY(pid), JSON.stringify(s));
 }
 
-const DEFAULT_SETTINGS: TestSettings = { food: 3, gridWidth: "", gridHeight: "", opponentIds: [] };
+const DEFAULT_SETTINGS: TestSettings = {
+  food: 3,
+  arenaMode: "custom",
+  gridWidth: "",
+  gridHeight: "",
+  map: null,
+  opponentIds: [],
+};
 
 interface Props {
   project: ProjectMeta;
   initialSettings: TestSettings | null;
   languages: LanguageInfo[];
-  /** Hourly test-match quota for the current user. Owned by EditorPage so the
-   * toolbar badge and the dialog stay in sync. */
   quota: QuotaStatus | null;
   onClose: () => void;
   onRun: (settings: TestSettings) => Promise<void>;
@@ -46,19 +53,27 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
 
   const init = initialSettings ?? DEFAULT_SETTINGS;
 
-  const [opponents, setOpponents]   = useState<PublicProjectSummary[]>([]);
-  const [selected, setSelected]     = useState<Set<number>>(new Set(init.opponentIds));
-  const [food, setFood]             = useState(init.food);
-  const [gridWidth, setGridWidth]   = useState(init.gridWidth);
-  const [gridHeight, setGridHeight] = useState(init.gridHeight);
-  const [loading, setLoading]       = useState(true);
-  const [busy, setBusy]             = useState(false);
+  const [opponents, setOpponents]     = useState<PublicProjectSummary[]>([]);
+  const [maps, setMaps]               = useState<MapInfo[]>([]);
+  const [selected, setSelected]       = useState<Set<number>>(new Set(init.opponentIds));
+  const [food, setFood]               = useState(init.food);
+  const [arenaMode, setArenaMode]     = useState<"custom" | "map">(init.arenaMode ?? "custom");
+  const [gridWidth, setGridWidth]     = useState(init.gridWidth);
+  const [gridHeight, setGridHeight]   = useState(init.gridHeight);
+  const [selectedMap, setSelectedMap] = useState<string | null>(init.map ?? null);
+  const [loading, setLoading]         = useState(true);
+  const [busy, setBusy]               = useState(false);
 
   useEffect(() => {
-    api
-      .listOpponents()
-      .then(setOpponents)
-      .catch((e) => push(`Could not load opponents: ${e instanceof ApiError ? e.detail : e}`, "error"))
+    Promise.all([
+      api.listOpponents(),
+      api.listMaps(),
+    ])
+      .then(([opps, mapList]) => {
+        setOpponents(opps);
+        setMaps(mapList);
+      })
+      .catch((e) => push(`Could not load data: ${e instanceof ApiError ? e.detail : e}`, "error"))
       .finally(() => setLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -73,22 +88,32 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
   };
 
   const run = async () => {
-    const w = parseInt(gridWidth);
-    const h = parseInt(gridHeight);
-    const hasW = gridWidth !== "" && !isNaN(w);
-    const hasH = gridHeight !== "" && !isNaN(h);
-    if (hasW !== hasH) {
-      push("Provide both grid width and height, or leave both empty.", "error");
-      return;
+    if (arenaMode === "custom") {
+      const w = parseInt(gridWidth);
+      const h = parseInt(gridHeight);
+      const hasW = gridWidth !== "" && !isNaN(w);
+      const hasH = gridHeight !== "" && !isNaN(h);
+      if (!hasW || !hasH) {
+        push("Enter both grid width and height (5–20).", "error");
+        return;
+      }
+      if (w < MIN_GRID || h < MIN_GRID || w > MAX_GRID || h > MAX_GRID) {
+        push(`Grid must be between ${MIN_GRID}×${MIN_GRID} and ${MAX_GRID}×${MAX_GRID}.`, "error");
+        return;
+      }
+    } else {
+      if (!selectedMap) {
+        push("Select a map.", "error");
+        return;
+      }
     }
-    if (hasW && hasH && (w < MIN_GRID || h < MIN_GRID || w > MAX_GRID || h > MAX_GRID)) {
-      push(`Grid must be between ${MIN_GRID}×${MIN_GRID} and ${MAX_GRID}×${MAX_GRID}.`, "error");
-      return;
-    }
+
     const settings: TestSettings = {
       food,
+      arenaMode,
       gridWidth,
       gridHeight,
+      map: arenaMode === "map" ? selectedMap : null,
       opponentIds: [...selected],
     };
     setBusy(true);
@@ -96,7 +121,7 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
       await onRun(settings);
       onClose();
     } catch {
-      // error already toasted by onRun; EditorPage refreshes the quota for us
+      // error already toasted by onRun
     } finally {
       setBusy(false);
     }
@@ -166,33 +191,76 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
               onChange={(e) => setFood(Math.max(1, parseInt(e.target.value) || 1))}
             />
           </div>
-          <div className="form-row">
-            <label>Grid</label>
-            <input
-              className="input"
-              type="number"
-              placeholder="width"
-              value={gridWidth}
-              min={MIN_GRID}
-              max={MAX_GRID}
-              style={{ width: 80 }}
-              onChange={(e) => setGridWidth(e.target.value)}
-            />
-            <span className="muted">×</span>
-            <input
-              className="input"
-              type="number"
-              placeholder="height"
-              value={gridHeight}
-              min={MIN_GRID}
-              max={MAX_GRID}
-              style={{ width: 80 }}
-              onChange={(e) => setGridHeight(e.target.value)}
-            />
-            <span className="muted" style={{ fontSize: 11 }}>
-              {MIN_GRID}–{MAX_GRID}; empty for sim default
-            </span>
+
+          <div className="form-row" style={{ marginTop: 10 }}>
+            <div className="seg-ctrl">
+              <button
+                className={`seg-btn${arenaMode === "custom" ? " active" : ""}`}
+                onClick={() => setArenaMode("custom")}
+              >
+                Custom size
+              </button>
+              <button
+                className={`seg-btn${arenaMode === "map" ? " active" : ""}`}
+                onClick={() => setArenaMode("map")}
+              >
+                Map
+              </button>
+            </div>
           </div>
+
+          {arenaMode === "custom" && (
+            <div className="form-row" style={{ marginTop: 8 }}>
+              <label>Grid</label>
+              <input
+                className="input"
+                type="number"
+                placeholder="width"
+                value={gridWidth}
+                min={MIN_GRID}
+                max={MAX_GRID}
+                style={{ width: 80 }}
+                onChange={(e) => setGridWidth(e.target.value)}
+              />
+              <span className="muted">×</span>
+              <input
+                className="input"
+                type="number"
+                placeholder="height"
+                value={gridHeight}
+                min={MIN_GRID}
+                max={MAX_GRID}
+                style={{ width: 80 }}
+                onChange={(e) => setGridHeight(e.target.value)}
+              />
+              <span className="muted" style={{ fontSize: 11 }}>{MIN_GRID}–{MAX_GRID}</span>
+            </div>
+          )}
+
+          {arenaMode === "map" && (
+            <div className="map-picker" style={{ marginTop: 8 }}>
+              {loading ? (
+                <span className="muted">loading…</span>
+              ) : maps.length === 0 ? (
+                <span className="muted">No maps available.</span>
+              ) : (
+                maps.map((m) => (
+                  <button
+                    key={m.name}
+                    className={`map-thumb${selectedMap === m.name ? " selected" : ""}`}
+                    onClick={() => setSelectedMap(m.name)}
+                    title={`${m.name} (${m.width}×${m.height})`}
+                  >
+                    <img
+                      src={`${BASE_URL}/maps/${encodeURIComponent(m.name)}/image`}
+                      alt={m.name}
+                      style={{ imageRendering: "pixelated", display: "block", width: "100%", height: "100%", objectFit: "contain" }}
+                    />
+                  </button>
+                ))
+              )}
+            </div>
+          )}
         </div>
 
         <div className="modal-foot">

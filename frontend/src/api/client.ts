@@ -4,6 +4,7 @@ import type {
   GroupLeaderboardEntry,
   LanguageInfo,
   LeaderboardEntry,
+  MapInfo,
   Mode,
   ModeGroup,
   OverallLeaderboardEntry,
@@ -137,6 +138,7 @@ export interface ApiClient {
   getTestMatchQuota(): Promise<QuotaStatus>;
   getSubmitQuota(): Promise<SubmitQuotaStatus>;
   getUploadImageQuota(): Promise<QuotaStatus>;
+  listMaps(): Promise<MapInfo[]>;
 }
 
 async function downloadBlob(getToken: TokenGetter, path: string, filename: string): Promise<void> {
@@ -221,6 +223,7 @@ export function useApi(): ApiClient {
       getTestMatchQuota: () => request(g, "GET", "/test-matches/quota"),
       getSubmitQuota: () => request(g, "GET", "/projects/submit-quota"),
       getUploadImageQuota: () => request(g, "GET", "/projects/upload-image-quota"),
+      listMaps: () => request(g, "GET", "/maps"),
     };
   }, [getToken]);
 }
