@@ -2,7 +2,7 @@
 
 **Effective date:** <EFFECTIVE_DATE>
 
-This Acceptable Use Policy ("AUP") sets out what you may not do when using snake_arena (the "Service"). It is incorporated into the Terms of Service by reference. Violating this AUP is a breach of the Terms and may result in immediate suspension or termination of your account, removal of your Submissions, and — where appropriate — reporting to law-enforcement or other authorities.
+This Acceptable Use Policy ("AUP") sets out what you may not do when using gridsnake (the "Service"). It is incorporated into the Terms of Service by reference. Violating this AUP is a breach of the Terms and may result in immediate termination of your account, removal of your Submissions, and — where appropriate — reporting to law-enforcement or other authorities.
 
 The Service exists to run snake-playing agents in a sandbox. Anything you submit must be in furtherance of that purpose. If you are unsure whether something is allowed, ask us at **jesperf96@gmail.com** before submitting.
 
@@ -54,7 +54,7 @@ We may, at our sole discretion and without prior notice:
 - inspect Submissions and match traffic for compliance with this AUP;
 - refuse to build or run any Submission;
 - delete Submissions, replays, or other data;
-- suspend or terminate accounts;
+- terminate accounts;
 - block IP addresses or other identifiers;
 - preserve and disclose data to the extent required by law or reasonably necessary to investigate violations, protect the Service, or protect other users.
 

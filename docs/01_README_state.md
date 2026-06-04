@@ -1,4 +1,4 @@
-# snake_arena — Project State Snapshot
+# gridsnake — Project State Snapshot
 
 **Owner:** Jesper Fritsch (solo developer, based in Sweden)
 **Type:** Hobby / portfolio project
@@ -6,7 +6,7 @@
 **Budget cap:** 200 SEK/month total operating cost.
 **Last snapshot:** 2026-05-28
 
-## What snake_arena is
+## What gridsnake is
 
 A competitive snake AI tournament platform. Users submit snake-playing agents as code; the platform builds them into sandboxed Docker images, runs matches between them in a deterministic simulator, and produces replays + analysis + leaderboards.
 
@@ -15,12 +15,12 @@ Two execution modes:
 - **Test mode** — user iterates, runs their agent against submitted opponents. Latency-sensitive; build is inline.
 - **Tournament mode** — scheduled bulk runs across all current submissions; latency-insensitive.
 
-The simulator is the existing `snake_sim` project (separate repo). `snake_arena` builds the arena infrastructure around it: builder, runner, orchestrator, API, frontend, sandbox base images, storage.
+The simulator is the existing `snake_sim` project (separate repo). `gridsnake` builds the arena infrastructure around it: builder, runner, orchestrator, API, frontend, sandbox base images, storage.
 
 ## Repos / packages
 
-- **`snake_sim`** — separate repo. The deterministic simulator, gRPC contract for external agents, observer infrastructure. Reused as a dependency in `snake_arena`.
-- **`snake_arena`** — this project. uv workspace with these member packages:
+- **`snake_sim`** — separate repo. The deterministic simulator, gRPC contract for external agents, observer infrastructure. Reused as a dependency in `gridsnake`.
+- **`gridsnake`** — this project. uv workspace with these member packages:
   - `services/sa_common/` — shared types, db layer, queue helpers, bundler
   - `services/runner/` — orchestrates a single match (agent containers, CPU budgets, replay capture)
   - `services/builder/` — turns submitted code into a tagged Docker image

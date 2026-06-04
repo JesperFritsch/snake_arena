@@ -256,8 +256,10 @@ async def _enforce(key: str, limit: int) -> None:
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
-# Endpoints that bypass the general limiter (uptime checks, WS upgrades).
-_GENERAL_LIMIT_EXEMPT_PATHS = {"/health"}
+# Endpoints that bypass the general limiter (uptime checks, signed webhooks).
+# /webhooks/clerk is Svix-signed, so the signature gates abuse — letting
+# Clerk batch-retry a backlog past 30 req/min is fine.
+_GENERAL_LIMIT_EXEMPT_PATHS = {"/health", "/webhooks/clerk"}
 
 
 def _resolve_principal(request: Request) -> tuple[str, bool]:

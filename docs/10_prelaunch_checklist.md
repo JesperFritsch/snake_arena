@@ -1,6 +1,6 @@
 # Pre-Launch Checklist
 
-A practical checklist of what needs to happen before snake_arena goes public. Grouped by category, ordered roughly by what blocks launch vs. what can ship after.
+A practical checklist of what needs to happen before gridsnake goes public. Grouped by category, ordered roughly by what blocks launch vs. what can ship after.
 
 The known-unbuilt items from `01_README_state.md` are reclassified here as either launch-blocker or post-launch.
 
@@ -26,9 +26,8 @@ Publishing the documents in `docs/legal/` commits us to actually doing the thing
 
 **Account lifecycle**
 
-- **Manual account-deletion procedure** — documented internal runbook: delete the `users` row, owned `projects`, submitted code archives, dev/submitted Docker images, and any in-flight `*_jobs`. Promised 30-day SLA.
-- **Match-participant anonymisation** — schema/code change so deleting a user replaces their `user_id` in `match_participants` with NULL or a sentinel (and clears any display name embedded in match metadata) without dropping the participant row. Required by the privacy policy's "replays continue to exist but will no longer be linked to your account identifiers" clause.
-- **Project / submission deletion procedure** — same idea, scoped to a single project rather than the whole account. Useful for AUP enforcement.
+- **Account-deletion path** — self-service via Clerk's UserProfile delete button → Clerk fires `user.deleted` → `POST /webhooks/clerk` runs `delete_user_by_clerk_id` (cascade through `projects` / `match_participants`, drop matches left with zero participants, delete bundle objects, `docker image rm` the user's `dev_image_tag` / `submitted_image_tag`). Operator can trigger the same cleanup manually by running the SQL function with a `clerk_user_id`. Promised 30-day SLA.
+- **Project / submission deletion procedure** — same idea, scoped to a single project rather than the whole account. Useful for AUP enforcement. Surviving opponents' underplay counts re-balance automatically via the scheduler.
 - **GDPR-request inbox SLA** — process for responding to access / rectification / erasure / portability requests within 30 days. Include a light identity-verification step (e.g. respond from the registered account email) before acting.
 
 **Retention enforcement**
@@ -57,7 +56,6 @@ Publishing the documents in `docs/legal/` commits us to actually doing the thing
 
 **Abuse-handling mechanisms (from the AUP)**
 
-- **`suspended` flag (or equivalent) on `users` and `projects`** — so submissions can be refused-to-build / refused-to-run without deleting data. Without this, "we may refuse to build or run any Submission" is only achievable by destructive SQL.
 - **Cloudflare IP-block runbook** — short doc on how to add a WAF rule, since the AUP reserves the right to block IP addresses.
 - **Law-enforcement / preservation request procedure** — even a one-paragraph "what I do if I get a Swedish police request" note. Unlikely at this scale, but the AUP promises we can do it.
 - **`/.well-known/security.txt`** — supports the good-faith vulnerability reporting clause in the AUP. Contains the contact email and a link to the AUP's safe-harbor language.
@@ -105,7 +103,7 @@ Items from `01_README_state.md` that can ship after, with the leaderboard marked
 ## Suggested launch order
 
 1. Legal documents (ToS + Privacy + AUP) — drafts exist in `docs/legal/`.
-2. Follow-through commitments from §2 that are launch-blockers: account-deletion runbook, match-participant anonymisation, log + backup retention, sub-processor DPAs, `suspended` flags, gVisor on prod, TLS enforcement, third-party-cookie audit, incident-response one-pager, `/.well-known/security.txt`.
+2. Follow-through commitments from §2 that are launch-blockers: account-deletion runbook, log + backup retention, sub-processor DPAs, gVisor on prod, TLS enforcement, third-party-cookie audit, incident-response one-pager, `/.well-known/security.txt`.
 3. Operational hardening from §3: rate limiting + stale-job reaper + R2 + backup restore test.
 4. Operational gaps from §4: Sentry + UptimeRobot + cost alarms.
 5. Feedback form + GitHub Discussions repo.

@@ -96,9 +96,9 @@ The final per-submission image only adds:
 
 This makes builds fast and keeps the security surface small.
 
-## Sim (snake_sim, used by snake_arena)
+## Sim (snake_sim, used by gridsnake)
 
-`snake_sim` is its own repo. `snake_arena` consumes it as a dependency. The sim:
+`snake_sim` is its own repo. `gridsnake` consumes it as a dependency. The sim:
 
 - Loads a map, spawns N snakes.
 - Each step, calls `Update(state) → decision` on every external snake (over gRPC) and every in-process snake.

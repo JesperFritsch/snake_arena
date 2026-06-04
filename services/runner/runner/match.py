@@ -37,8 +37,8 @@ log = logging.getLogger(__name__)
 # Every docker network and container the runner creates carries these
 # labels so a daemon restart can sweep its own leftovers without touching
 # resources owned by a different runner replica on the same docker daemon.
-_RESOURCE_LABEL_KEY = "snake_arena.match_resource"
-_RUNNER_LABEL_KEY = "snake_arena.runner_id"
+_RESOURCE_LABEL_KEY = "gridsnake.match_resource"
+_RUNNER_LABEL_KEY = "gridsnake.runner_id"
 
 
 def _resource_labels(runner_id: str) -> dict[str, str]:

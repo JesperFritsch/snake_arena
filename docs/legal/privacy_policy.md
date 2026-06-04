@@ -2,7 +2,7 @@
 
 **Effective date:** <EFFECTIVE_DATE>
 
-This Privacy Policy describes how snake_arena (the "Service") processes personal data. The data controller for the Service is **Jesper Fritsch, <CITY>, Sweden** ("we", "us"). You can reach us at **jesperf96@gmail.com**.
+This Privacy Policy describes how gridsnake (the "Service") processes personal data. The data controller for the Service is **Jesper Fritsch, <CITY>, Sweden** ("we", "us"). You can reach us at **jesperf96@gmail.com**.
 
 The Service is intended for users aged 16 and over. We do not knowingly process personal data of anyone under 16.
 
@@ -40,7 +40,7 @@ We will update this list when the set of sub-processors changes.
 | --- | --- |
 | Account data | While your account exists. Deleted within 30 days after you close the account, except where we are required to retain it longer for legal reasons. |
 | Submitted code (current versions) | While your account exists. Deleted with your account. |
-| Match replays and statistics | Retained indefinitely as historical match records. After account deletion, replays in which you participated may continue to exist but will no longer be linked to your account identifiers. |
+| Match replays and statistics | Retained while your account exists. Deleted with your account, including matches in which you participated. |
 | Technical logs | Up to 30 days, except entries retained longer for security-incident investigation. |
 | Database backups | Up to 30 days. |
 | Support and feedback messages | Up to 24 months from last contact. |
@@ -59,7 +59,7 @@ You have the right to:
 
 To exercise any of these rights, email **jesperf96@gmail.com**. We will respond within 30 days. We may need to verify your identity before acting on a request.
 
-Account and Submission deletion is currently handled by emailing us; there is no self-service delete button at launch.
+You can delete your account at any time from your account settings; this will erase your account, projects, submitted code, and matches in which you participated. You may also email **jesperf96@gmail.com** to request deletion or to exercise any of the other rights above.
 
 ## 6. Security
 

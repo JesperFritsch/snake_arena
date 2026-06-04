@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from api.db import close_pool, init_pool
 from api.rate_limit import apply_general_rate_limit
 from api.redis import close_redis, init_redis
-from api.routers import users, matches, modes, projects, test_matches, download, leaderboard
+from api.routers import users, matches, modes, projects, test_matches, download, leaderboard, webhooks
 from api.settings import load_settings, get_settings, Settings
 
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = load_settings()
-    app = FastAPI(title="Snake Arena API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Gridsnake API", version="0.1.0", lifespan=lifespan)
 
     if settings.cors_origins:
         app.add_middleware(
@@ -102,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(test_matches.router)
     app.include_router(download.router)
     app.include_router(leaderboard.router)
+    app.include_router(webhooks.router)
     return app
 
 

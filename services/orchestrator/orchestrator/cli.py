@@ -71,7 +71,7 @@ def _env_or(cli_value, env_name: str, cast=str):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="snake_arena orchestrator")
+    parser = argparse.ArgumentParser(description="gridsnake orchestrator")
     parser.add_argument("--log-level", default=None)
 
     subparsers = parser.add_subparsers(dest="command", required=True)

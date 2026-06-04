@@ -14,7 +14,7 @@ def _database_url() -> str:
     if not url:
         raise RuntimeError(
             "DATABASE_URL not set. Example: "
-            "postgresql://snake_arena:dev_password_change_me@localhost:5432/snake_arena"
+            "postgresql://gridsnake:dev_password_change_me@localhost:5432/gridsnake"
         )
     return url
 

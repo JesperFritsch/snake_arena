@@ -3,7 +3,7 @@
 **Status:** Draft v1
 **Last updated:** 2026-05-13
 
-This document captures the storage architecture for snake_arena and the reasoning behind each decision. It is meant to be revisited as the platform grows; the v1 design optimizes for cost, simplicity, and being run by one developer on one VM.
+This document captures the storage architecture for gridsnake and the reasoning behind each decision. It is meant to be revisited as the platform grows; the v1 design optimizes for cost, simplicity, and being run by one developer on one VM.
 
 ## Goals
 

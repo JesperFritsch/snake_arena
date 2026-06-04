@@ -2,11 +2,11 @@
 
 **Effective date:** <EFFECTIVE_DATE>
 
-These Terms of Service ("Terms") govern your use of snake_arena (the "Service"), operated by Jesper Fritsch, <CITY>, Sweden ("we", "us", "operator"). By creating an account or otherwise using the Service, you agree to these Terms. If you do not agree, do not use the Service.
+These Terms of Service ("Terms") govern your use of gridsnake (the "Service"), operated by Jesper Fritsch, <CITY>, Sweden ("we", "us", "operator"). By creating an account or otherwise using the Service, you agree to these Terms. If you do not agree, do not use the Service.
 
 ## 1. The Service
 
-snake_arena is a platform on which users submit code-based agents that play a deterministic snake game in a sandboxed environment. The Service builds submitted code into container images, runs matches between agents, and produces replays and statistics.
+gridsnake is a platform on which users submit code-based agents that play a deterministic snake game in a sandboxed environment. The Service builds submitted code into container images, runs matches between agents, and produces replays and statistics.
 
 The Service is provided as a hobby and portfolio project. It has no service-level agreement and may be modified, suspended, or discontinued at any time.
 
@@ -18,13 +18,13 @@ You must be at least 16 years old to create an account or use the Service. By us
 
 You sign in through our identity provider (currently Clerk). You are responsible for all activity that occurs under your account. Notify us immediately at jesperf96@gmail.com if you believe your account has been compromised.
 
-You may close your account at any time by contacting us. We may suspend or terminate your account, with or without notice, if you breach these Terms or the Acceptable Use Policy, or if we reasonably believe your use of the Service threatens its integrity, other users, or third parties.
+You may close your account at any time by contacting us. We may terminate your account, with or without notice, if you breach these Terms or the Acceptable Use Policy, or if we reasonably believe your use of the Service threatens its integrity, other users, or third parties.
 
 ## 4. Your submissions
 
 "Submissions" means any code, files, configuration, or other material you upload to the Service.
 
-You retain all ownership rights in your Submissions. You grant us a worldwide, non-exclusive, royalty-free license to host, store, copy, build into container images, execute, display in match replays, and otherwise process your Submissions for the purpose of operating and improving the Service. This license ends when you delete the relevant Submission, except to the extent the Submission is embedded in match replays already produced (which we may retain for historical and statistical purposes).
+You retain all ownership rights in your Submissions. You grant us a worldwide, non-exclusive, royalty-free license to host, store, copy, build into container images, execute, display in match replays, and otherwise process your Submissions for the purpose of operating and improving the Service. This license ends when you delete the relevant Submission or close your account.
 
 You represent and warrant that:
 
@@ -36,7 +36,7 @@ We may inspect, analyse, refuse to build, refuse to run, remove, or delete any S
 
 ## 5. Acceptable use
 
-Your use of the Service must comply with the Acceptable Use Policy, which is incorporated into these Terms by reference. Violations may result in immediate account suspension or termination and, where appropriate, reporting to law-enforcement or other authorities.
+Your use of the Service must comply with the Acceptable Use Policy, which is incorporated into these Terms by reference. Violations may result in immediate account termination and, where appropriate, reporting to law-enforcement or other authorities.
 
 ## 6. Service availability and changes
 
@@ -46,7 +46,7 @@ We may also impose technical limits — including but not limited to limits on s
 
 ## 7. Third-party services
 
-The Service depends on third parties (currently including Clerk for authentication, Cloudflare for network ingress, Hetzner for compute hosting, and Cloudflare R2 for object storage). We are not responsible for the availability, performance, or actions of these third parties. Your use of those services through snake_arena is also subject to their respective terms.
+The Service depends on third parties (currently including Clerk for authentication, Cloudflare for network ingress, Hetzner for compute hosting, and Cloudflare R2 for object storage). We are not responsible for the availability, performance, or actions of these third parties. Your use of those services through gridsnake is also subject to their respective terms.
 
 ## 8. Intellectual property in the Service itself
 
@@ -74,9 +74,9 @@ You agree to indemnify and hold us harmless from any claim, demand, loss, or dam
 
 ## 12. Termination
 
-You may stop using the Service and close your account at any time. We may suspend or terminate your access at any time as described in Section 3.
+You may stop using the Service and close your account at any time. We may terminate your access at any time as described in Section 3.
 
-On termination, the licenses you granted in Section 4 survive only to the extent necessary to preserve match replays already produced. Sections 4 (last paragraph), 8, 9, 10, 11, 13, and 14 survive termination.
+On termination, the licenses you granted in Section 4 end. Sections 8, 9, 10, 11, 13, and 14 survive termination.
 
 ## 13. Governing law and disputes
 

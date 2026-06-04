@@ -154,13 +154,13 @@ CREATE TABLE match_jobs (
     id            BIGSERIAL PRIMARY KEY,
     status        job_status NOT NULL DEFAULT 'queued',
     mode_id       BIGINT NOT NULL REFERENCES modes(id) ON DELETE RESTRICT,
-    project_ids   BIGINT[] NOT NULL,                          -- who plays (by project, not submission)
+    project_ids   BIGINT[] NOT NULL,                          -- who plays (by project, not submission); not FK-enforced
     sim_args      JSONB NOT NULL,                             -- snapshot of mode.sim_args at enqueue time
-    requested_by  BIGINT REFERENCES users(id),
+    requested_by  BIGINT REFERENCES users(id) ON DELETE SET NULL,
     requested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     started_at    TIMESTAMPTZ,
     finished_at   TIMESTAMPTZ,
-    match_id      BIGINT REFERENCES matches(id),
+    match_id      BIGINT REFERENCES matches(id) ON DELETE SET NULL,
     error         TEXT
 );
 
@@ -171,13 +171,13 @@ CREATE TABLE test_match_jobs (
     id                   BIGSERIAL PRIMARY KEY,
     status               job_status NOT NULL DEFAULT 'queued',
     player_project_id    BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    opponent_project_ids BIGINT[] NOT NULL DEFAULT '{}',
+    opponent_project_ids BIGINT[] NOT NULL DEFAULT '{}',     -- not FK-enforced
     sim_args             JSONB NOT NULL,
-    requested_by         BIGINT REFERENCES users(id),
+    requested_by         BIGINT REFERENCES users(id) ON DELETE SET NULL,
     requested_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     started_at           TIMESTAMPTZ,
     finished_at          TIMESTAMPTZ,
-    match_id             BIGINT REFERENCES matches(id),
+    match_id             BIGINT REFERENCES matches(id) ON DELETE SET NULL,
     error                TEXT,
     bundle_key           TEXT,                                  -- bundler storage key, e.g. test-matches/{id}/bundle.zip
     pinned               BOOLEAN NOT NULL DEFAULT FALSE          -- kept regardless of retention pruning

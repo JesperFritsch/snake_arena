@@ -1,4 +1,4 @@
-# Custom Instructions for snake_arena chats
+# Custom Instructions for gridsnake chats
 
 Paste the section under "For the Project's Custom Instructions" into the project's custom instructions field (Settings → this project → "What should Claude know about your preferences for this project?"). The rest of the file is context for Claude reading these as RAG.
 
@@ -6,7 +6,7 @@ Paste the section under "For the Project's Custom Instructions" into the project
 
 ## For the Project's Custom Instructions
 
-Working on **snake_arena** — a competitive snake AI tournament platform.
+Working on **gridsnake** — a competitive snake AI tournament platform.
 
 **Stack:** Python services (runner, builder, orchestrator, api, sa_common) + React/TypeScript frontend in a uv workspace + npm workspace. Postgres, Redis (live WebSocket streaming only), Cloudflare R2 (bundles + backups), Clerk (auth), gRPC contract shared with `snake_sim` (separate repo, included as a dependency). Docker + gVisor for sandboxing. Hosted on Hetzner CCX13 eventually; currently developing locally and in an Ubuntu libvirt VM for sandbox testing. Solo developer; hobby / portfolio project; 200 SEK/month operating budget.
 
@@ -16,13 +16,13 @@ Working on **snake_arena** — a competitive snake AI tournament platform.
 - CPU budget enforced per-step by the runner reading cgroup `cpuacct`/`cpu.stat` directly in a 10 ms-tick thread per container — *not* by wall time, which doesn't survive concurrent matches on shared cores.
 - Match results in Postgres; replays + analysis in R2.
 - Sim → runner is a TCP socket with length-prefixed protobuf, bidirectional (sim publishes step data, runner sends `KillAgent`).
-- `snake_sim` is a separate repo, included as a dependency in `snake_arena`.
+- `snake_sim` is a separate repo, included as a dependency in `gridsnake`.
 - No paid entry-fee tournaments — Swedish gambling law makes this incompatible with a side project.
 - Redis is used for live WebSocket streaming (pub/sub only — not a job queue). No Alembic, no Kubernetes, no AWS, no managed databases, no ORM at this stage.
 
 **Style:**
 - Push back when I'm wrong. No sugarcoating.
-- Code samples should match my actual file layouts and naming (`sa_common` not `common`; `snake_arena` repo, `snake_sim` dep).
+- Code samples should match my actual file layouts and naming (`sa_common` not `common`; `gridsnake` repo, `snake_sim` dep).
 - Don't suggest tooling I haven't already adopted unless I ask.
 - Prefer simple over abstract; flag premature abstractions.
 - Don't restate what I just said before answering.

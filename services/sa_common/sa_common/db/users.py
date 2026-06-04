@@ -60,6 +60,134 @@ def get_user_by_clerk_id(conn: Connection, clerk_user_id: str) -> User | None:
         return cur.fetchone()
 
 
+@dataclass
+class UserDeletionArtifacts:
+    """Out-of-transaction cleanup work left over after a user delete.
+
+    The DB cascade leaves orphans in the bundle store (nginx/R2) and the
+    Docker daemon — neither is reachable inside the SQL transaction. The
+    caller is responsible for deleting these best-effort after the
+    transaction commits. If those secondary deletes fail, re-running the
+    cleanup is a no-op (DB row already gone) but doesn't retry them —
+    image GC is expected to mop up later.
+    """
+    found: bool
+    bundle_keys: list[str]
+    image_tags: list[str]
+
+
+def delete_user_by_clerk_id(
+    conn: Connection, clerk_user_id: str
+) -> UserDeletionArtifacts:
+    """Erase a user and everything that personally identifies them.
+
+    Cascade does the heavy lifting:
+      users -> projects (CASCADE)
+              -> match_participants (CASCADE)
+              -> test_match_jobs (CASCADE, via player_project_id)
+      users -> match_jobs.requested_by (SET NULL)
+              -> test_match_jobs.requested_by (SET NULL)
+
+    On top of that we explicitly delete `matches` rows that no longer have
+    any participants (i.e. every seat belonged to the deleted user), so
+    we don't leave bare match rows behind. The scheduler will re-balance
+    surviving opponents' underplay counts on its next wakeup.
+
+    Idempotent: if the user is already gone, returns found=False with empty
+    artifact lists.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM users WHERE clerk_user_id = %s", (clerk_user_id,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            return UserDeletionArtifacts(found=False, bundle_keys=[], image_tags=[])
+        user_id = row[0]
+
+        # Image tags to log for operator cleanup (Docker daemon is not
+        # reachable from the DB transaction).
+        cur.execute(
+            """
+            SELECT tag FROM (
+                SELECT dev_image_tag       AS tag FROM projects WHERE user_id = %s
+                UNION ALL
+                SELECT submitted_image_tag AS tag FROM projects WHERE user_id = %s
+            ) t WHERE tag IS NOT NULL
+            """,
+            (user_id, user_id),
+        )
+        image_tags = [r[0] for r in cur.fetchall()]
+
+        # Bundle keys for test-match jobs owned by this user (each test job
+        # has at most one bundle, owned solely by the player).
+        cur.execute(
+            """
+            SELECT tmj.bundle_key
+            FROM test_match_jobs tmj
+            JOIN projects p ON p.id = tmj.player_project_id
+            WHERE p.user_id = %s AND tmj.bundle_key IS NOT NULL
+            """,
+            (user_id,),
+        )
+        bundle_keys = [r[0] for r in cur.fetchall()]
+
+        # Matches that will become orphans (every participant belongs to
+        # this user). Collect their ids + bundle keys before deleting; we
+        # use the ids again after the cascade to drop the matches rows.
+        cur.execute(
+            """
+            SELECT m.id, m.bundle_key
+            FROM matches m
+            WHERE EXISTS (
+                SELECT 1 FROM match_participants mp
+                JOIN projects p ON p.id = mp.project_id
+                WHERE mp.match_id = m.id AND p.user_id = %s
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM match_participants mp2
+                JOIN projects p2 ON p2.id = mp2.project_id
+                WHERE mp2.match_id = m.id AND p2.user_id <> %s
+            )
+            """,
+            (user_id, user_id),
+        )
+        orphan_match_rows = cur.fetchall()
+        orphan_match_ids = [r[0] for r in orphan_match_rows]
+        bundle_keys.extend(r[1] for r in orphan_match_rows if r[1] is not None)
+
+        # Cancel any queued/running ranked match jobs that reference this
+        # user's projects in their project_ids array. The array isn't
+        # FK-enforced, so the cascade doesn't touch these; the runner
+        # would try to dispatch and fail. Mark them cancelled so the
+        # scheduler can re-fill.
+        cur.execute(
+            """
+            UPDATE match_jobs
+            SET status = 'cancelled', finished_at = NOW(),
+                error = 'requesting user deleted'
+            WHERE status IN ('queued', 'running')
+              AND project_ids && (SELECT ARRAY_AGG(id) FROM projects WHERE user_id = %s)
+            """,
+            (user_id,),
+        )
+
+        # Erase the user. Cascade fires here.
+        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+
+        # Drop orphan matches. Their match_participants rows are already
+        # gone via the cascade; match_jobs.match_id was SET NULL by FK.
+        if orphan_match_ids:
+            cur.execute(
+                "DELETE FROM matches WHERE id = ANY(%s)",
+                (orphan_match_ids,),
+            )
+
+    return UserDeletionArtifacts(
+        found=True, bundle_keys=bundle_keys, image_tags=image_tags
+    )
+
+
 def get_or_create_user_by_clerk_id(
     conn: Connection,
     clerk_user_id: str,

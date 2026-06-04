@@ -11,9 +11,9 @@ services:
     container_name: snake-arena-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: snake_arena
+      POSTGRES_USER: gridsnake
       POSTGRES_PASSWORD: dev_password_change_me
-      POSTGRES_DB: snake_arena
+      POSTGRES_DB: gridsnake
     ports:
       - "127.0.0.1:5432:5432"     # localhost only — important
     volumes:
@@ -22,7 +22,7 @@ services:
 
 The `127.0.0.1:` prefix is non-negotiable: without it, Docker exposes the port on *all* interfaces. Same rule applies on Hetzner.
 
-Connection string for dev: `postgresql://snake_arena:dev_password_change_me@localhost:5432/snake_arena`.
+Connection string for dev: `postgresql://gridsnake:dev_password_change_me@localhost:5432/gridsnake`.
 
 `DATABASE_URL` is read from the environment (`.env` file, gitignored; `.env.example` committed).
 

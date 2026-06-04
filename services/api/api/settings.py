@@ -29,6 +29,11 @@ class Settings:
     clerk_issuer: str
     clerk_audience: str | None
 
+    # Svix signing secret for Clerk webhooks (the "Signing secret" shown on
+    # the endpoint page in Clerk dashboard, format: whsec_…). Used by
+    # /webhooks/clerk to verify Clerk-fired events such as user.deleted.
+    clerk_webhook_secret: str
+
     # CORS: the frontend dev origin (e.g. http://localhost:5173). In prod,
     # when FastAPI serves the bundle from the same origin, this can be empty.
     cors_origins: list[str]
@@ -58,6 +63,7 @@ def load_settings() -> Settings:
         clerk_issuer=os.environ["CLERK_ISSUER"].rstrip("/"),
         # CLERK_AUDIENCE is optional in the protocol; treat empty string as unset.
         clerk_audience=os.environ.get("CLERK_AUDIENCE") or None,
+        clerk_webhook_secret=os.environ["CLERK_WEBHOOK_SECRET"],
         cors_origins=_split_csv(os.environ.get("CORS_ORIGINS")),
         # REPLAY_HOST is required for the API (browser fetches use it), but
         # not for orchestrator daemons that only put/get internally.
