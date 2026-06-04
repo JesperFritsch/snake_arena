@@ -1,6 +1,6 @@
 # Acceptable Use Policy
 
-**Effective date:** <EFFECTIVE_DATE>
+**Effective date:** 2026-06-01
 
 This Acceptable Use Policy ("AUP") sets out what you may not do when using gridsnake (the "Service"). It is incorporated into the Terms of Service by reference. Violating this AUP is a breach of the Terms and may result in immediate termination of your account, removal of your Submissions, and — where appropriate — reporting to law-enforcement or other authorities.
 
@@ -16,7 +16,7 @@ You may not submit code, files, or other material that:
 - attempts to leak secrets, credentials, environment variables, host paths, or other operator data out of the sandbox;
 - infringes third-party intellectual-property rights — including code you do not have the right to submit;
 - contains personal data of other people without a lawful basis to process it;
-- is illegal under Swedish or EU law, or under the law of your country of residence.
+- is illegal under Swedish or EU law.
 
 ## 2. Prohibited use of the Service
 
@@ -66,5 +66,5 @@ We may update this AUP from time to time. Material changes will be announced on 
 
 ## 7. Contact
 
-Operator: Jesper Fritsch, <CITY>, Sweden.
+Operator: Jesper Fritsch, Göteborg, Sweden.
 Email: **jesperf96@gmail.com**.

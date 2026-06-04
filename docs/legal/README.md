@@ -8,9 +8,9 @@ Drafts of the user-facing legal documents for gridsnake.
 
 Search-and-replace across the three documents:
 
-- `<CITY>` — your city of residence, used in the operator/controller identity block.
+- `Göteborg` — your city of residence, used in the operator/controller identity block.
 - `<DOMAIN>` — the public domain the service will run on (e.g. `gridsnake.example`). If still undecided, leave `<DOMAIN>` in until the domain is registered.
-- `<EFFECTIVE_DATE>` — the date the documents go live (ISO 8601, e.g. `2026-06-15`).
+- `2026-06-01` — the date the documents go live (ISO 8601, e.g. `2026-06-15`).
 
 ## Files
 

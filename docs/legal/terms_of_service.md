@@ -1,8 +1,8 @@
 # Terms of Service
 
-**Effective date:** <EFFECTIVE_DATE>
+**Effective date:** 2026-06-01
 
-These Terms of Service ("Terms") govern your use of gridsnake (the "Service"), operated by Jesper Fritsch, <CITY>, Sweden ("we", "us", "operator"). By creating an account or otherwise using the Service, you agree to these Terms. If you do not agree, do not use the Service.
+These Terms of Service ("Terms") govern your use of gridsnake (the "Service"), operated by Jesper Fritsch, Göteborg, Sweden ("we", "us", "operator"). By creating an account or otherwise using the Service, you agree to these Terms. If you do not agree, do not use the Service.
 
 ## 1. The Service
 
@@ -12,7 +12,7 @@ The Service is provided as a hobby and portfolio project. It has no service-leve
 
 ## 2. Eligibility
 
-You must be at least 16 years old to create an account or use the Service. By using the Service you represent that you meet this age requirement.
+You must be at least 18 years old to create an account or use the Service. By using the Service you represent that you meet this age requirement.
 
 ## 3. Accounts
 
@@ -64,7 +64,7 @@ Nothing in these Terms excludes or limits any liability that cannot be excluded 
 
 To the maximum extent permitted by law, in no event will we be liable for any indirect, incidental, special, consequential, exemplary, or punitive damages, or for any loss of profits, revenue, data, or goodwill, arising out of or in connection with your use of the Service.
 
-Our total aggregate liability to you for all claims arising out of or relating to the Service or these Terms is limited to 100 Swedish kronor (SEK 100).
+Our total aggregate liability to you for all claims arising out of or relating to the Service or these Terms is limited to 100 Swedish kronor (SEK 100). This cap does not apply to liability arising under the GDPR or other mandatory data-protection law, which is governed by those laws directly.
 
 This Section 10 does not exclude or limit any liability that cannot be excluded or limited under mandatory applicable law.
 
@@ -80,7 +80,7 @@ On termination, the licenses you granted in Section 4 end. Sections 8, 9, 10, 11
 
 ## 13. Governing law and disputes
 
-These Terms are governed by the laws of Sweden, without regard to conflict-of-laws principles. Disputes arising out of or in connection with these Terms are subject to the exclusive jurisdiction of the Swedish courts, with the District Court of <CITY> as the court of first instance. Nothing in this section overrides any non-waivable consumer rights you have under the law of your country of residence.
+These Terms are governed by the laws of Sweden, without regard to conflict-of-laws principles. Disputes arising out of or in connection with these Terms are subject to the exclusive jurisdiction of the Swedish courts, with the District Court of Göteborg as the court of first instance. Nothing in this section overrides any non-waivable consumer rights you have under the law of your country of residence.
 
 ## 14. Changes to these Terms
 
@@ -90,4 +90,4 @@ We may update these Terms from time to time. Material changes will be announced 
 
 Questions about these Terms can be sent to: jesperf96@gmail.com
 
-Operator: Jesper Fritsch, <CITY>, Sweden.
+Operator: Jesper Fritsch, Göteborg, Sweden.

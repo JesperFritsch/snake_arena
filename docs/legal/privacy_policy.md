@@ -1,10 +1,10 @@
 # Privacy Policy
 
-**Effective date:** <EFFECTIVE_DATE>
+**Effective date:** 2026-06-01
 
-This Privacy Policy describes how gridsnake (the "Service") processes personal data. The data controller for the Service is **Jesper Fritsch, <CITY>, Sweden** ("we", "us"). You can reach us at **jesperf96@gmail.com**.
+This Privacy Policy describes how gridsnake (the "Service") processes personal data. The data controller for the Service is **Jesper Fritsch, Göteborg, Sweden** ("we", "us"). You can reach us at **jesperf96@gmail.com**.
 
-The Service is intended for users aged 16 and over. We do not knowingly process personal data of anyone under 16.
+The Service is intended for users aged 18 and over. We do not knowingly process personal data of anyone under 18.
 
 ## 1. What we collect and why
 
@@ -40,7 +40,7 @@ We will update this list when the set of sub-processors changes.
 | --- | --- |
 | Account data | While your account exists. Deleted within 30 days after you close the account, except where we are required to retain it longer for legal reasons. |
 | Submitted code (current versions) | While your account exists. Deleted with your account. |
-| Match replays and statistics | Retained while your account exists. Deleted with your account, including matches in which you participated. |
+| Match replays and statistics | Retained while your account exists. When your account is deleted, your participation records are removed. Matches that had no other participants are deleted entirely; matches shared with other users are retained with your participation record removed. |
 | Technical logs | Up to 30 days, except entries retained longer for security-incident investigation. |
 | Database backups | Up to 30 days. |
 | Support and feedback messages | Up to 24 months from last contact. |
@@ -59,7 +59,7 @@ You have the right to:
 
 To exercise any of these rights, email **jesperf96@gmail.com**. We will respond within 30 days. We may need to verify your identity before acting on a request.
 
-You can delete your account at any time from your account settings; this will erase your account, projects, submitted code, and matches in which you participated. You may also email **jesperf96@gmail.com** to request deletion or to exercise any of the other rights above.
+You can delete your account at any time from your account settings; this will erase your account, projects, submitted code, and your participation records. Matches shared with other users are retained with your participation record removed; matches where you were the only participant are deleted entirely. You may also email **jesperf96@gmail.com** to request deletion or to exercise any of the other rights above.
 
 ## 6. Security
 
@@ -75,7 +75,7 @@ Note that match outcomes are produced by deterministic execution of submitted ag
 
 ## 8. Children
 
-The Service is not directed at children under 16. We do not knowingly collect personal data from children under 16. If you believe a child has provided personal data to us, contact us and we will delete it.
+The Service is not directed at children under 18. We do not knowingly collect personal data from children under 18. If you believe a child has provided personal data to us, contact us and we will delete it.
 
 ## 9. Changes to this Policy
 
@@ -83,5 +83,5 @@ We may update this Policy from time to time. Material changes will be announced 
 
 ## 10. Contact
 
-Controller: Jesper Fritsch, <CITY>, Sweden.
+Controller: Jesper Fritsch, Göteborg, Sweden.
 Email: **jesperf96@gmail.com**.
