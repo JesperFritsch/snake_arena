@@ -11,3 +11,6 @@ uv pip install --force-reinstall 'snake_sim @ git+https://github.com/JesperFrits
 
 # from root
 docker compose up --scale runner=4 --scale builder=2
+
+# build frontend
+cd frontend && VITE_API_BASE_URL=https://gridsnake.com/api npm run build && cd ..

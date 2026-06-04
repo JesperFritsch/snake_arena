@@ -7,6 +7,25 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git g++
+# Copy only manifests so the dependency install layer is cached independently
+# of source code changes.
+COPY pyproject.toml uv.lock ./
+COPY services/orchestrator/pyproject.toml services/orchestrator/pyproject.toml
+COPY services/runner/pyproject.toml        services/runner/pyproject.toml
+COPY services/builder/pyproject.toml       services/builder/pyproject.toml
+COPY services/sa_common/pyproject.toml     services/sa_common/pyproject.toml
+COPY services/api/pyproject.toml           services/api/pyproject.toml
+COPY services/submitter/pyproject.toml     services/submitter/pyproject.toml
+
+# Install all external deps without installing workspace packages (no source yet).
+RUN uv sync --frozen --package snake-arena-api --no-install-project --no-install-workspace
+
+RUN apt-get purge -y git g++ \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+
 COPY . .
 RUN uv sync --frozen --package snake-arena-api
 

@@ -13,7 +13,6 @@ dependencies = [
     "redis[hiredis]>=5.0",
     "docker>=7.0",
     "snake-arena-common",
-    "snake_sim @ git+https://github.com/JesperFritsch/snake_sim.git@master",
 ]
 
 [project.scripts]

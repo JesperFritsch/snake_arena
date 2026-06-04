@@ -155,23 +155,78 @@ class HttpBundler:
 
 
 # --------------------------------------------------------------------------
+# R2 backend (Cloudflare R2 / S3-compatible object storage)
+# --------------------------------------------------------------------------
+
+class R2Bundler:
+    """Stores bundles in a Cloudflare R2 bucket via the S3-compatible API.
+
+    endpoint_url     — https://<account_id>.r2.cloudflarestorage.com
+    access_key_id    — R2 API token access key
+    secret_access_key— R2 API token secret key
+    bucket           — R2 bucket name
+    public_base_url  — browser-accessible base URL returned by url()
+                       (the bucket's public URL or custom domain)
+    """
+
+    def __init__(
+        self,
+        endpoint_url: str,
+        access_key_id: str,
+        secret_access_key: str,
+        bucket: str,
+        public_base_url: str | None,
+    ):
+        import boto3
+        self._bucket = bucket
+        self._public_base_url = public_base_url.rstrip("/") if public_base_url else None
+        self._client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+            region_name="auto",
+        )
+
+    def put(self, key: str, data: bytes) -> None:
+        self._client.put_object(Bucket=self._bucket, Key=key.lstrip("/"), Body=data)
+
+    def get(self, key: str) -> bytes:
+        resp = self._client.get_object(Bucket=self._bucket, Key=key.lstrip("/"))
+        return resp["Body"].read()
+
+    def url(self, key: str) -> str:
+        if not self._public_base_url:
+            raise RuntimeError("R2Bundler has no public_base_url (set REPLAY_HOST)")
+        return f"{self._public_base_url}/{key.lstrip('/')}"
+
+    def delete(self, key: str) -> None:
+        self._client.delete_object(Bucket=self._bucket, Key=key.lstrip("/"))
+
+
+# --------------------------------------------------------------------------
 # Factory
 # --------------------------------------------------------------------------
 
 def bundler_from_env() -> IBundler:
     """Build the configured bundler from environment variables.
 
-    BUNDLER_BACKEND    disk | http  — required.
+    BUNDLER_BACKEND    disk | http | r2  — required.
     REPLAY_HOST        public base URL for url(). Required by the API; for
                        orchestrator daemons that only put/get it can be empty.
 
     disk backend:
-      BUNDLE_DIR       local path to write bundles
+      BUNDLE_DIR         local path to write bundles
     http backend:
       BUNDLE_UPLOAD_URL  WebDAV base URL for PUT/DELETE
                          (e.g. http://file-server/upload)
       BUNDLE_READ_URL    static-serve base URL for GET
                          (e.g. http://file-server)
+    r2 backend:
+      R2_ENDPOINT_URL      https://<account_id>.r2.cloudflarestorage.com
+      R2_ACCESS_KEY_ID     R2 API token access key
+      R2_SECRET_ACCESS_KEY R2 API token secret key
+      R2_BUCKET            bucket name
     """
     backend = os.environ["BUNDLER_BACKEND"]
     # REPLAY_HOST is required for the API; orchestrator daemons (which only
@@ -187,6 +242,14 @@ def bundler_from_env() -> IBundler:
         return HttpBundler(
             upload_url=os.environ["BUNDLE_UPLOAD_URL"],
             read_url=os.environ["BUNDLE_READ_URL"],
+            public_base_url=replay_host,
+        )
+    if backend == "r2":
+        return R2Bundler(
+            endpoint_url=os.environ["R2_ENDPOINT_URL"],
+            access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+            secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+            bucket=os.environ["R2_BUCKET"],
             public_base_url=replay_host,
         )
     raise ValueError(f"unknown BUNDLER_BACKEND: {backend!r}")

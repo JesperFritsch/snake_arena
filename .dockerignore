@@ -34,6 +34,10 @@ pg-data/
 .DS_Store
 *.swp
 
+# ── Secrets / local config ───────────────────────────────────
+.env
+.env.*
+
 # ── Logs and local artifacts ─────────────────────────────────
 **/*.log
 sim-artifacts/

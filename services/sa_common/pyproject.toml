@@ -5,6 +5,8 @@ requires-python = ">=3.12"
 dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic>=2.13",
+    "boto3>=1.35",
+    "snake_sim @ git+https://github.com/JesperFritsch/snake_sim.git@master",
 ]
 
 [project.scripts]
@@ -16,6 +18,10 @@ db_matches = "sa_common.db.matches:main"
 db_modes = "sa_common.db.modes:main"
 db_mode_groups = "sa_common.db.mode_groups:main"
 score_match = "sa_common.scoring_debug:main"
+
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [build-system]
 requires = ["hatchling"]
