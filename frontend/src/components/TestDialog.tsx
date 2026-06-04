@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApi, ApiError, BASE_URL } from "../api/client";
 import type { LanguageInfo, MapInfo, ProjectMeta, PublicProjectSummary, QuotaStatus } from "../api/types";
 import { fmtLang } from "../lib/editor";
@@ -55,7 +55,12 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
 
   const [opponents, setOpponents]     = useState<PublicProjectSummary[]>([]);
   const [maps, setMaps]               = useState<MapInfo[]>([]);
-  const [selected, setSelected]       = useState<Set<number>>(new Set(init.opponentIds));
+  const [counts, setCounts]           = useState<Record<number, number>>(() => {
+    const c: Record<number, number> = {};
+    for (const id of init.opponentIds) c[id] = (c[id] ?? 0) + 1;
+    return c;
+  });
+  const [search, setSearch]           = useState("");
   const [food, setFood]               = useState(init.food);
   const [arenaMode, setArenaMode]     = useState<"custom" | "map">(init.arenaMode ?? "custom");
   const [gridWidth, setGridWidth]     = useState(init.gridWidth);
@@ -78,14 +83,35 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const toggle = (id: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else if (next.size < MAX_OPPONENTS) next.add(id);
-      return next;
+  const minFood = useMemo(() => {
+    if (arenaMode === "map") {
+      const map = maps.find((m) => m.name === selectedMap);
+      return map ? Math.max(1, Math.floor((map.width * map.height) / 50)) : 1;
+    }
+    const w = parseInt(gridWidth);
+    const h = parseInt(gridHeight);
+    return !isNaN(w) && !isNaN(h) ? Math.max(1, Math.floor((w * h) / 50)) : 1;
+  }, [arenaMode, gridWidth, gridHeight, selectedMap, maps]);
+
+  useEffect(() => {
+    setFood((f) => Math.max(f, minFood));
+  }, [minFood]);
+
+  const totalSelected = Object.values(counts).reduce((a, b) => a + b, 0);
+
+  const adjust = (id: number, delta: number) => {
+    setCounts((prev) => {
+      const total = Object.values(prev).reduce((a, b) => a + b, 0);
+      if (delta > 0 && total >= MAX_OPPONENTS) return prev;
+      const next = Math.max(0, (prev[id] ?? 0) + delta);
+      return { ...prev, [id]: next };
     });
   };
+
+  const filteredOpponents = opponents.filter((p) => {
+    const q = search.toLowerCase();
+    return p.name.toLowerCase().includes(q) || p.user_display_name.toLowerCase().includes(q);
+  });
 
   const run = async () => {
     if (arenaMode === "custom") {
@@ -108,13 +134,14 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
       }
     }
 
+    const opponentIds = Object.entries(counts).flatMap(([id, n]) => Array<number>(n).fill(Number(id)));
     const settings: TestSettings = {
       food,
       arenaMode,
       gridWidth,
       gridHeight,
       map: arenaMode === "map" ? selectedMap : null,
-      opponentIds: [...selected],
+      opponentIds,
     };
     setBusy(true);
     try {
@@ -142,41 +169,45 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
 
         <div className="modal-body">
           <div className="modal-section-label">
-            Opponents <span className="muted">({selected.size}/{MAX_OPPONENTS} selected)</span>
+            Opponents <span className="muted">({totalSelected}/{MAX_OPPONENTS} selected)</span>
           </div>
           {loading ? (
             <span className="muted">loading…</span>
           ) : (
-            <div className="check-list">
-              {opponents.map((p) => {
-                const checked = selected.has(p.id);
-                const disabled = !checked && selected.size >= MAX_OPPONENTS;
-                return (
-                  <label key={p.id} className={`check-row${disabled ? " disabled" : ""}`}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={disabled}
-                      onChange={() => toggle(p.id)}
-                    />
-                    <span className="check-name">{p.name}</span>
-                    <span className="muted">{p.user_display_name} · {fmtLang(p.language, languages)} · v{p.submitted_version}</span>
-                  </label>
-                );
-              })}
-              {[...selected]
-                .filter((id) => !opponents.some((o) => o.id === id))
-                .map((id) => (
-                  <label key={id} className="check-row">
-                    <input type="checkbox" checked onChange={() => toggle(id)} />
-                    <span className="check-name muted">project #{id}</span>
-                    <span className="muted" style={{ color: "var(--red)" }}>not found — uncheck to remove</span>
-                  </label>
-                ))}
-              {!loading && opponents.length === 0 && selected.size === 0 && (
-                <span className="muted">No submitted projects available yet.</span>
+            <>
+              {opponents.length > 4 && (
+                <input
+                  className="input"
+                  style={{ width: "100%", marginBottom: 6, boxSizing: "border-box" }}
+                  placeholder="Search agents…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
               )}
-            </div>
+              <div className="check-list">
+                {filteredOpponents.map((p) => {
+                  const count = counts[p.id] ?? 0;
+                  const atMax = totalSelected >= MAX_OPPONENTS;
+                  return (
+                    <div key={p.id} className="check-row">
+                      <span className="check-name">{p.name}</span>
+                      <span className="muted" style={{ flex: 1 }}>{p.user_display_name} · {fmtLang(p.language, languages)} · v{p.submitted_version}</span>
+                      <div className="stepper">
+                        <button className="stepper-btn" onClick={() => adjust(p.id, -1)} disabled={count === 0}>−</button>
+                        <span className="stepper-count">{count}</span>
+                        <button className="stepper-btn" onClick={() => adjust(p.id, +1)} disabled={atMax}>+</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {filteredOpponents.length === 0 && search && (
+                  <span className="muted">No results for "{search}".</span>
+                )}
+                {opponents.length === 0 && (
+                  <span className="muted">No submitted projects available yet.</span>
+                )}
+              </div>
+            </>
           )}
 
           <div className="modal-section-label" style={{ marginTop: 16 }}>Sim settings</div>
@@ -185,11 +216,12 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
             <input
               className="input"
               type="number"
-              min={1}
+              min={minFood}
               value={food}
               style={{ width: 70 }}
-              onChange={(e) => setFood(Math.max(1, parseInt(e.target.value) || 1))}
+              onChange={(e) => setFood(Math.max(minFood, parseInt(e.target.value) || minFood))}
             />
+            {minFood > 1 && <span className="muted" style={{ fontSize: 11 }}>min {minFood}</span>}
           </div>
 
           <div className="form-row" style={{ marginTop: 10 }}>
