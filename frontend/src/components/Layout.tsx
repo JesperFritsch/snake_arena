@@ -24,7 +24,7 @@ export function Layout() {
       <header className="topbar">
         <div className="brand">
           <span className="mark">▰</span>
-          <span>Snake Arena</span>
+          <span>Gridsnake</span>
           <span className="ital">battle your agents</span>
         </div>
         <nav className="nav">

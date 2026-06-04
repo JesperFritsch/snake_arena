@@ -13,7 +13,7 @@ export function LegalPage({ title, doc }: LegalPageProps) {
       <header className="legal-topbar">
         <Link to="/" className="brand">
           <span className="mark">▰</span>
-          <span>Snake Arena</span>
+          <span>Gridsnake</span>
         </Link>
         <nav className="legal-nav">
           <Link to="/terms">Terms</Link>

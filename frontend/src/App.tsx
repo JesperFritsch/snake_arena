@@ -13,7 +13,7 @@ function SignInGate() {
     <div className="gate">
       <div className="brand">
         <span className="mark">▰</span>
-        <span>Snake Arena</span>
+        <span>Gridsnake</span>
       </div>
       <p style={{ color: "var(--text-dim)" }}>Sign in with GitHub to build and battle your agents.</p>
       <SignInButton mode="modal">
