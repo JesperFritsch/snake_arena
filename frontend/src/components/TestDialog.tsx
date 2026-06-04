@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useApi, ApiError } from "../api/client";
-import type { LanguageInfo, ProjectMeta, PublicProjectSummary } from "../api/types";
+import type { LanguageInfo, ProjectMeta, PublicProjectSummary, QuotaStatus } from "../api/types";
 import { fmtLang } from "../lib/editor";
+import { QuotaIndicator } from "./QuotaIndicator";
 import { useToast } from "./Toast";
 
 const MAX_OPPONENTS = 4;
@@ -32,11 +33,14 @@ interface Props {
   project: ProjectMeta;
   initialSettings: TestSettings | null;
   languages: LanguageInfo[];
+  /** Hourly test-match quota for the current user. Owned by EditorPage so the
+   * toolbar badge and the dialog stay in sync. */
+  quota: QuotaStatus | null;
   onClose: () => void;
   onRun: (settings: TestSettings) => Promise<void>;
 }
 
-export function TestDialog({ project, initialSettings, languages, onClose, onRun }: Props) {
+export function TestDialog({ project, initialSettings, languages, quota, onClose, onRun }: Props) {
   const api = useApi();
   const { push } = useToast();
 
@@ -92,17 +96,22 @@ export function TestDialog({ project, initialSettings, languages, onClose, onRun
       await onRun(settings);
       onClose();
     } catch {
-      // error already toasted by onRun
+      // error already toasted by onRun; EditorPage refreshes the quota for us
     } finally {
       setBusy(false);
     }
   };
 
+  const outOfQuota = quota != null && quota.remaining === 0;
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <span className="title">Test match — {project.name}</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+            <span className="title">Test match — {project.name}</span>
+            <QuotaIndicator status={quota} label="tests/hr" />
+          </span>
           <button className="btn ghost" style={{ padding: "2px 8px" }} onClick={onClose}>✕</button>
         </div>
 
@@ -187,8 +196,16 @@ export function TestDialog({ project, initialSettings, languages, onClose, onRun
         </div>
 
         <div className="modal-foot">
+          {outOfQuota && (
+            <span style={{ fontSize: 12, color: "var(--red)", marginRight: "auto" }}>
+              Hourly limit reached.{" "}
+              {quota?.next_slot_at != null && (
+                <>Next slot at {new Date(quota.next_slot_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.</>
+              )}
+            </span>
+          )}
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={busy || loading} onClick={run}>
+          <button className="btn primary" disabled={busy || loading || outOfQuota} onClick={run}>
             {busy ? "Starting…" : "Run"}
           </button>
         </div>

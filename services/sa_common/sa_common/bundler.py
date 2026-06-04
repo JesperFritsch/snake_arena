@@ -57,10 +57,21 @@ class DiskBundler:
         return f"{self._public_base_url}/{key.lstrip('/')}"
 
     def delete(self, key: str) -> None:
+        path = self._safe_path(key)
         try:
-            self._safe_path(key).unlink()
+            path.unlink()
         except FileNotFoundError:
             pass
+        # Walk parents up to base_dir, dropping each one while it's empty so
+        # we don't leak per-match directories (e.g. test-matches/24/).
+        base = self._base_dir.resolve()
+        parent = path.parent
+        while parent != base and base in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break  # non-empty (sibling exists) or already gone
+            parent = parent.parent
 
     def _safe_path(self, key: str) -> Path:
         base = self._base_dir.resolve()
@@ -119,6 +130,28 @@ class HttpBundler:
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
+            return  # nothing to clean up
+        # Best-effort: drop the immediate parent collection. Our key
+        # convention puts one bundle per id-dir (e.g. test-matches/24/
+        # bundle.zip), so the dir is empty by construction now. nginx
+        # WebDAV requires Depth: infinity for collection DELETE — fine
+        # here because we know the collection has no other contents.
+        # We do NOT walk further up: matches/ and test-matches/ contain
+        # sibling id-dirs, and a recursive delete there would wipe them.
+        if "/" not in key:
+            return
+        parent_key = key.rsplit("/", 1)[0]
+        if "/" not in parent_key:
+            return  # only one segment above (e.g. matches/) — leave it alone
+        parent_url = f"{self._upload_url}/{parent_key.lstrip('/')}/"
+        parent_req = urllib.request.Request(
+            parent_url, method="DELETE", headers={"Depth": "infinity"},
+        )
+        try:
+            with urllib.request.urlopen(parent_req) as resp:
+                resp.read()
+        except urllib.error.HTTPError:
+            pass  # 404 / 405 / 409 — best-effort cleanup
 
 
 # --------------------------------------------------------------------------

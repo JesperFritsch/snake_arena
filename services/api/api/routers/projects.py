@@ -47,6 +47,7 @@ from sa_common.db.projects import (
     unpack_files,
     read_template_files,
 )
+from sa_common.db.matches import prune_obsolete_ranked_matches
 from sa_common.db.test_match_jobs import get_bundle_keys_for_project
 from sa_common.db.users import User
 
@@ -438,6 +439,17 @@ async def submit(
     # Consume both windows only after a successful promotion so a 409 ("test
     # first") doesn't cost the user a slot.
     await consume_submit_quotas(user.id)
+
+    # Bumping submitted_version may orphan ranked matches where every
+    # participant's project_version is now stale — those contribute to no
+    # leaderboard anymore. Prune them and purge their bundles.
+    bundler = get_bundler()
+    for key in prune_obsolete_ranked_matches(conn):
+        try:
+            bundler.delete(key)
+        except Exception:
+            pass  # storage cleanup is best-effort; DB rows are already gone
+
     return SubmitResult(submitted_version=new_version)
 
 
@@ -450,6 +462,9 @@ def delete(
     _owned_meta(conn, project_id, user)  # 404 if not found or not owned
     bundle_keys = get_bundle_keys_for_project(conn, project_id)
     delete_project(conn, project_id)
+    # Deleting the project cascades to match_participants — any ranked match
+    # whose only remaining participants are stale (or none) is now obsolete.
+    bundle_keys.extend(prune_obsolete_ranked_matches(conn))
     bundler = get_bundler()
     for key in bundle_keys:
         try:

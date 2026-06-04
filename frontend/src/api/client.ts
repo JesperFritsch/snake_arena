@@ -11,7 +11,10 @@ import type {
   ProjectFiles,
   ProjectMeta,
   PublicProjectSummary,
+  QuotaErrorDetail,
+  QuotaStatus,
   RankedMatchSummary,
+  SubmitQuotaStatus,
   SubmitResult,
   TestMatchCreate,
   TestMatchJob,
@@ -24,9 +27,24 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     public detail: string,
+    public body?: unknown,
+    public retryAfter?: number,
   ) {
     super(`${status}: ${detail}`);
     this.name = "ApiError";
+  }
+
+  /** When the server raised a 429 with a quota-error body, return its parsed
+   * shape so the caller can refresh its local quota display. */
+  quotaDetail(): QuotaErrorDetail | null {
+    const d = (this.body as { detail?: unknown } | undefined)?.detail;
+    if (
+      d && typeof d === "object" &&
+      (d as { error?: string }).error === "quota_exceeded"
+    ) {
+      return d as QuotaErrorDetail;
+    }
+    return null;
   }
 }
 
@@ -56,18 +74,35 @@ async function request<T>(
   });
 
   if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const data = await res.json();
-      detail = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
-    } catch {
-      /* non-JSON error body; keep statusText */
-    }
-    throw new ApiError(res.status, detail);
+    throw await buildApiError(res);
   }
 
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** Build a structured ApiError from a non-OK response. Pulls the JSON body
+ * (when present) plus the Retry-After header so callers handling 429 quota
+ * errors can refresh their local quota state without a second round-trip. */
+async function buildApiError(res: Response): Promise<ApiError> {
+  let detail = res.statusText;
+  let body: unknown = undefined;
+  try {
+    body = await res.json();
+    const d = (body as { detail?: unknown })?.detail;
+    if (typeof d === "string") {
+      detail = d;
+    } else if (d && typeof d === "object" && typeof (d as { message?: unknown }).message === "string") {
+      detail = (d as { message: string }).message;
+    } else if (d !== undefined) {
+      detail = JSON.stringify(d);
+    }
+  } catch {
+    /* non-JSON error body; keep statusText */
+  }
+  const ra = res.headers.get("Retry-After");
+  const retryAfter = ra ? Number(ra) : undefined;
+  return new ApiError(res.status, detail, body, Number.isFinite(retryAfter) ? retryAfter : undefined);
 }
 
 export interface ApiClient {
@@ -99,6 +134,9 @@ export interface ApiClient {
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
   listProjectRankedMatches(projectId: number, opts?: { modeIds?: number[]; limit?: number }): Promise<RankedMatchSummary[]>;
   getMatchBundleUrl(matchId: number): Promise<{ url: string }>;
+  getTestMatchQuota(): Promise<QuotaStatus>;
+  getSubmitQuota(): Promise<SubmitQuotaStatus>;
+  getUploadImageQuota(): Promise<QuotaStatus>;
 }
 
 async function downloadBlob(getToken: TokenGetter, path: string, filename: string): Promise<void> {
@@ -106,11 +144,7 @@ async function downloadBlob(getToken: TokenGetter, path: string, filename: strin
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${BASE_URL}${path}`, { headers });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { const d = await res.json(); detail = d?.detail ?? detail; } catch { /* */ }
-    throw new ApiError(res.status, detail);
-  }
+  if (!res.ok) throw await buildApiError(res);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -127,14 +161,7 @@ async function uploadFile<T>(getToken: TokenGetter, path: string, file: File): P
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${BASE_URL}${path}`, { method: "POST", headers, body: form });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const data = await res.json();
-      detail = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
-    } catch { /* non-JSON */ }
-    throw new ApiError(res.status, detail);
-  }
+  if (!res.ok) throw await buildApiError(res);
   return (await res.json()) as T;
 }
 
@@ -191,6 +218,9 @@ export function useApi(): ApiClient {
       },
       getMatchBundleUrl: (matchId) =>
         request(g, "GET", `/matches/${matchId}/bundle-url`),
+      getTestMatchQuota: () => request(g, "GET", "/test-matches/quota"),
+      getSubmitQuota: () => request(g, "GET", "/projects/submit-quota"),
+      getUploadImageQuota: () => request(g, "GET", "/projects/upload-image-quota"),
     };
   }, [getToken]);
 }

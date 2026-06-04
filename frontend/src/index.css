@@ -242,6 +242,36 @@ button {
   border-color: rgba(255, 93, 93, 0.3);
 }
 
+/* quota badge — sibling of .pill with a more compact look. Used in toolbars
+ * (Submit/Test buttons) and within dialogs to show "117/120 tests/hr". */
+.quota {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: help;
+  white-space: nowrap;
+}
+.quota.ok {
+  color: var(--text-dim);
+}
+.quota.warn {
+  color: var(--amber);
+  border-color: rgba(245, 183, 64, 0.3);
+}
+.quota.danger {
+  color: var(--red);
+  border-color: rgba(255, 93, 93, 0.3);
+}
+.quota-group {
+  display: inline-flex;
+  gap: 4px;
+}
+
 /* ---- resizable panels --------------------------------------------------- */
 
 .resize-handle {
@@ -1169,6 +1199,14 @@ button {
 .dropzone.busy {
   cursor: default;
   opacity: 0.6;
+}
+.dropzone.disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.dropzone.disabled:hover {
+  border-color: var(--border);
+  background: transparent;
 }
 
 /* ---- leaderboard table -------------------------------------------------- */

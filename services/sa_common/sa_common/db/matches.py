@@ -326,6 +326,41 @@ def count_matches_by_status(conn: psycopg.Connection) -> dict[str, int]:
         return counts
 
 
+def prune_obsolete_ranked_matches(conn: psycopg.Connection) -> list[str]:
+    """Delete ranked matches that no current submitted version touches.
+
+    A ranked match is "obsolete" when no participant's project_version still
+    matches its project's current submitted_version — i.e. the leaderboard
+    query in sa_common.db.agent_scores.compute_mode_scores filters every one
+    of its participants out. Such a match contributes to no leaderboard and
+    can never start contributing again (submitted_version only increments).
+
+    match_participants are removed via ON DELETE CASCADE. Returns the
+    bundle_keys of deleted matches (non-null only) so the caller can purge
+    storage too.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM matches m
+            WHERE m.is_test = FALSE
+              AND m.mode_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM match_participants mp
+                  JOIN projects p ON p.id = mp.project_id
+                  WHERE mp.match_id = m.id
+                    AND mp.project_version = p.submitted_version
+              )
+            RETURNING bundle_key
+            """,
+        )
+        keys = [row[0] for row in cur.fetchall() if row[0] is not None]
+    if keys:
+        log.info("pruned %d obsolete ranked matches", len(keys))
+    return keys
+
+
 # --------------------------------------------------------------------------
 # CLI — for ops and manual testing
 # --------------------------------------------------------------------------

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { useApi, ApiError } from "../api/client";
-import type { LanguageInfo, ProjectFile, ProjectMeta, ProjectSource, TestMatchJob } from "../api/types";
+import type { LanguageInfo, ProjectFile, ProjectMeta, ProjectSource, QuotaStatus, SubmitQuotaStatus, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
 import { ImageUploadPanel } from "../components/ImageUploadPanel";
 import { MatchViewer } from "../components/MatchViewer";
+import { QuotaIndicator, SubmitQuotaIndicator } from "../components/QuotaIndicator";
 import { TestDialog, loadTestSettings, saveTestSettings } from "../components/TestDialog";
 import type { TestSettings } from "../components/TestDialog";
 import { NewProjectDialog } from "../components/NewProjectDialog";
@@ -45,7 +46,27 @@ export function EditorPage() {
   const [busy, setBusy] = useState<"" | "save" | "submit" | "delete" | "restore">("");
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
+  const [submitQuota, setSubmitQuota] = useState<SubmitQuotaStatus | null>(null);
+  const [testQuota, setTestQuota] = useState<QuotaStatus | null>(null);
   const isMobile = useIsMobile();
+
+  const refreshSubmitQuota = useCallback(() => {
+    api.getSubmitQuota().then(setSubmitQuota).catch(() => {});
+  }, [api]);
+
+  const refreshTestQuota = useCallback(() => {
+    api.getTestMatchQuota().then(setTestQuota).catch(() => {});
+  }, [api]);
+
+  useEffect(() => {
+    refreshSubmitQuota();
+    refreshTestQuota();
+  }, [refreshSubmitQuota, refreshTestQuota]);
+
+  const submitBlocked =
+    submitQuota != null &&
+    (submitQuota.hourly.remaining === 0 || submitQuota.daily.remaining === 0);
+  const testBlocked = testQuota != null && testQuota.remaining === 0;
 
   const viewerPanelRef = useRef<ImperativePanelHandle>(null);
   const shortcutSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
@@ -252,8 +273,10 @@ export function EditorPage() {
     } catch (e) {
       push(`Could not start test match: ${e instanceof ApiError ? e.detail : e}`, "error");
       throw e;
+    } finally {
+      refreshTestQuota();
     }
-  }, [api, meta, onTestMatchEnqueued, push]);
+  }, [api, meta, onTestMatchEnqueued, push, refreshTestQuota]);
 
   const handleTest = async () => {
     if (!meta) return;
@@ -315,6 +338,9 @@ export function EditorPage() {
     } catch (e) {
       push(e instanceof ApiError ? e.detail : String(e), "error");
     } finally {
+      // Refresh quota after every attempt — success consumed a slot;
+      // a 429 means we hit the cap; other failures left the count untouched.
+      refreshSubmitQuota();
       setBusy("");
     }
   };
@@ -423,8 +449,9 @@ export function EditorPage() {
         <>
           <button
             className="btn ghost"
-            disabled={busy !== ""}
+            disabled={busy !== "" || testBlocked}
             onClick={handleTest}
+            title={testBlocked ? "Hourly test-match limit reached — see badge for reset time." : undefined}
           >
             Test
           </button>
@@ -437,6 +464,7 @@ export function EditorPage() {
           >
             ⚙
           </button>
+          <QuotaIndicator status={testQuota} label="tests/hr" />
         </>
       )}
 
@@ -468,10 +496,15 @@ export function EditorPage() {
               {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
             </button>
           )}
+          <SubmitQuotaIndicator
+            hourly={submitQuota?.hourly ?? null}
+            daily={submitQuota?.daily ?? null}
+          />
           <button
             className="btn primary"
-            disabled={!meta || busy !== ""}
+            disabled={!meta || busy !== "" || submitBlocked}
             onClick={submit}
+            title={submitBlocked ? "Submission limit reached — see the badge for reset time." : undefined}
           >
             {busy === "submit" ? "Submitting…" : "Submit"}
           </button>
@@ -552,6 +585,7 @@ export function EditorPage() {
           project={meta}
           initialSettings={loadTestSettings(meta.id)}
           languages={languages}
+          quota={testQuota}
           onClose={() => setTestDialogOpen(false)}
           onRun={runTestMatch}
         />

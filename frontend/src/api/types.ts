@@ -203,3 +203,33 @@ export interface ModeGroup {
   description: string | null;
   sort_order: number;
 }
+
+// ---- quotas ---------------------------------------------------------------
+
+// Mirrors api/schemas.py:QuotaStatus. `next_slot_at` is an epoch second —
+// when the user gets one more slot back (sliding window) or when the count
+// resets (fixed window). `null` when nothing is currently consumed.
+export interface QuotaStatus {
+  limit: number;
+  used: number;
+  remaining: number;
+  next_slot_at: number | null;
+  window_seconds: number;
+}
+
+export interface SubmitQuotaStatus {
+  hourly: QuotaStatus;
+  daily: QuotaStatus;
+}
+
+// Body shape of a 429 detail when the backend raised a quota error. Mirrors
+// _raise_429 in api/rate_limit.py.
+export interface QuotaErrorDetail {
+  error: "quota_exceeded";
+  message: string;
+  limit: number;
+  used: number;
+  remaining: number;
+  reset_at: number;
+  window_seconds: number;
+}

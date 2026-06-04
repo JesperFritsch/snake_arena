@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApi, ApiError } from "../api/client";
-import type { LanguageInfo, ProjectMeta } from "../api/types";
+import type { LanguageInfo, ProjectMeta, QuotaStatus } from "../api/types";
+import { QuotaIndicator } from "./QuotaIndicator";
 
 const MAX_MB = 500;
 const MAX_BYTES = MAX_MB * 1024 * 1024;
@@ -18,6 +19,14 @@ export function ImageUploadPanel({ meta, languages, onUploaded }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [harnessLang, setHarnessLang] = useState(languages[0]?.name ?? "");
+  const [quota, setQuota] = useState<QuotaStatus | null>(null);
+
+  useEffect(() => {
+    api.getUploadImageQuota().then(setQuota).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const outOfQuota = quota != null && quota.remaining === 0;
 
   const upload = async (file: File) => {
     setError(null);
@@ -25,12 +34,21 @@ export function ImageUploadPanel({ meta, languages, onUploaded }: Props) {
       setError(`File too large (max ${MAX_MB} MB)`);
       return;
     }
+    if (outOfQuota) {
+      setError("Daily image-upload limit reached. Try again tomorrow.");
+      return;
+    }
     setUploading(true);
     try {
       const updated = await api.uploadProjectImage(meta.id, file);
       onUploaded(updated);
+      api.getUploadImageQuota().then(setQuota).catch(() => {});
     } catch (e) {
       setError(e instanceof ApiError ? e.detail : String(e));
+      // Refresh quota after any failure — a 429 means we're at the limit;
+      // a 4xx for other reasons means a slot was NOT consumed (per
+      // consume-on-success in the backend), but a refresh keeps the UI honest.
+      api.getUploadImageQuota().then(setQuota).catch(() => {});
     } finally {
       setUploading(false);
     }
@@ -123,12 +141,16 @@ export function ImageUploadPanel({ meta, languages, onUploaded }: Props) {
               </div>
             </div>
 
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+              <QuotaIndicator status={quota} label="uploads/day" />
+            </div>
+
             <div
-              className={`dropzone${dragOver ? " drag-over" : ""}${uploading ? " busy" : ""}`}
-              onClick={() => !uploading && inputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+              className={`dropzone${dragOver ? " drag-over" : ""}${uploading ? " busy" : ""}${outOfQuota ? " disabled" : ""}`}
+              onClick={() => !uploading && !outOfQuota && inputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); if (!outOfQuota) setDragOver(true); }}
               onDragLeave={() => setDragOver(false)}
-              onDrop={onDrop}
+              onDrop={(e) => { if (!outOfQuota) onDrop(e); else e.preventDefault(); }}
             >
               <input
                 ref={inputRef}
@@ -139,6 +161,16 @@ export function ImageUploadPanel({ meta, languages, onUploaded }: Props) {
               />
               {uploading ? (
                 <span className="muted">Uploading…</span>
+              ) : outOfQuota ? (
+                <>
+                  <span style={{ fontSize: 28, lineHeight: 1 }}>⏳</span>
+                  <span className="muted">
+                    Daily upload limit reached
+                    {quota?.next_slot_at != null && (
+                      <> — resets at {new Date(quota.next_slot_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>
+                    )}
+                  </span>
+                </>
               ) : (
                 <>
                   <span style={{ fontSize: 28, lineHeight: 1 }}>↑</span>
