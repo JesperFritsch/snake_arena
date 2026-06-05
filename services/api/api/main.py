@@ -8,6 +8,7 @@ test_match_jobs tables. Agent builds are triggered inline by the test runner.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
@@ -20,6 +21,7 @@ from api.db import close_pool, init_pool
 from api.rate_limit import apply_general_rate_limit
 from api.redis import close_redis, init_redis
 from api.routers import users, matches, modes, projects, test_matches, download, leaderboard, webhooks, maps
+from api.routers.projects import stale_upload_cleanup_task
 from api.settings import load_settings, get_settings, Settings
 
 log = logging.getLogger(__name__)
@@ -34,10 +36,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         max_size=settings.pool_max_size,
     )
     init_redis(settings.redis_url)
+    cleanup_task = asyncio.create_task(stale_upload_cleanup_task())
     log.info("connection pool and Redis pool opened")
     try:
         yield
     finally:
+        cleanup_task.cancel()
         close_pool()
         await close_redis()
         log.info("connection pool and Redis pool closed")

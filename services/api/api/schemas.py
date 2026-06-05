@@ -47,6 +47,10 @@ class ProjectFiles(BaseModel):
 
 # ---- requests -------------------------------------------------------------
 
+class UploadImageStart(BaseModel):
+    total_chunks: int = Field(ge=1)
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     language: str = Field(min_length=1, max_length=64)

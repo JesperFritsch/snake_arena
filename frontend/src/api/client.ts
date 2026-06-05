@@ -120,7 +120,7 @@ export interface ApiClient {
   getProject(id: number): Promise<ProjectMeta>;
   getFiles(id: number): Promise<ProjectFiles>;
   saveFiles(id: number, files: ProjectFiles): Promise<ProjectMeta>;
-  uploadProjectImage(projectId: number, file: File): Promise<ProjectMeta>;
+  uploadProjectImage(projectId: number, file: File, onProgress?: (pct: number) => void): Promise<ProjectMeta>;
   downloadProto(): Promise<void>;
   downloadHarness(language: string): Promise<void>;
   submit(id: number): Promise<SubmitResult>;
@@ -156,15 +156,52 @@ async function downloadBlob(getToken: TokenGetter, path: string, filename: strin
   URL.revokeObjectURL(url);
 }
 
-async function uploadFile<T>(getToken: TokenGetter, path: string, file: File): Promise<T> {
-  const token = await getToken();
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch(`${BASE_URL}${path}`, { method: "POST", headers, body: form });
-  if (!res.ok) throw await buildApiError(res);
-  return (await res.json()) as T;
+const _CHUNK_SIZE = 90 * 1024 * 1024; // 90 MB — stays under Cloudflare's 100 MB per-request limit
+
+async function uploadProjectImageChunked(
+  getToken: TokenGetter,
+  projectId: number,
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<ProjectMeta> {
+  const totalChunks = Math.max(1, Math.ceil(file.size / _CHUNK_SIZE));
+
+  const authHeaders = async (): Promise<Record<string, string>> => {
+    const token = await getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  // 1. Start session
+  const startRes = await fetch(`${BASE_URL}/projects/${projectId}/upload-image/start`, {
+    method: "POST",
+    headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+    body: JSON.stringify({ total_chunks: totalChunks }),
+  });
+  if (!startRes.ok) throw await buildApiError(startRes);
+  const { upload_id } = (await startRes.json()) as { upload_id: string };
+
+  // 2. Upload chunks sequentially
+  for (let i = 0; i < totalChunks; i++) {
+    const chunk = file.slice(i * _CHUNK_SIZE, (i + 1) * _CHUNK_SIZE);
+    const form = new FormData();
+    form.append("file", chunk);
+    const chunkRes = await fetch(
+      `${BASE_URL}/projects/${projectId}/upload-image/chunk?upload_id=${upload_id}&index=${i}`,
+      { method: "POST", headers: await authHeaders(), body: form },
+    );
+    if (!chunkRes.ok) throw await buildApiError(chunkRes);
+    // totalChunks + 1 steps total (finalize counts as the last step)
+    onProgress?.(((i + 1) / (totalChunks + 1)) * 100);
+  }
+
+  // 3. Finalize — assembles chunks and loads the Docker image
+  const finalRes = await fetch(
+    `${BASE_URL}/projects/${projectId}/upload-image/finalize?upload_id=${upload_id}`,
+    { method: "POST", headers: await authHeaders() },
+  );
+  if (!finalRes.ok) throw await buildApiError(finalRes);
+  onProgress?.(100);
+  return (await finalRes.json()) as ProjectMeta;
 }
 
 /** React hook returning an API client bound to the current Clerk session. */
@@ -191,8 +228,8 @@ export function useApi(): ApiClient {
       getProject: (id) => request(g, "GET", `/projects/${id}`),
       getFiles: (id) => request(g, "GET", `/projects/${id}/files`),
       saveFiles: (id, files) => request(g, "PUT", `/projects/${id}/files`, files),
-      uploadProjectImage: (projectId, file) =>
-        uploadFile<ProjectMeta>(g, `/projects/${projectId}/upload-image`, file),
+      uploadProjectImage: (projectId, file, onProgress) =>
+        uploadProjectImageChunked(g, projectId, file, onProgress),
       downloadProto: () => downloadBlob(g, "/download/proto", "sim_interface.proto"),
       downloadHarness: (language) =>
         downloadBlob(g, `/download/harness/${language}`, `snake-harness-${language}.zip`),

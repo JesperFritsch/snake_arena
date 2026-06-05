@@ -15,11 +15,17 @@ unpacks it back for the editor, so the browser never handles archive bytes.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import io
+import json
 import re
+import shutil
+import tempfile
 import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import docker
 from docker.errors import DockerException
@@ -71,6 +77,7 @@ from api.schemas import (
     QuotaStatus,
     SubmitQuotaStatus,
     SubmitResult,
+    UploadImageStart,
 )
 from api.settings import get_settings, Settings
 
@@ -81,6 +88,79 @@ _MAX_DECODED_BYTES = 5 * 1024 * 1024   # total uncompressed payload
 _MAX_ARCHIVE_BYTES = 5 * 1024 * 1024   # matches the projects_*_code_size CHECKs
 _MAX_IMAGE_BYTES   = 500 * 1024 * 1024  # 500 MB cap for uploaded Docker tarballs
 _REGISTRY_PREFIX   = "snake"
+
+# Chunked image upload
+_UPLOAD_TMP_DIR  = Path(tempfile.gettempdir()) / "snake-uploads"
+_MAX_CHUNK_BYTES = 90 * 1024 * 1024   # 90 MB per chunk — stays under Cloudflare's 100 MB limit
+_MAX_CHUNKS      = 10                  # 10 × 90 MB = 900 MB, gated by _MAX_IMAGE_BYTES anyway
+_UPLOAD_TTL      = timedelta(hours=2)
+_UPLOAD_ID_RE    = re.compile(r"^[0-9a-f]{32}$")
+
+
+class _ChunkReader(io.RawIOBase):
+    """Streams assembled chunk files to the Docker SDK without loading all at once."""
+
+    def __init__(self, upload_dir: Path, total_chunks: int) -> None:
+        self._chunks = [upload_dir / f"{i}.chunk" for i in range(total_chunks)]
+        self._ci = 0
+        self._buf = b""
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: bytearray) -> int:
+        while self._pos >= len(self._buf):
+            if self._ci >= len(self._chunks):
+                return 0
+            self._buf = self._chunks[self._ci].read_bytes()
+            self._pos = 0
+            self._ci += 1
+        take = min(len(b), len(self._buf) - self._pos)
+        b[:take] = self._buf[self._pos : self._pos + take]
+        self._pos += take
+        return take
+
+
+def _resolve_upload_dir(upload_id: str) -> Path:
+    if not _UPLOAD_ID_RE.fullmatch(upload_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid upload_id")
+    return _UPLOAD_TMP_DIR / upload_id
+
+
+def _read_upload_meta(upload_id: str, project_id: int, user_id: int) -> dict:
+    d = _resolve_upload_dir(upload_id)
+    meta_path = d / "meta.json"
+    if not meta_path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "upload session not found or expired")
+    meta = json.loads(meta_path.read_text())
+    if meta["project_id"] != project_id or meta["user_id"] != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "upload session not found or expired")
+    return meta
+
+
+async def stale_upload_cleanup_task() -> None:
+    """Background task: deletes upload dirs that were never finalized."""
+    while True:
+        await asyncio.sleep(3600)
+        if not _UPLOAD_TMP_DIR.is_dir():
+            continue
+        cutoff = datetime.now(tz=timezone.utc) - _UPLOAD_TTL
+        for d in _UPLOAD_TMP_DIR.iterdir():
+            if not d.is_dir():
+                continue
+            meta_path = d / "meta.json"
+            try:
+                if meta_path.exists():
+                    created = datetime.fromisoformat(
+                        json.loads(meta_path.read_text())["created_at"]
+                    )
+                    if created < cutoff:
+                        shutil.rmtree(d, ignore_errors=True)
+                else:
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def _owned_meta(conn: Connection, project_id: int, user: User) -> ProjectMeta:
@@ -353,41 +433,102 @@ def download_dev_archive(
 
 
 
-@router.post("/{project_id}/upload-image", response_model=ProjectMeta)
-async def upload_image(
+@router.post("/{project_id}/upload-image/start")
+async def upload_image_start(
     project_id: int,
-    file: UploadFile,
+    body: UploadImageStart,
     conn: Connection = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> ProjectMeta:
-    """Accept a docker-save tarball, load it, tag it as the dev image."""
+) -> dict:
+    """Begin a chunked image upload. Returns an upload_id for subsequent chunk/finalize calls."""
     await check_upload_quota_available(user.id)
 
     meta = _owned_meta(conn, project_id, user)
     if meta.source != "external_image":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "only external_image projects support image upload")
+    if body.total_chunks > _MAX_CHUNKS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"too many chunks (max {_MAX_CHUNKS})")
 
+    upload_id = uuid.uuid4().hex
+    upload_dir = _UPLOAD_TMP_DIR / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    (upload_dir / "meta.json").write_text(json.dumps({
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "total_chunks": body.total_chunks,
+        "project_id": project_id,
+        "user_id": user.id,
+    }))
+    return {"upload_id": upload_id}
+
+
+@router.post("/{project_id}/upload-image/chunk")
+async def upload_image_chunk(
+    project_id: int,
+    upload_id: str,
+    index: int,
+    file: UploadFile,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Upload one chunk of a previously started image upload."""
+    meta = _read_upload_meta(upload_id, project_id, user.id)
+    total_chunks = meta["total_chunks"]
+    if index < 0 or index >= total_chunks:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"chunk index out of range (0–{total_chunks - 1})")
     if file.size is None:
         raise HTTPException(status.HTTP_411_LENGTH_REQUIRED, "Content-Length required")
-    if file.size > _MAX_IMAGE_BYTES:
+    if file.size > _MAX_CHUNK_BYTES:
         raise HTTPException(
             status.HTTP_413_CONTENT_TOO_LARGE,
-            f"image too large (max {_MAX_IMAGE_BYTES // 1024 // 1024} MB)",
+            f"chunk too large (max {_MAX_CHUNK_BYTES // 1024 // 1024} MB)",
         )
+    upload_dir = _resolve_upload_dir(upload_id)
+    (upload_dir / f"{index}.chunk").write_bytes(await file.read())
+    return {"received": index}
+
+
+@router.post("/{project_id}/upload-image/finalize", response_model=ProjectMeta)
+async def upload_image_finalize(
+    project_id: int,
+    upload_id: str,
+    conn: Connection = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProjectMeta:
+    """Assemble all chunks, load the Docker image, and clean up the temp dir."""
+    await check_upload_quota_available(user.id)
+
+    meta_json = _read_upload_meta(upload_id, project_id, user.id)
+    total_chunks = meta_json["total_chunks"]
+    upload_dir = _resolve_upload_dir(upload_id)
 
     try:
-        client = docker.from_env()
-    except DockerException as e:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"docker unavailable: {e}")
+        for i in range(total_chunks):
+            if not (upload_dir / f"{i}.chunk").exists():
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"chunk {i} missing")
 
-    try:
-        loaded = client.images.load(file.file)
-    except DockerException as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"failed to load image: {e}")
+        total_size = sum((upload_dir / f"{i}.chunk").stat().st_size for i in range(total_chunks))
+        if total_size > _MAX_IMAGE_BYTES:
+            raise HTTPException(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                f"image too large (max {_MAX_IMAGE_BYTES // 1024 // 1024} MB)",
+            )
+
+        try:
+            client = docker.from_env()
+        except DockerException as e:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"docker unavailable: {e}")
+
+        reader = io.BufferedReader(_ChunkReader(upload_dir, total_chunks))
+        try:
+            loaded = client.images.load(reader)
+        except DockerException as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"failed to load image: {e}")
+    finally:
+        shutil.rmtree(upload_dir, ignore_errors=True)
 
     if not loaded:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no images found in tarball")
 
+    meta = _owned_meta(conn, project_id, user)
     image = loaded[0]
     safe_name = re.sub(r"[^a-z0-9._-]", "-", meta.name.lower()) or "unnamed"
     image_tag = f"{_REGISTRY_PREFIX}-{project_id}-{safe_name}-{uuid.uuid4().hex[:8]}"
@@ -412,8 +553,7 @@ async def upload_image(
     record_dev_build_start(conn, project_id)
     record_dev_build_success(conn, project_id, image_tag)
 
-    # Consume the daily quota slot only after the upload succeeds. A failed
-    # docker load / 400 / 503 doesn't burn a slot.
+    # Consume the daily quota slot only after the upload succeeds.
     await consume_upload_quota(user.id)
 
     refreshed = get_project_meta(conn, project_id)

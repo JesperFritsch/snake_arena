@@ -16,6 +16,7 @@ export function ImageUploadPanel({ meta, languages, onUploaded }: Props) {
   const api = useApi();
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadPct, setUploadPct] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [harnessLang, setHarnessLang] = useState(languages[0]?.name ?? "");
@@ -39,8 +40,9 @@ export function ImageUploadPanel({ meta, languages, onUploaded }: Props) {
       return;
     }
     setUploading(true);
+    setUploadPct(0);
     try {
-      const updated = await api.uploadProjectImage(meta.id, file);
+      const updated = await api.uploadProjectImage(meta.id, file, setUploadPct);
       onUploaded(updated);
       api.getUploadImageQuota().then(setQuota).catch(() => {});
     } catch (e) {
@@ -160,7 +162,9 @@ export function ImageUploadPanel({ meta, languages, onUploaded }: Props) {
                 onChange={onFileChange}
               />
               {uploading ? (
-                <span className="muted">Uploading…</span>
+                <span className="muted">
+                  {uploadPct < 100 ? `Uploading… ${Math.round(uploadPct)}%` : "Processing…"}
+                </span>
               ) : outOfQuota ? (
                 <>
                   <span style={{ fontSize: 28, lineHeight: 1 }}>⏳</span>
