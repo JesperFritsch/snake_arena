@@ -46,26 +46,57 @@ fn bytes_to_grid(data: &[u8], height: usize, width: usize, dtype: &str) -> Vec<V
     let n = height * width;
     let mut flat = Vec::with_capacity(n);
     match dtype {
-        "int32" | "<i4" | ">i4" => {
+        "int8" | "|i1" => {
+            for &byte in data {
+                flat.push(byte as i8 as i32);
+            }
+        }
+        "uint8" | "|u1" => {
+            for &byte in data {
+                flat.push(byte as i32);
+            }
+        }
+        "int16" | "<i2" => {
+            for chunk in data.chunks_exact(2) {
+                flat.push(i16::from_le_bytes(chunk.try_into().unwrap_or([0; 2])) as i32);
+            }
+        }
+        "uint16" | "<u2" => {
+            for chunk in data.chunks_exact(2) {
+                flat.push(u16::from_le_bytes(chunk.try_into().unwrap_or([0; 2])) as i32);
+            }
+        }
+        "int32" | "<i4" => {
             for chunk in data.chunks_exact(4) {
                 flat.push(i32::from_le_bytes(chunk.try_into().unwrap_or([0; 4])));
             }
         }
-        "int64" | "<i8" | ">i8" => {
+        "uint32" | "<u4" => {
+            for chunk in data.chunks_exact(4) {
+                flat.push(u32::from_le_bytes(chunk.try_into().unwrap_or([0; 4])) as i32);
+            }
+        }
+        "int64" | "<i8" => {
             for chunk in data.chunks_exact(8) {
                 flat.push(i64::from_le_bytes(chunk.try_into().unwrap_or([0; 8])) as i32);
             }
         }
-        "float32" | "<f4" | ">f4" => {
+        "uint64" | "<u8" => {
+            for chunk in data.chunks_exact(8) {
+                flat.push(u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8])) as i32);
+            }
+        }
+        "float32" | "<f4" => {
             for chunk in data.chunks_exact(4) {
                 flat.push(f32::from_le_bytes(chunk.try_into().unwrap_or([0; 4])) as i32);
             }
         }
-        _ => {
-            for chunk in data.chunks_exact(4) {
-                flat.push(i32::from_le_bytes(chunk.try_into().unwrap_or([0; 4])));
+        "float64" | "<f8" => {
+            for chunk in data.chunks_exact(8) {
+                flat.push(f64::from_le_bytes(chunk.try_into().unwrap_or([0; 8])) as i32);
             }
         }
+        _ => panic!("unsupported dtype: {}", dtype),
     }
     flat.resize(n, 0);
     flat.chunks(width).map(|row| row.to_vec()).collect()

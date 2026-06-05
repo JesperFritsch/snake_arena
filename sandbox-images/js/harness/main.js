@@ -20,15 +20,38 @@ function bytesToGrid(buf, h, w, dt) {
   if (!(buf instanceof Buffer)) buf = Buffer.from(buf);
   const n = h * w;
   const flat = new Array(n).fill(0);
-  if (dt === 'int64' || dt === '<i8' || dt === '>i8') {
-    for (let i = 0; i < n && (i + 1) * 8 <= buf.length; i++)
-      flat[i] = Number(buf.readBigInt64LE(i * 8));
-  } else if (dt === 'float32' || dt === '<f4' || dt === '>f4') {
-    for (let i = 0; i < n && (i + 1) * 4 <= buf.length; i++)
-      flat[i] = buf.readFloatLE(i * 4);
-  } else {
+  if (dt === 'int8' || dt === '|i1') {
+    for (let i = 0; i < n && i < buf.length; i++)
+      flat[i] = buf.readInt8(i);
+  } else if (dt === 'uint8' || dt === '|u1') {
+    for (let i = 0; i < n && i < buf.length; i++)
+      flat[i] = buf[i];
+  } else if (dt === 'int16' || dt === '<i2') {
+    for (let i = 0; i < n && (i + 1) * 2 <= buf.length; i++)
+      flat[i] = buf.readInt16LE(i * 2);
+  } else if (dt === 'uint16' || dt === '<u2') {
+    for (let i = 0; i < n && (i + 1) * 2 <= buf.length; i++)
+      flat[i] = buf.readUInt16LE(i * 2);
+  } else if (dt === 'int32' || dt === '<i4') {
     for (let i = 0; i < n && (i + 1) * 4 <= buf.length; i++)
       flat[i] = buf.readInt32LE(i * 4);
+  } else if (dt === 'uint32' || dt === '<u4') {
+    for (let i = 0; i < n && (i + 1) * 4 <= buf.length; i++)
+      flat[i] = buf.readUInt32LE(i * 4);
+  } else if (dt === 'int64' || dt === '<i8') {
+    for (let i = 0; i < n && (i + 1) * 8 <= buf.length; i++)
+      flat[i] = Number(buf.readBigInt64LE(i * 8));
+  } else if (dt === 'uint64' || dt === '<u8') {
+    for (let i = 0; i < n && (i + 1) * 8 <= buf.length; i++)
+      flat[i] = Number(buf.readBigUInt64LE(i * 8));
+  } else if (dt === 'float32' || dt === '<f4') {
+    for (let i = 0; i < n && (i + 1) * 4 <= buf.length; i++)
+      flat[i] = buf.readFloatLE(i * 4);
+  } else if (dt === 'float64' || dt === '<f8') {
+    for (let i = 0; i < n && (i + 1) * 8 <= buf.length; i++)
+      flat[i] = buf.readDoubleLE(i * 8);
+  } else {
+    throw new Error(`unsupported dtype: ${dt}`);
   }
   const grid = [];
   for (let r = 0; r < h; r++)

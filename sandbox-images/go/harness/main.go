@@ -32,18 +32,49 @@ func bytesToGrid(data []byte, height, width int32, dtype string) [][]int32 {
 	n := int(height) * int(width)
 	flat := make([]int32, n)
 	switch dtype {
-	case "int64", "<i8", ">i8":
-		for i := 0; i < n && (i+1)*8 <= len(data); i++ {
-			flat[i] = int32(int64(binary.LittleEndian.Uint64(data[i*8:])))
+	case "int8", "|i1":
+		for i := 0; i < n && i < len(data); i++ {
+			flat[i] = int32(int8(data[i]))
 		}
-	case "float32", "<f4", ">f4":
-		for i := 0; i < n && (i+1)*4 <= len(data); i++ {
-			flat[i] = int32(math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:])))
+	case "uint8", "|u1":
+		for i := 0; i < n && i < len(data); i++ {
+			flat[i] = int32(data[i])
 		}
-	default:
+	case "int16", "<i2":
+		for i := 0; i < n && (i+1)*2 <= len(data); i++ {
+			flat[i] = int32(int16(binary.LittleEndian.Uint16(data[i*2:])))
+		}
+	case "uint16", "<u2":
+		for i := 0; i < n && (i+1)*2 <= len(data); i++ {
+			flat[i] = int32(binary.LittleEndian.Uint16(data[i*2:]))
+		}
+	case "int32", "<i4":
 		for i := 0; i < n && (i+1)*4 <= len(data); i++ {
 			flat[i] = int32(binary.LittleEndian.Uint32(data[i*4:]))
 		}
+	case "uint32", "<u4":
+		for i := 0; i < n && (i+1)*4 <= len(data); i++ {
+			flat[i] = int32(binary.LittleEndian.Uint32(data[i*4:]))
+		}
+	case "int64", "<i8":
+		for i := 0; i < n && (i+1)*8 <= len(data); i++ {
+			flat[i] = int32(int64(binary.LittleEndian.Uint64(data[i*8:])))
+		}
+	case "uint64", "<u8":
+		for i := 0; i < n && (i+1)*8 <= len(data); i++ {
+			flat[i] = int32(binary.LittleEndian.Uint64(data[i*8:]))
+		}
+	case "float32", "<f4":
+		for i := 0; i < n && (i+1)*4 <= len(data); i++ {
+			flat[i] = int32(math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:])))
+		}
+	case "float64", "<f8":
+		for i := 0; i < n && (i+1)*8 <= len(data); i++ {
+			flat[i] = int32(math.Float64frombits(binary.LittleEndian.Uint64(data[i*8:])))
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unsupported dtype: %s\n", dtype)
+		os.Exit(1)
 	}
 	grid := make([][]int32, height)
 	for r := range grid {

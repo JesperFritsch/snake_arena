@@ -23,24 +23,41 @@ static std::vector<std::vector<int>> bytes_to_grid(
     std::vector<int> flat;
     flat.reserve(n);
 
-    auto push_le32 = [&](size_t i) {
-        int32_t v; std::memcpy(&v, data.data() + i, 4); flat.push_back(v);
-    };
-    auto push_le64 = [&](size_t i) {
-        int64_t v; std::memcpy(&v, data.data() + i, 8);
-        flat.push_back(static_cast<int>(v));
-    };
-    auto push_f32 = [&](size_t i) {
-        float v; std::memcpy(&v, data.data() + i, 4);
-        flat.push_back(static_cast<int>(v));
-    };
+    const char* d = data.data();
+    auto rd16 = [&](size_t i) { int16_t  v; std::memcpy(&v, d+i, 2); return static_cast<int>(v); };
+    auto ru16 = [&](size_t i) { uint16_t v; std::memcpy(&v, d+i, 2); return static_cast<int>(v); };
+    auto ri32 = [&](size_t i) { int32_t  v; std::memcpy(&v, d+i, 4); return static_cast<int>(v); };
+    auto ru32 = [&](size_t i) { uint32_t v; std::memcpy(&v, d+i, 4); return static_cast<int>(v); };
+    auto ri64 = [&](size_t i) { int64_t  v; std::memcpy(&v, d+i, 8); return static_cast<int>(v); };
+    auto ru64 = [&](size_t i) { uint64_t v; std::memcpy(&v, d+i, 8); return static_cast<int>(v); };
+    auto rf32 = [&](size_t i) { float    v; std::memcpy(&v, d+i, 4); return static_cast<int>(v); };
+    auto rf64 = [&](size_t i) { double   v; std::memcpy(&v, d+i, 8); return static_cast<int>(v); };
 
-    if (dtype == "int64" || dtype == "<i8" || dtype == ">i8") {
-        for (size_t i = 0; i + 8 <= data.size(); i += 8) push_le64(i);
-    } else if (dtype == "float32" || dtype == "<f4" || dtype == ">f4") {
-        for (size_t i = 0; i + 4 <= data.size(); i += 4) push_f32(i);
+    if (dtype == "int8" || dtype == "|i1") {
+        for (size_t i = 0; i < data.size(); i++)
+            flat.push_back(static_cast<int>(static_cast<int8_t>(data[i])));
+    } else if (dtype == "uint8" || dtype == "|u1") {
+        for (size_t i = 0; i < data.size(); i++)
+            flat.push_back(static_cast<int>(static_cast<uint8_t>(data[i])));
+    } else if (dtype == "int16" || dtype == "<i2") {
+        for (size_t i = 0; i + 2 <= data.size(); i += 2) flat.push_back(rd16(i));
+    } else if (dtype == "uint16" || dtype == "<u2") {
+        for (size_t i = 0; i + 2 <= data.size(); i += 2) flat.push_back(ru16(i));
+    } else if (dtype == "int32" || dtype == "<i4") {
+        for (size_t i = 0; i + 4 <= data.size(); i += 4) flat.push_back(ri32(i));
+    } else if (dtype == "uint32" || dtype == "<u4") {
+        for (size_t i = 0; i + 4 <= data.size(); i += 4) flat.push_back(ru32(i));
+    } else if (dtype == "int64" || dtype == "<i8") {
+        for (size_t i = 0; i + 8 <= data.size(); i += 8) flat.push_back(ri64(i));
+    } else if (dtype == "uint64" || dtype == "<u8") {
+        for (size_t i = 0; i + 8 <= data.size(); i += 8) flat.push_back(ru64(i));
+    } else if (dtype == "float32" || dtype == "<f4") {
+        for (size_t i = 0; i + 4 <= data.size(); i += 4) flat.push_back(rf32(i));
+    } else if (dtype == "float64" || dtype == "<f8") {
+        for (size_t i = 0; i + 8 <= data.size(); i += 8) flat.push_back(rf64(i));
     } else {
-        for (size_t i = 0; i + 4 <= data.size(); i += 4) push_le32(i);
+        std::cerr << "unsupported dtype: " << dtype << "\n";
+        std::exit(1);
     }
     flat.resize(n, 0);
 
