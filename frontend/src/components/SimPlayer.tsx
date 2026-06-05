@@ -277,8 +277,14 @@ export function SimPlayer({
   const overlayText = (() => {
     if (status === "connecting") return "connecting…";
     if (status === "loading")    return "loading replay…";
-    if (status === "failed")     return errorMsg || "match failed";
-    if (status === "error")      return errorMsg || "failed to load replay";
+    if (status === "failed") {
+      const msg = errorMsg || "match failed";
+      return msg.includes("\n") ? "match failed" : msg;
+    }
+    if (status === "error") {
+      const msg = errorMsg || "failed to load replay";
+      return msg.includes("\n") ? "failed to load replay" : msg;
+    }
     return null;
   })();
   const overlayIsError = status === "failed" || status === "error";
