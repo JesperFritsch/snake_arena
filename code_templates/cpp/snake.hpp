@@ -1,6 +1,12 @@
 #pragma once
 #include "snake_base.hpp"
 
+// Harness types (defined in types.hpp, not editable):
+//   struct Coord       { int x, y; };
+//   struct SnakeValues { int head_value, body_value; };
+//   struct SnakeRep    { bool is_alive; int length; };
+//   EnvInitData / EnvStepData fields documented in snake.cpp
+
 class Snake : public SnakeBase {
 public:
     Snake();

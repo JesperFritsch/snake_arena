@@ -1,25 +1,31 @@
 // setId(id)              — called once; your integer ID in this game
 // setStartLength(n)      — called once; initial body length
-// setStartPosition(pos)  — called once; initial head position {x, y}
+// setStartPosition(pos)  — called once; initial head position Coord{ int x, int y }
 // setInitData(data)      — called once; full environment metadata (see below)
 //
 // EnvInitData fields:
-//   height, width              — grid dimensions
-//   freeValue                  — cell value for empty space
-//   blockedValue               — cell value for walls
-//   foodValue                  — cell value for food
-//   snakeTags.get(id)          — display name for each snake
-//   snakeValues.get(id)        — SnakeValues(headValue, bodyValue)
-//   startPositions.get(id)     — Coord(x, y) starting head position
-//   baseMap[row][col]          — static map (walls/free cells); row 0 is top
+//   height, width              — int: grid dimensions
+//   freeValue                  — int: cell value for empty space
+//   blockedValue               — int: cell value for walls
+//   foodValue                  — int: cell value for food
+//   snakeTags                  — Map<Integer, String>: display name per snake id
+//   snakeValues                — Map<Integer, SnakeValues>: { int headValue, int bodyValue } per snake id
+//   startPositions             — Map<Integer, Coord>: { int x, int y } starting head position per snake id
+//   baseMap                    — int[][]: static map (walls/free cells); row 0 is top
 //
 // update(data) — called every step; return int[] { dx, dy } to move:
 //   { 1,  0} right   {-1,  0} left   { 0,  1} down   { 0, -1} up
 //
 // EnvStepData fields:
-//   map[row][col]              — current grid (walls + snakes + food)
-//   snakes.get(id)             — SnakeRep(isAlive, length)
-//   foodLocations              — List<Coord> food positions
+//   map                        — int[][]: current grid (walls + snakes + food); row 0 is top
+//   snakes                     — Map<Integer, SnakeRep>: { boolean isAlive, int length } per snake id
+//   foodLocations              — List<Coord>: food positions { int x, int y }
+
+// Harness types (not editable):
+//   Coord:       int x, y
+//   SnakeValues: int headValue, bodyValue
+//   SnakeRep:    boolean isAlive; int length
+//   EnvInitData / EnvStepData fields documented above
 
 public class Snake implements SnakeInterface {
     private int id;
