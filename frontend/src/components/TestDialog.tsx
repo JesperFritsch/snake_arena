@@ -32,8 +32,8 @@ export function saveTestSettings(pid: number, s: TestSettings): void {
 const DEFAULT_SETTINGS: TestSettings = {
   food: 3,
   arenaMode: "custom",
-  gridWidth: "",
-  gridHeight: "",
+  gridWidth: String(MIN_GRID),
+  gridHeight: String(MIN_GRID),
   map: null,
   opponentIds: [],
 };
@@ -83,21 +83,28 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const minFood = useMemo(() => {
+  const totalSelected = Object.values(counts).reduce((a, b) => a + b, 0);
+
+  const { minFood, maxFood } = useMemo(() => {
+    let w: number, h: number;
     if (arenaMode === "map") {
       const map = maps.find((m) => m.name === selectedMap);
-      return map ? Math.max(1, Math.floor((map.width * map.height) / 50)) : 1;
+      if (!map) return { minFood: 1, maxFood: 1 };
+      ({ width: w, height: h } = map);
+    } else {
+      w = parseInt(gridWidth);
+      h = parseInt(gridHeight);
+      if (isNaN(w) || isNaN(h)) return { minFood: 1, maxFood: 1 };
     }
-    const w = parseInt(gridWidth);
-    const h = parseInt(gridHeight);
-    return !isNaN(w) && !isNaN(h) ? Math.max(1, Math.floor((w * h) / 50)) : 1;
-  }, [arenaMode, gridWidth, gridHeight, selectedMap, maps]);
+    const min = Math.max(1, Math.floor((w * h) / 50));
+    // leave a cell for each snake (player + opponents) at spawn
+    const max = Math.max(min, w * h - (totalSelected + 1));
+    return { minFood: min, maxFood: max };
+  }, [arenaMode, gridWidth, gridHeight, selectedMap, maps, totalSelected]);
 
   useEffect(() => {
-    setFood((f) => Math.max(f, minFood));
-  }, [minFood]);
-
-  const totalSelected = Object.values(counts).reduce((a, b) => a + b, 0);
+    setFood((f) => Math.min(maxFood, Math.max(minFood, f)));
+  }, [minFood, maxFood]);
 
   const adjust = (id: number, delta: number) => {
     setCounts((prev) => {
@@ -106,6 +113,16 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
       const next = Math.max(0, (prev[id] ?? 0) + delta);
       return { ...prev, [id]: next };
     });
+  };
+
+  const onGridChange = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    set(e.target.value.replace(/\D/g, ""));
+  };
+
+  const clampGrid = (set: (v: string) => void) => (e: React.FocusEvent<HTMLInputElement>) => {
+    const n = parseInt(e.target.value);
+    if (isNaN(n)) { set(String(MIN_GRID)); return; }
+    set(String(Math.min(MAX_GRID, Math.max(MIN_GRID, n))));
   };
 
   const filteredOpponents = opponents.filter((p) => {
@@ -216,10 +233,16 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
             <input
               className="input"
               type="number"
+              inputMode="numeric"
               min={minFood}
+              max={maxFood}
               value={food}
               style={{ width: 70 }}
-              onChange={(e) => setFood(Math.max(minFood, parseInt(e.target.value) || minFood))}
+              onChange={(e) => setFood(parseInt(e.target.value.replace(/\D/g, "")) || minFood)}
+              onBlur={(e) => {
+                const n = parseInt(e.target.value);
+                setFood(isNaN(n) ? minFood : Math.min(maxFood, Math.max(minFood, n)));
+              }}
             />
             {minFood > 1 && <span className="muted" style={{ fontSize: 11 }}>min {minFood}</span>}
           </div>
@@ -247,23 +270,27 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
               <input
                 className="input"
                 type="number"
+                inputMode="numeric"
                 placeholder="width"
                 value={gridWidth}
                 min={MIN_GRID}
                 max={MAX_GRID}
                 style={{ width: 80 }}
-                onChange={(e) => setGridWidth(e.target.value)}
+                onChange={onGridChange(setGridWidth)}
+                onBlur={clampGrid(setGridWidth)}
               />
               <span className="muted">×</span>
               <input
                 className="input"
                 type="number"
+                inputMode="numeric"
                 placeholder="height"
                 value={gridHeight}
                 min={MIN_GRID}
                 max={MAX_GRID}
                 style={{ width: 80 }}
-                onChange={(e) => setGridHeight(e.target.value)}
+                onChange={onGridChange(setGridHeight)}
+                onBlur={clampGrid(setGridHeight)}
               />
               <span className="muted" style={{ fontSize: 11 }}>{MIN_GRID}–{MAX_GRID}</span>
             </div>
