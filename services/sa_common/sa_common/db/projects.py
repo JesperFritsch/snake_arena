@@ -48,7 +48,8 @@ BuildStatus = Literal["saved", "building", "ready", "failed"]
 class Project:
     """Full project state including both code archives."""
     id: int
-    user_id: int
+    user_id: int | None          # None for guest-owned projects
+    guest_session_id: str | None  # None for user-owned projects
     name: str
     language: str
     source: str
@@ -81,7 +82,8 @@ class ProjectMeta:
     """Project metadata without the code archives — cheap for listings and
     for orchestrator dispatch lookups."""
     id: int
-    user_id: int
+    user_id: int | None           # None for guest-owned projects
+    guest_session_id: str | None  # None for user-owned projects
     name: str
     language: str
     source: str
@@ -97,7 +99,7 @@ class ProjectMeta:
 
 
 _META_COLUMNS = """
-    id, user_id, name, language, source,
+    id, user_id, guest_session_id, name, language, source,
     dev_image_tag, dev_build_status, dev_built_at,
     submitted_image_tag, submitted_version, submitted_at, submitted_crashed,
     created_at, updated_at
@@ -110,26 +112,30 @@ _META_COLUMNS = """
 
 def create_project(
     conn: Connection,
-    user_id: int,
     name: str,
     language: str,
     source: ProjectSource = "browser",
     dev_code_archive: bytes | None = None,
+    user_id: int | None = None,
+    guest_session_id: str | None = None,
 ) -> int:
     """Insert a new project. Returns the new project's id.
 
+    Exactly one of user_id or guest_session_id must be provided.
     For browser projects, dev_code_archive must be provided (the editor's
     starting state — typically a language template). For external_image
     projects, dev_code_archive must be None.
     """
+    if (user_id is None) == (guest_session_id is None):
+        raise ValueError("exactly one of user_id or guest_session_id must be provided")
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO projects (user_id, name, language, source, dev_code_archive)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO projects (user_id, guest_session_id, name, language, source, dev_code_archive)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (user_id, name, language, source, dev_code_archive),
+            (user_id, guest_session_id, name, language, source, dev_code_archive),
         )
         row = cur.fetchone()
         assert row is not None
@@ -159,6 +165,14 @@ def count_projects_for_user(conn: Connection, user_id: int) -> int:
         return cur.fetchone()[0]
 
 
+def count_projects_for_guest_session(conn: Connection, session_id: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM projects WHERE guest_session_id = %s", (session_id,)
+        )
+        return cur.fetchone()[0]
+
+
 def list_projects_for_user(conn: Connection, user_id: int) -> list[ProjectMeta]:
     """List a user's projects (no code archives), most recently updated first."""
     with conn.cursor(row_factory=class_row(ProjectMeta)) as cur:
@@ -168,6 +182,21 @@ def list_projects_for_user(conn: Connection, user_id: int) -> list[ProjectMeta]:
             ORDER BY updated_at DESC
             """,
             (user_id,),
+        )
+        return cur.fetchall()
+
+
+def list_projects_for_guest_session(
+    conn: Connection, session_id: str
+) -> list[ProjectMeta]:
+    """List a guest session's projects, most recently updated first."""
+    with conn.cursor(row_factory=class_row(ProjectMeta)) as cur:
+        cur.execute(
+            f"""
+            SELECT {_META_COLUMNS} FROM projects WHERE guest_session_id = %s
+            ORDER BY updated_at DESC
+            """,
+            (session_id,),
         )
         return cur.fetchall()
 
@@ -555,7 +584,7 @@ def main():
                     language=args.language,
                     source="browser",
                     dev_code_archive=archive,
-                )
+                )  # CLI always creates user-owned projects
                 result = get_project_meta(conn, project_id)
 
             elif args.command == "get":

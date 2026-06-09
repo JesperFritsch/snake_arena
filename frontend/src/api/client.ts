@@ -2,6 +2,7 @@ import { useAuth } from "@clerk/clerk-react";
 import { useMemo } from "react";
 import type {
   GroupLeaderboardEntry,
+  GuestSession,
   LanguageInfo,
   LeaderboardEntry,
   MapInfo,
@@ -21,6 +22,21 @@ import type {
   TestMatchJob,
   UserOut,
 } from "./types";
+
+const GUEST_SESSION_KEY = "gridsnake_guest_session_id";
+
+export function getGuestSessionId(): string {
+  let id = localStorage.getItem(GUEST_SESSION_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(GUEST_SESSION_KEY, id);
+  }
+  return id;
+}
+
+export function clearGuestSessionId(): void {
+  localStorage.removeItem(GUEST_SESSION_KEY);
+}
 
 export const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
@@ -52,10 +68,8 @@ export class ApiError extends Error {
 type TokenGetter = () => Promise<string | null>;
 
 /**
- * Low-level request. Pulls a fresh Clerk session token and sends it as a
- * Bearer header — the backend (api/auth.py) verifies it against Clerk's JWKS
- * and resolves it to a local users row. Because we customised the *default*
- * session token (email/name claims), getToken() needs no template argument.
+ * Low-level request. Sends the Clerk JWT (when signed in) and always includes
+ * X-Guest-Session so the backend can migrate guest data on sign-in.
  */
 async function request<T>(
   getToken: TokenGetter,
@@ -66,6 +80,7 @@ async function request<T>(
   const token = await getToken();
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  headers["X-Guest-Session"] = getGuestSessionId();
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -107,6 +122,8 @@ async function buildApiError(res: Response): Promise<ApiError> {
 }
 
 export interface ApiClient {
+  getGuestSession(): Promise<GuestSession>;
+  claimGuestSession(sessionId: string): Promise<{ migrated: number }>;
   getLanguages(): Promise<LanguageInfo[]>;
   me(): Promise<UserOut>;
   getModes(): Promise<Mode[]>;
@@ -145,6 +162,7 @@ async function downloadBlob(getToken: TokenGetter, path: string, filename: strin
   const token = await getToken();
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  headers["X-Guest-Session"] = getGuestSessionId();
   const res = await fetch(`${BASE_URL}${path}`, { headers });
   if (!res.ok) throw await buildApiError(res);
   const blob = await res.blob();
@@ -168,7 +186,9 @@ async function uploadProjectImageChunked(
 
   const authHeaders = async (): Promise<Record<string, string>> => {
     const token = await getToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    const h: Record<string, string> = { "X-Guest-Session": getGuestSessionId() };
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    return h;
   };
 
   // 1. Start session
@@ -211,6 +231,8 @@ export function useApi(): ApiClient {
   return useMemo<ApiClient>(() => {
     const g: TokenGetter = () => getToken();
     return {
+      getGuestSession: () => request(g, "POST", "/guest/session"),
+      claimGuestSession: (sessionId) => request(g, "POST", "/guest/claim", { session_id: sessionId }),
       getLanguages: () => request(g, "GET", "/languages"),
       me: () => request(g, "GET", "/me"),
       getModes: () => request(g, "GET", "/modes"),

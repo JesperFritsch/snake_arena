@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
-import { UserButton } from "@clerk/clerk-react";
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
 import { GuideDialog } from "./GuideDialog";
 
 const GUIDE_SEEN_KEY = "snake_arena_guide_seen";
@@ -43,7 +43,14 @@ export function Layout() {
           </button>
         </nav>
         <span className="topbar-spacer" />
-        <UserButton afterSignOutUrl="/" />
+        <SignedOut>
+          <SignInButton mode="modal">
+            <button className="btn primary" style={{ fontSize: 13 }}>Sign in</button>
+          </SignInButton>
+        </SignedOut>
+        <SignedIn>
+          <UserButton afterSignOutUrl="/" />
+        </SignedIn>
       </header>
       <main className="main">
         <Outlet />

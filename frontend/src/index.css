@@ -181,6 +181,27 @@ button {
   background: rgba(255, 93, 93, 0.08);
 }
 
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.guest-banner {
+  padding: 6px 14px;
+  background: rgba(184, 255, 60, 0.06);
+  border-bottom: 1px solid rgba(184, 255, 60, 0.15);
+  color: var(--text-dim);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .select,
 .input {
   background: var(--bg-input);

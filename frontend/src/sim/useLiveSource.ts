@@ -8,6 +8,7 @@ import {
 import type { Highlight } from "./highlights";
 import type { SimMessage } from "./types";
 import type { SimSource, SimSourceStatus } from "./source";
+import { getGuestSessionId } from "../api/client";
 
 const BASE_WS_URL = (import.meta.env.VITE_API_BASE_URL ?? "")
   .replace(/\/$/, "")
@@ -19,7 +20,11 @@ interface Options {
    *  (queued/running → WS; success → bundle; failure/cancelled → failed). */
   jobStatus: string;
   jobError: string | null;
-  /** Clerk-style getter for the WS auth token. */
+  /** True when a Clerk session exists. Guests (false) authenticate the WS with
+   *  their guest session id and must NOT call getToken — Clerk's getToken can
+   *  hang/never resolve for signed-out users, which would block the WS. */
+  isSignedIn: boolean;
+  /** Clerk-style getter for the WS auth token. Only called when isSignedIn. */
   getToken: () => Promise<string | null>;
   getBundleUrl: () => Promise<{ url: string }>;
   /** Forwards JobStatus arrivals over the live channel. */
@@ -29,7 +34,7 @@ interface Options {
 }
 
 export function useLiveSource(opts: Options): SimSource {
-  const { jobId, jobStatus, jobError, getToken, getBundleUrl, onJobStatus, onBuildStatus } = opts;
+  const { jobId, jobStatus, jobError, isSignedIn, getToken, getBundleUrl, onJobStatus, onBuildStatus } = opts;
 
   const storeRef = useRef(new SimStore());
 
@@ -43,6 +48,8 @@ export function useLiveSource(opts: Options): SimSource {
   // Pin closures so the connect effect doesn't restart when callers re-render.
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
+  const isSignedInRef = useRef(isSignedIn);
+  isSignedInRef.current = isSignedIn;
   const getBundleUrlRef = useRef(getBundleUrl);
   getBundleUrlRef.current = getBundleUrl;
   const onJobStatusRef = useRef(onJobStatus);
@@ -102,11 +109,21 @@ export function useLiveSource(opts: Options): SimSource {
     }
 
     // ── Live path: connect WS and stream messages into the store.
-    getTokenRef.current().then((token) => {
-      if (cancelled || !token) return;
-      ws = new WebSocket(
-        `${BASE_WS_URL}/test-matches/${jobId}/ws?token=${encodeURIComponent(token)}`,
-      );
+    // Resolve the auth query param, then open the WS. Signed-in users send a
+    // Clerk JWT; guests send their session id. We only call getToken() when
+    // signed in — for signed-out users Clerk's getToken() can hang and never
+    // resolve, which would silently block the WS from ever opening.
+    const resolveAuthParam = async (): Promise<string> => {
+      if (isSignedInRef.current) {
+        const token = await getTokenRef.current().catch((): string | null => null);
+        if (token) return `token=${encodeURIComponent(token)}`;
+      }
+      return `session_id=${encodeURIComponent(getGuestSessionId())}`;
+    };
+
+    resolveAuthParam().then((auth) => {
+      if (cancelled) return;
+      ws = new WebSocket(`${BASE_WS_URL}/test-matches/${jobId}/ws?${auth}`);
 
       ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data as string) as SimMessage;

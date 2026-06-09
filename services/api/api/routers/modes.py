@@ -11,9 +11,7 @@ from psycopg import Connection
 
 from sa_common.db.mode_groups import list_groups
 from sa_common.db.modes import list_modes
-from sa_common.db.users import User
 
-from api.auth import get_current_user
 from api.db import get_db
 from api.schemas import GroupOut, ModeOut
 
@@ -24,7 +22,6 @@ router = APIRouter(tags=["modes"])
 def list_all_modes(
     enabled_only: bool = True,
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> list[ModeOut]:
     modes = list_modes(conn, enabled_only=enabled_only)
     return [
@@ -48,7 +45,6 @@ def list_all_modes(
 @router.get("/mode-groups", response_model=list[GroupOut])
 def list_all_groups(
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> list[GroupOut]:
     return [
         GroupOut(

@@ -221,9 +221,9 @@ async def consume_upload_quota(user_id: int) -> RateLimitResult:
 # Authenticated users: identified by user_id. Anonymous reads: identified by
 # the client IP (Cloudflare forwards it in CF-Connecting-IP; we fall back to
 # X-Forwarded-For then the socket peer for local dev).
-_GENERAL_AUTH_LIMIT_PER_MIN = 60
-_GENERAL_AUTH_WRITE_LIMIT_PER_MIN = 20
-_GENERAL_ANON_LIMIT_PER_MIN = 30
+_GENERAL_AUTH_LIMIT_PER_MIN = 120
+_GENERAL_AUTH_WRITE_LIMIT_PER_MIN = 60
+_GENERAL_ANON_LIMIT_PER_MIN = 120
 
 
 def _client_ip(request: Request) -> str:

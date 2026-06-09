@@ -24,6 +24,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocke
 from pydantic import BaseModel
 from psycopg import Connection
 
+from sa_common.db.guest_sessions import (
+    GuestSession,
+    GUEST_TEST_LIMIT,
+    get_guest_session,
+    increment_guest_test_count,
+)
 from sa_common.db.projects import get_project_meta, get_project_names, list_all_submitted
 from sa_common.db.quotas import (
     QuotaWindow,
@@ -42,7 +48,7 @@ from sa_common.db.test_match_jobs import (
 )
 from sa_common.db.users import User, get_or_create_user_by_clerk_id
 
-from api.auth import decode_token, get_current_user
+from api.auth import Principal, decode_token, get_current_user, get_principal
 from api.bundler import get_bundler
 from api.db import get_db, get_pool
 from api.redis import get_redis
@@ -80,10 +86,28 @@ def _quota_headers(window: QuotaWindow) -> dict[str, str]:
     return headers
 
 
+def _guest_quota_status(session: GuestSession) -> QuotaStatus:
+    remaining = max(0, GUEST_TEST_LIMIT - session.test_count)
+    return QuotaStatus(
+        limit=GUEST_TEST_LIMIT,
+        used=session.test_count,
+        remaining=remaining,
+        next_slot_at=None,
+        window_seconds=0,
+    )
+
+
+def _owns_job(conn: Connection, job: TestMatchJob, principal: Principal) -> bool:
+    """Check whether a principal owns a test match job."""
+    if isinstance(principal, GuestSession):
+        player = get_project_meta(conn, job.player_project_id)
+        return player is not None and str(player.guest_session_id) == str(principal.session_id)
+    return job.requested_by == principal.id
+
+
 @router.get("/opponents", response_model=list[PublicProjectSummary])
 def list_opponents(
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> list[PublicProjectSummary]:
     """All submitted projects across all users, for opponent selection."""
     return list_all_submitted(conn)
@@ -94,12 +118,16 @@ def list_jobs_for_project(
     player_project_id: int = Query(..., description="Filter by player project"),
     limit: int = Query(10, ge=1, le=50),
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> list[TestMatchJob]:
     """Last N test match jobs for the given project (newest first)."""
     player = get_project_meta(conn, player_project_id)
-    if player is None or player.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    if isinstance(principal, GuestSession):
+        if player is None or player.guest_session_id != principal.session_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    else:
+        if player is None or player.user_id != principal.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     jobs = list_test_jobs_for_project(conn, player_project_id, limit=limit)
     return [_add_names(conn, j) for j in jobs]
 
@@ -107,12 +135,15 @@ def list_jobs_for_project(
 @router.get("/quota", response_model=QuotaStatus)
 def get_quota(
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> QuotaStatus:
-    """Current hourly test-match quota for the caller. Read-only — does not
-    consume a slot. The frontend uses this to render the counter on page load
-    and after the user navigates back from a settings page."""
-    return _quota_status(get_test_match_quota(conn, user.id))
+    """Current test-match quota for the caller. Read-only."""
+    if isinstance(principal, GuestSession):
+        session = get_guest_session(conn, principal.session_id)
+        if session is None:
+            return QuotaStatus(limit=GUEST_TEST_LIMIT, used=0, remaining=GUEST_TEST_LIMIT, next_slot_at=None, window_seconds=0)
+        return _guest_quota_status(session)
+    return _quota_status(get_test_match_quota(conn, principal.id))
 
 
 @router.post("", response_model=TestMatchJob, status_code=status.HTTP_202_ACCEPTED)
@@ -120,26 +151,47 @@ def enqueue(
     body: TestMatchCreate,
     response: Response,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> TestMatchJob:
-    quota = get_test_match_quota(conn, user.id)
-    if quota.used >= quota.limit:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "error": "quota_exceeded",
-                "message": (
-                    f"Hourly test-match limit reached ({quota.limit}). "
-                    "Next slot opens when the oldest match in your window expires."
-                ),
-                **_quota_status(quota).model_dump(),
-            },
-            headers=_quota_headers(quota),
-        )
-
-    player = get_project_meta(conn, body.player_project_id)
-    if player is None or player.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "player project not found")
+    if isinstance(principal, GuestSession):
+        session = get_guest_session(conn, principal.session_id)
+        if session is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "guest session not found")
+        if session.test_count >= GUEST_TEST_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "error": "quota_exceeded",
+                    "message": (
+                        f"Guest test-match limit reached ({GUEST_TEST_LIMIT}). "
+                        "Sign in to keep testing."
+                    ),
+                    **_guest_quota_status(session).model_dump(),
+                },
+            )
+        player = get_project_meta(conn, body.player_project_id)
+        if player is None or str(player.guest_session_id) != str(principal.session_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "player project not found")
+        requested_by = None
+    else:
+        quota = get_test_match_quota(conn, principal.id)
+        if quota.used >= quota.limit:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "error": "quota_exceeded",
+                    "message": (
+                        f"Hourly test-match limit reached ({quota.limit}). "
+                        "Next slot opens when the oldest match in your window expires."
+                    ),
+                    **_quota_status(quota).model_dump(),
+                },
+                headers=_quota_headers(quota),
+            )
+        player = get_project_meta(conn, body.player_project_id)
+        if player is None or player.user_id != principal.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "player project not found")
+        requested_by = principal.id
 
     for opp_id in body.opponent_project_ids:
         opp = get_project_meta(conn, opp_id)
@@ -160,11 +212,14 @@ def enqueue(
         player_project_id=body.player_project_id,
         opponent_project_ids=body.opponent_project_ids,
         sim_args=body.sim_args,
-        requested_by=user.id,
+        requested_by=requested_by,
     )
-    # Re-read quota so the headers reflect the slot we just took.
-    for key, value in _quota_headers(get_test_match_quota(conn, user.id)).items():
-        response.headers[key] = value
+
+    if isinstance(principal, GuestSession):
+        increment_guest_test_count(conn, principal.session_id)
+    else:
+        for key, value in _quota_headers(get_test_match_quota(conn, principal.id)).items():
+            response.headers[key] = value
 
     job = get_test_job(conn, job_id)
     assert job is not None
@@ -175,10 +230,10 @@ def enqueue(
 def get_job(
     job_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> TestMatchJob:
     job = get_test_job(conn, job_id)
-    if job is None or job.requested_by != user.id:
+    if job is None or not _owns_job(conn, job, principal):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
     return _add_names(conn, job)
 
@@ -187,11 +242,11 @@ def get_job(
 def get_bundle_url(
     job_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> dict:
     """Return the URL the browser should fetch to download the match bundle."""
     job = get_test_job(conn, job_id)
-    if job is None or job.requested_by != user.id:
+    if job is None or not _owns_job(conn, job, principal):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
     if job.status != "success" or not job.bundle_key:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "bundle not available yet")
@@ -237,11 +292,11 @@ def update_pin(
 def cancel_job(
     job_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> None:
     """Cancel a queued test match. No-op if it has already started."""
     job = get_test_job(conn, job_id)
-    if job is None or job.requested_by != user.id:
+    if job is None or not _owns_job(conn, job, principal):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
     cancel_queued_test_job(conn, job_id)
 
@@ -250,15 +305,20 @@ def cancel_job(
 async def stream_test_match(
     job_id: int,
     websocket: WebSocket,
-    token: str = Query(..., description="Clerk JWT for authentication"),
+    token: str | None = Query(None, description="Clerk JWT for authenticated users"),
+    session_id: str | None = Query(None, description="Guest session ID for unauthenticated users"),
 ) -> None:
     """Stream the test match: an initial snapshot of current job + build
     status, then live frames (build/status/sim events). Closes on a terminal
     `status` frame so callers don't need to poll."""
     await websocket.accept()
 
+    if not token and not session_id:
+        await websocket.close(code=4001)
+        return
+
     try:
-        user, _job = await asyncio.to_thread(_auth_and_get_job, token, job_id)
+        await asyncio.to_thread(_auth_and_get_job, token, session_id, job_id)
     except HTTPException as exc:
         await websocket.close(code=4000 + (exc.status_code % 1000))
         return
@@ -282,27 +342,52 @@ async def stream_test_match(
 
 # ------------------------------------------------------------------ helpers
 
-def _auth_and_get_job(token: str, job_id: int) -> tuple[User, TestMatchJob]:
-    """Sync helper: verify token and load job from DB. Runs in a thread pool."""
-    claims = decode_token(token)
-    clerk_user_id = claims.get("sub")
-    email = claims.get("email")
-    if not clerk_user_id:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token missing sub claim")
-    if not email:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token missing email claim")
+def _auth_and_get_job(
+    token: str | None, session_id: str | None, job_id: int
+) -> TestMatchJob:
+    """Sync helper: verify credentials and load job from DB. Runs in a thread pool.
 
+    JWT is tried first. If it is invalid/expired and a session_id is also
+    present, we fall through to the guest session path — this mirrors the
+    fallback in get_principal and keeps the WS working during the brief
+    window after Clerk sign-out where a cached token may still be sent.
+    """
     with get_pool().connection() as conn:
-        user = get_or_create_user_by_clerk_id(
-            conn,
-            clerk_user_id=clerk_user_id,
-            email=email,
-            display_name=claims.get("name") or email,
-        )
-        job = get_test_job(conn, job_id)
-        if job is None or job.requested_by != user.id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
-        return user, job
+        if token:
+            try:
+                claims = decode_token(token)
+                clerk_user_id = claims.get("sub")
+                email = claims.get("email")
+                if not clerk_user_id:
+                    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token missing sub claim")
+                if not email:
+                    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token missing email claim")
+                user = get_or_create_user_by_clerk_id(
+                    conn,
+                    clerk_user_id=clerk_user_id,
+                    email=email,
+                    display_name=claims.get("name") or email,
+                )
+                job = get_test_job(conn, job_id)
+                if job is None or job.requested_by != user.id:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
+                return job
+            except HTTPException:
+                if not session_id:
+                    raise
+                # Bad/expired JWT but session_id also present — fall through.
+
+        if session_id:
+            session = get_guest_session(conn, session_id)
+            if session is None:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "guest session not found")
+            job = get_test_job(conn, job_id)
+            player = get_project_meta(conn, job.player_project_id) if job else None
+            if job is None or player is None or str(player.guest_session_id) != str(session.session_id):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "test match job not found")
+            return job
+
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "no valid credentials")
 
 
 _TERMINAL_JOB_STATUSES = {"success", "failure", "cancelled"}

@@ -21,10 +21,19 @@ export interface ProjectFiles {
 export type ProjectSource = "browser" | "external_image";
 export type BuildStatus = "saved" | "building" | "ready" | "failed";
 
+export interface GuestSession {
+  session_id: string;
+  test_count: number;
+  test_limit: number;
+  tests_remaining: number;
+  expires_at: number; // epoch seconds
+}
+
 // ProjectMeta (projects.py) — no code archives.
 export interface ProjectMeta {
   id: number;
-  user_id: number;
+  user_id: number | null;
+  guest_session_id: string | null;
   name: string;
   language: string;
   source: ProjectSource | string;

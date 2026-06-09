@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
-import { useApi, ApiError } from "../api/client";
-import type { LanguageInfo, ProjectFile, ProjectMeta, ProjectSource, QuotaStatus, SubmitQuotaStatus, TestMatchJob } from "../api/types";
+import { useAuth, SignInButton } from "@clerk/clerk-react";
+import { useApi, ApiError, getGuestSessionId } from "../api/client";
+import type { GuestSession, LanguageInfo, ProjectFile, ProjectMeta, ProjectSource, QuotaStatus, SubmitQuotaStatus, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
 import { ImageUploadPanel } from "../components/ImageUploadPanel";
@@ -27,6 +28,7 @@ type MobileTab = "files" | "editor" | "viewer";
 export function EditorPage() {
   const api = useApi();
   const { push } = useToast();
+  const { isSignedIn } = useAuth();
 
   const [languages, setLanguages] = useState<LanguageInfo[]>([]);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
@@ -48,25 +50,37 @@ export function EditorPage() {
   const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
   const [submitQuota, setSubmitQuota] = useState<SubmitQuotaStatus | null>(null);
   const [testQuota, setTestQuota] = useState<QuotaStatus | null>(null);
+  const [guestSession, setGuestSession] = useState<GuestSession | null>(null);
   const isMobile = useIsMobile();
 
+  const isGuest = !isSignedIn;
+
   const refreshSubmitQuota = useCallback(() => {
+    if (isGuest) return;
     api.getSubmitQuota().then(setSubmitQuota).catch(() => {});
-  }, [api]);
+  }, [api, isGuest]);
 
   const refreshTestQuota = useCallback(() => {
     api.getTestMatchQuota().then(setTestQuota).catch(() => {});
   }, [api]);
 
+  const refreshGuestSession = useCallback(() => {
+    if (!isGuest) return;
+    api.getGuestSession().then(setGuestSession).catch(() => {});
+  }, [api, isGuest]);
+
   useEffect(() => {
     refreshSubmitQuota();
     refreshTestQuota();
-  }, [refreshSubmitQuota, refreshTestQuota]);
+    refreshGuestSession();
+  }, [refreshSubmitQuota, refreshTestQuota, refreshGuestSession]);
 
-  const submitBlocked =
+  const submitBlocked = isGuest || (
     submitQuota != null &&
-    (submitQuota.hourly.remaining === 0 || submitQuota.daily.remaining === 0);
-  const testBlocked = testQuota != null && testQuota.remaining === 0;
+    (submitQuota.hourly.remaining === 0 || submitQuota.daily.remaining === 0)
+  );
+  const guestTestsExhausted = isGuest && guestSession != null && guestSession.tests_remaining === 0;
+  const testBlocked = guestTestsExhausted || (testQuota != null && testQuota.remaining === 0);
 
   const viewerPanelRef = useRef<ImperativePanelHandle>(null);
   const shortcutSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
@@ -83,18 +97,37 @@ export function EditorPage() {
       .map((f) => f.path),
   );
 
-  // ---- load projects and languages on mount ------------------------------
+  // ---- load projects (and claim any guest session) when auth state settles --
   useEffect(() => {
-    api.getLanguages().then(setLanguages).catch(() => {});
-    api
-      .listProjects()
-      .then((ps) => {
+    // isSignedIn is undefined while Clerk initialises — skip until it resolves.
+    if (isSignedIn === undefined) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      // When the user just signed in, claim any guest session first so the
+      // projects list they see includes any work they did as a guest.
+      if (isSignedIn) {
+        try { await api.claimGuestSession(getGuestSessionId()); } catch { /* best-effort */ }
+      }
+      if (cancelled) return;
+
+      api.getLanguages().then(setLanguages).catch(() => {});
+
+      try {
+        const ps = await api.listProjects();
+        if (cancelled) return;
         setProjects(ps);
         if (ps.length) void selectProject(ps[0].id, ps);
-      })
-      .catch((e) => push(`Failed to load projects: ${e.message}`, "error"));
+      } catch (e) {
+        if (!cancelled) push(`Failed to load projects: ${e instanceof Error ? e.message : String(e)}`, "error");
+      }
+    };
+
+    void run();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isSignedIn]);
 
   const selectProject = useCallback(
     async (id: number, knownList?: ProjectMeta[]) => {
@@ -189,6 +222,11 @@ export function EditorPage() {
         status === "success" ? "Test match finished." : `Test match ${status}.`,
         status === "success" ? "info" : "error",
       );
+      // Refresh project meta so the build-status pill stays accurate even if
+      // the WS build events were missed (e.g. fast match, late WS connect).
+      if (meta) {
+        api.getProject(meta.id).then(setMeta).catch(() => {});
+      }
     }
   };
 
@@ -279,8 +317,9 @@ export function EditorPage() {
       throw e;
     } finally {
       refreshTestQuota();
+      refreshGuestSession();
     }
-  }, [api, meta, onTestMatchEnqueued, push, refreshTestQuota]);
+  }, [api, meta, onTestMatchEnqueued, push, refreshTestQuota, refreshGuestSession]);
 
   const handleTest = async () => {
     if (!meta) return;
@@ -455,7 +494,13 @@ export function EditorPage() {
             className="btn ghost"
             disabled={busy !== "" || testBlocked}
             onClick={handleTest}
-            title={testBlocked ? "Hourly test-match limit reached — see badge for reset time." : undefined}
+            title={
+              guestTestsExhausted
+                ? `Guest test limit reached (${guestSession?.test_limit ?? 10}). Sign in to keep testing.`
+                : testBlocked
+                  ? "Hourly test-match limit reached — see badge for reset time."
+                  : undefined
+            }
           >
             Test
           </button>
@@ -468,7 +513,13 @@ export function EditorPage() {
           >
             ⚙
           </button>
-          <QuotaIndicator status={testQuota} label="tests/hr" />
+          {isGuest ? (
+            <span className="muted" style={{ fontSize: 12 }}>
+              {guestSession ? `${guestSession.tests_remaining}/${guestSession.test_limit} tests left` : null}
+            </span>
+          ) : (
+            <QuotaIndicator status={testQuota} label="tests/hr" />
+          )}
         </>
       )}
 
@@ -500,6 +551,14 @@ export function EditorPage() {
               {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
             </button>
           )}
+          {isGuest ? (
+            <SignInButton mode="modal">
+              <button className="btn primary" title="Sign in to submit your snake to the ranked leaderboard">
+                Sign in to submit
+              </button>
+            </SignInButton>
+          ) : (
+          <>
           <SubmitQuotaIndicator
             hourly={submitQuota?.hourly ?? null}
             daily={submitQuota?.daily ?? null}
@@ -512,6 +571,8 @@ export function EditorPage() {
           >
             {busy === "submit" ? "Submitting…" : "Submit"}
           </button>
+          </>
+          )}
         </>
       )}
     </header>
@@ -602,6 +663,18 @@ export function EditorPage() {
         />
       )}
       {toolbar}
+
+      {isGuest && guestSession && (
+        <div className="guest-banner">
+          <span>
+            Guest session — your project expires in 48 hours.{" "}
+            <SignInButton mode="modal">
+              <button className="btn-link">Sign in</button>
+            </SignInButton>{" "}
+            to keep it permanently and compete on the leaderboard.
+          </span>
+        </div>
+      )}
 
       {/* Render only the layout for the current viewport — mounting both trees
           would mount two MatchViewers (two match WebSockets). */}

@@ -20,11 +20,45 @@ from fastapi.responses import JSONResponse
 from api.db import close_pool, init_pool
 from api.rate_limit import apply_general_rate_limit
 from api.redis import close_redis, init_redis
-from api.routers import users, matches, modes, projects, test_matches, download, leaderboard, webhooks, maps
+from api.routers import users, matches, modes, projects, test_matches, download, leaderboard, webhooks, maps, guest
 from api.routers.projects import stale_upload_cleanup_task
 from api.settings import load_settings, get_settings, Settings
 
 log = logging.getLogger(__name__)
+
+
+async def _guest_cleanup_task() -> None:
+    """Hourly background task: delete expired guest sessions and their artefacts."""
+    import docker as docker_mod
+    from sa_common.db.connection import get_conn
+    from sa_common.db.guest_sessions import collect_and_delete_expired_sessions
+
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            with get_conn(autocommit=True) as conn:
+                image_tags, bundle_keys = collect_and_delete_expired_sessions(conn)
+
+            from api.bundler import get_bundler
+            bundler = get_bundler()
+            for key in bundle_keys:
+                try:
+                    bundler.delete(key)
+                except Exception:
+                    log.warning("failed to delete guest bundle %s", key, exc_info=True)
+
+            if image_tags:
+                try:
+                    d = docker_mod.from_env()
+                    for tag in image_tags:
+                        try:
+                            d.images.remove(tag, force=True)
+                        except Exception:
+                            log.warning("failed to remove guest image %s", tag, exc_info=True)
+                except Exception:
+                    log.warning("docker unavailable for guest image cleanup", exc_info=True)
+        except Exception:
+            log.exception("guest cleanup task failed")
 
 
 @asynccontextmanager
@@ -36,12 +70,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         max_size=settings.pool_max_size,
     )
     init_redis(settings.redis_url)
-    cleanup_task = asyncio.create_task(stale_upload_cleanup_task())
+    upload_task = asyncio.create_task(stale_upload_cleanup_task())
+    guest_task = asyncio.create_task(_guest_cleanup_task())
     log.info("connection pool and Redis pool opened")
     try:
         yield
     finally:
-        cleanup_task.cancel()
+        upload_task.cancel()
+        guest_task.cancel()
         close_pool()
         await close_redis()
         log.info("connection pool and Redis pool closed")
@@ -100,6 +136,7 @@ def create_app() -> FastAPI:
         ]
 
     app.include_router(users.router)
+    app.include_router(guest.router)
     app.include_router(projects.router)
     app.include_router(matches.router)
     app.include_router(modes.router)

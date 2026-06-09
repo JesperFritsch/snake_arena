@@ -29,7 +29,7 @@ export function LiveSimPlayer({
   onBuildStatus,
 }: Props) {
   const api = useApi();
-  const { getToken } = useAuth();
+  const { getToken, isSignedIn } = useAuth();
 
   // Pin the API getter so the live source's effect deps stay minimal.
   const apiRef = useRef(api);
@@ -43,6 +43,7 @@ export function LiveSimPlayer({
     jobId: job.id,
     jobStatus: job.status,
     jobError: job.error,
+    isSignedIn: isSignedIn === true,
     getToken,
     getBundleUrl,
     onJobStatus,

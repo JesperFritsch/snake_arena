@@ -219,3 +219,11 @@ class GroupOut(BaseModel):
     name: str
     description: str | None
     sort_order: int
+
+
+class GuestSessionOut(BaseModel):
+    session_id: str
+    test_count: int
+    test_limit: int
+    tests_remaining: int
+    expires_at: int  # epoch seconds

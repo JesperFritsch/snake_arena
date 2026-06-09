@@ -35,15 +35,18 @@ from psycopg import Connection
 
 
 
+from sa_common.db.guest_sessions import GuestSession
 from sa_common.db.projects import (
     Project,
     ProjectMeta,
     count_projects_for_user,
+    count_projects_for_guest_session,
     create_project,
     delete_project,
     get_project,
     get_project_meta,
     list_projects_for_user,
+    list_projects_for_guest_session,
     pack_files,
     project_name_exists,
     promote_to_submitted,
@@ -58,7 +61,7 @@ from sa_common.db.matches import prune_obsolete_ranked_matches
 from sa_common.db.test_match_jobs import get_bundle_keys_for_project
 from sa_common.db.users import User
 
-from api.auth import get_current_user
+from api.auth import Principal, get_current_user, get_principal
 from api.bundler import get_bundler
 from api.db import get_db
 from api.rate_limit import (
@@ -166,8 +169,21 @@ async def stale_upload_cleanup_task() -> None:
 def _owned_meta(conn: Connection, project_id: int, user: User) -> ProjectMeta:
     meta = get_project_meta(conn, project_id)
     if meta is None or meta.user_id != user.id:
-        # 404 (not 403) so we don't leak which project ids exist.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    return meta
+
+
+def _owned_meta_p(conn: Connection, project_id: int, principal: Principal) -> ProjectMeta:
+    """Ownership check for either a signed-in user or a guest session."""
+    meta = get_project_meta(conn, project_id)
+    if meta is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    if isinstance(principal, GuestSession):
+        if str(meta.guest_session_id) != str(principal.session_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    else:
+        if meta.user_id != principal.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     return meta
 
 
@@ -226,24 +242,41 @@ def _pack(files: list[ProjectFile]) -> bytes:
     return archive
 
 
+_MAX_USER_PROJECTS = 5
+_MAX_GUEST_PROJECTS = 1
+
+
 @router.get("", response_model=list[ProjectMeta])
 def list_my_projects(
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> list[ProjectMeta]:
-    return list_projects_for_user(conn, user.id)
+    if isinstance(principal, GuestSession):
+        return list_projects_for_guest_session(conn, principal.session_id)
+    return list_projects_for_user(conn, principal.id)
 
 
 @router.post("", response_model=ProjectMeta, status_code=status.HTTP_201_CREATED)
 def create(
     body: ProjectCreate,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
     settings: Settings = Depends(get_settings),
 ) -> ProjectMeta:
-    MAX_PROJECTS = 5
-    if count_projects_for_user(conn, user.id) >= MAX_PROJECTS:
-        raise HTTPException(status.HTTP_409_CONFLICT, f"project limit reached ({MAX_PROJECTS} max)")
+    if isinstance(principal, GuestSession):
+        limit = _MAX_GUEST_PROJECTS
+        count = count_projects_for_guest_session(conn, principal.session_id)
+        if body.source == "external_image":
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "sign in to upload external images",
+            )
+    else:
+        limit = _MAX_USER_PROJECTS
+        count = count_projects_for_user(conn, principal.id)
+
+    if count >= limit:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"project limit reached ({limit} max)")
 
     if body.source == "external_image" and body.files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "external_image projects must not include files")
@@ -260,16 +293,18 @@ def create(
         archive = pack_files(template)
     else:
         archive = None
+
     try:
         project_id = create_project(
             conn,
-            user_id=user.id,
             name=body.name,
             language=body.language,
             source=body.source,
             dev_code_archive=archive,
+            user_id=principal.id if isinstance(principal, User) else None,
+            guest_session_id=principal.session_id if isinstance(principal, GuestSession) else None,
         )
-    except Exception as exc:  # UNIQUE (user_id, name), CHECK violations, etc.
+    except Exception as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, f"could not create project: {exc}") from exc
 
     meta = get_project_meta(conn, project_id)
@@ -281,7 +316,7 @@ def create(
 def name_available(
     name: str,
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: Principal = Depends(get_principal),
 ) -> dict:
     """Live check for the new-project dialog. Names are globally unique."""
     trimmed = name.strip()
@@ -313,9 +348,9 @@ async def get_upload_image_quota(
 def get_meta(
     project_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> ProjectMeta:
-    return _owned_meta(conn, project_id, user)
+    return _owned_meta_p(conn, project_id, principal)
 
 
 @router.put("/{project_id}/files", response_model=ProjectMeta)
@@ -323,13 +358,12 @@ def save_files(
     project_id: int,
     body: ProjectFiles,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> ProjectMeta:
-    meta = _owned_meta(conn, project_id, user)
+    meta = _owned_meta_p(conn, project_id, principal)
     if meta.source != "browser":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "only browser projects have editable code")
     if not body.files:
-        # browser projects must keep a non-null dev_code_archive.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "files cannot be empty")
     archive = _pack(body.files)
     save_dev_code(conn, project_id, archive)
@@ -342,14 +376,14 @@ def save_files(
 def get_files(
     project_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> ProjectFiles:
     """Return the project's dev code as a file structure for the editor.
 
     Files that aren't valid UTF-8 come back base64-encoded with encoding set
     accordingly, so the round-trip is lossless for binary assets too.
     """
-    _owned_meta(conn, project_id, user)
+    _owned_meta_p(conn, project_id, principal)
     project: Project | None = get_project(conn, project_id)
     if project is None or project.dev_code_archive is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project has no dev code")
@@ -373,10 +407,10 @@ def get_files(
 def get_submitted_files(
     project_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> ProjectFiles:
     """Return the project's latest submitted code as a file structure (read-only view)."""
-    _owned_meta(conn, project_id, user)
+    _owned_meta_p(conn, project_id, principal)
     project: Project | None = get_project(conn, project_id)
     if project is None or project.submitted_code_archive is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project has no submitted version")
@@ -400,10 +434,10 @@ def get_submitted_files(
 def restore(
     project_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> ProjectMeta:
     """Overwrite dev code with the latest submitted version."""
-    meta = _owned_meta(conn, project_id, user)
+    meta = _owned_meta_p(conn, project_id, principal)
     if meta.source != "browser":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "only browser projects have editable code")
     if not restore_dev_from_submitted(conn, project_id):
@@ -417,11 +451,11 @@ def restore(
 def download_dev_archive(
     project_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> StreamingResponse:
     """Raw .tar.gz download of the dev code — for export/debugging. The editor
     uses GET /files instead."""
-    _owned_meta(conn, project_id, user)
+    _owned_meta_p(conn, project_id, principal)
     project = get_project(conn, project_id)
     if project is None or project.dev_code_archive is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project has no dev code")
@@ -602,9 +636,9 @@ async def submit(
 def delete(
     project_id: int,
     conn: Connection = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> None:
-    _owned_meta(conn, project_id, user)  # 404 if not found or not owned
+    _owned_meta_p(conn, project_id, principal)  # 404 if not found or not owned
     bundle_keys = get_bundle_keys_for_project(conn, project_id)
     delete_project(conn, project_id)
     # Deleting the project cascades to match_participants — any ranked match

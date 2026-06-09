@@ -17,9 +17,6 @@ from sa_common.db.leaderboard import (
 )
 from sa_common.db.mode_groups import get_group
 from sa_common.db.modes import get_mode_by_slug
-from sa_common.db.users import User
-
-from api.auth import get_current_user
 from api.db import get_db
 from api.schemas import (
     GroupLeaderboardEntry,
@@ -34,7 +31,6 @@ router = APIRouter(tags=["leaderboard"])
 def overall_leaderboard(
     limit: int = Query(100, ge=1, le=500),
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> list[OverallLeaderboardEntry]:
     entries = get_overall_leaderboard(conn, limit=limit)
     return [
@@ -57,7 +53,6 @@ def group_leaderboard(
     group: str = Query(..., description="group slug, e.g. solo"),
     limit: int = Query(100, ge=1, le=500),
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> list[GroupLeaderboardEntry]:
     g = get_group(conn, group)
     if g is None:
@@ -83,7 +78,6 @@ def mode_leaderboard(
     mode: str = Query(..., description="mode slug, e.g. multi-4-standard"),
     limit: int = Query(100, ge=1, le=500),
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> list[LeaderboardEntry]:
     m = get_mode_by_slug(conn, mode)
     if m is None:
