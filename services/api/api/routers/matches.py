@@ -51,7 +51,6 @@ def list_matches_for_project(
     ),
     limit: int = Query(20, ge=1, le=100),
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> list[RankedMatchSummary]:
     summaries = list_ranked_matches_for_project(conn, project_id, limit, mode_ids=mode_ids)
     return [
@@ -119,7 +118,6 @@ def get_match_detail(
 def get_match_bundle_url(
     match_id: int,
     conn: Connection = Depends(get_db),
-    _: User = Depends(get_current_user),
 ) -> dict:
     """Return the URL the browser should fetch for a ranked match's bundle.
 
