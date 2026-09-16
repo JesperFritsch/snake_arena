@@ -20,6 +20,7 @@ import type {
   SubmitResult,
   TestMatchCreate,
   TestMatchJob,
+  TestScoreSummary,
   UserOut,
 } from "./types";
 
@@ -150,6 +151,7 @@ export interface ApiClient {
   pinTestMatch(jobId: number, pinned: boolean): Promise<TestMatchJob>;
   cancelTestMatch(jobId: number): Promise<void>;
   getTestMatchBundleUrl(jobId: number): Promise<{ url: string }>;
+  getTestScoreSummary(projectId: number, modeId: number): Promise<TestScoreSummary>;
   listProjectRankedMatches(projectId: number, opts?: { modeIds?: number[]; limit?: number }): Promise<RankedMatchSummary[]>;
   getMatchBundleUrl(matchId: number): Promise<{ url: string }>;
   getTestMatchQuota(): Promise<QuotaStatus>;
@@ -269,6 +271,8 @@ export function useApi(): ApiClient {
         request(g, "POST", `/test-matches/${jobId}/cancel`),
       getTestMatchBundleUrl: (jobId) =>
         request(g, "GET", `/test-matches/${jobId}/bundle-url`),
+      getTestScoreSummary: (projectId, modeId) =>
+        request(g, "GET", `/test-matches/score-summary?player_project_id=${projectId}&mode_id=${modeId}`),
       listProjectRankedMatches: (projectId, opts) => {
         const params = new URLSearchParams({
           project_id: String(projectId),

@@ -52,6 +52,17 @@ CPU_PENALTY: float = 0.40
 # your average on a single hard step, the bank refills at the average."
 PER_STEP_BUDGET_MULTIPLIER: float = 5.0
 
+# Sustained-average CPU budget for matches that don't belong to a mode
+# (test matches). Keep in line with the seeded modes so a test run enforces
+# the same limits a ranked match would.
+DEFAULT_AVG_BUDGET_MS: float = 10.0
+
+
+def per_step_budget_seconds(avg_budget_ms: float) -> float:
+    """Per-step CPU cap (seconds) the runner enforces for `avg_budget_ms`.
+    Single derivation shared by ranked and test runners."""
+    return avg_budget_ms * PER_STEP_BUDGET_MULTIPLIER / 1000.0
+
 
 @dataclass(frozen=True)
 class Category:
@@ -116,6 +127,41 @@ def fraction_of_leader(
         k: max(0.0, min(1.0, leader / v)) if v > 0 else 0.0
         for k, v in values.items()
     }
+
+
+def multi_match_quality(
+    peers: dict[K, dict[str, float]],
+    me: K,
+    categories: list[Category],
+) -> dict[str, float]:
+    """Per-category fraction-of-leader for `me` within one multi match.
+    `peers` holds every participant's raw category values (including
+    `me`). The match quality is the mean of the returned values."""
+    return {
+        cat.name: fraction_of_leader(
+            {k: v[cat.name] for k, v in peers.items()}, cat.direction,
+        )[me]
+        for cat in categories
+    }
+
+
+def solo_match_quality(
+    values: dict[str, float],
+    leader_basis: dict[str, float],
+    categories: list[Category],
+) -> dict[str, float]:
+    """Per-category fraction of a solo match's raw values against the
+    mode's leader basis (best mean raw among eligible agents). The match
+    quality is the mean of the returned values."""
+    out: dict[str, float] = {}
+    for cat in categories:
+        raw = values[cat.name]
+        basis = leader_basis[cat.name]
+        if cat.direction == "higher":
+            out[cat.name] = 0.0 if basis <= 0 else max(0.0, min(1.0, raw / basis))
+        else:
+            out[cat.name] = 0.0 if raw <= 0 else max(0.0, min(1.0, basis / raw))
+    return out
 
 
 def cpu_factor(avg_cpu_ms: float, avg_budget_ms: float) -> float:

@@ -85,6 +85,10 @@ export interface TestMatchJob {
   error: string | null;
   bundle_key: string | null;
   pinned: boolean;
+  mode_id: number | null;       // null = custom config
+  avg_budget_ms: number;
+  score: number | null;         // dev agent's per-match score (quality × cpu_factor)
+  score_breakdown: TestScoreBreakdown | null;
   participant_names: string[];  // [player, opp1, opp2, ...] ordered by seat
   match_number: number | null;  // project-relative sequence number (1 = oldest)
 }
@@ -95,10 +99,30 @@ export interface MapInfo {
   width: number;
 }
 
+// Mirrors sa_common.db.agent_scores.score_test_match.
+export interface TestScoreBreakdown {
+  score: number;
+  quality: number;
+  cpu_factor: number;
+  categories: Record<string, { raw: number; rank: number }>;
+}
+
+// Exactly one of mode_id (ranked mode's config) or sim_args (custom).
 export interface TestMatchCreate {
   player_project_id: number;
   opponent_project_ids: number[];
-  sim_args: { food: number; grid_width?: number; grid_height?: number; map?: string };
+  mode_id?: number;
+  sim_args?: { food: number; grid_width?: number; grid_height?: number; map?: string };
+}
+
+// Mirrors api/schemas.py:TestScoreSummary.
+export interface TestScoreSummary {
+  mode_id: number;
+  window: number;
+  scores: number[];              // newest first
+  rolling_score: number | null;  // null until `window` scored tests exist
+  placement: number | null;
+  ranked_count: number;
 }
 
 export interface PublicProjectSummary {

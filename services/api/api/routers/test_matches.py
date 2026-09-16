@@ -24,12 +24,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocke
 from pydantic import BaseModel
 from psycopg import Connection
 
+from sa_common.db.agent_scores import compute_mode_scores, min_matches
 from sa_common.db.guest_sessions import (
     GuestSession,
     GUEST_TEST_LIMIT,
     get_guest_session,
     increment_guest_test_count,
 )
+from sa_common.db.modes import get_mode
 from sa_common.db.projects import get_project_meta, get_project_names, list_all_submitted
 from sa_common.db.quotas import (
     QuotaWindow,
@@ -43,16 +45,25 @@ from sa_common.db.test_match_jobs import (
     enqueue_test_match_job,
     get_test_job,
     list_test_jobs_for_project,
+    recent_test_scores,
     set_pinned,
     TestMatchJob,
 )
 from sa_common.db.users import User, get_or_create_user_by_clerk_id
+from sa_common.scoring import DEFAULT_AVG_BUDGET_MS
+from sa_common.types import SimArgs
 
 from api.auth import Principal, decode_token, get_current_user, get_principal
 from api.bundler import get_bundler
 from api.db import get_db, get_pool
 from api.redis import get_redis
-from api.schemas import QuotaStatus, TestMatchCreate, PublicProjectSummary
+from api.schemas import (
+    PublicProjectSummary,
+    QuotaStatus,
+    TEST_MATCH_MAX_CUSTOM_OPPONENTS,
+    TestMatchCreate,
+    TestScoreSummary,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/test-matches", tags=["test-matches"])
@@ -132,6 +143,46 @@ def list_jobs_for_project(
     return [_add_names(conn, j) for j in jobs]
 
 
+@router.get("/score-summary", response_model=TestScoreSummary)
+def get_score_summary(
+    player_project_id: int = Query(...),
+    mode_id: int = Query(...),
+    conn: Connection = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+) -> TestScoreSummary:
+    """Rolling test score in a mode and where it would place on that mode's
+    leaderboard."""
+    player = get_project_meta(conn, player_project_id)
+    if isinstance(principal, GuestSession):
+        if player is None or player.guest_session_id != principal.session_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    else:
+        if player is None or player.user_id != principal.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    mode = get_mode(conn, mode_id)
+    if mode is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "mode not found")
+
+    window = min_matches(mode.target_matches_per_version)
+    scores = recent_test_scores(conn, player_project_id, mode_id, window)
+    ranked = [
+        r.score for r in compute_mode_scores(conn, mode_id)
+        if r.score is not None and r.project_id != player_project_id
+    ]
+    rolling = sum(scores) / len(scores) if len(scores) >= window else None
+    placement = (
+        1 + sum(1 for s in ranked if s > rolling) if rolling is not None else None
+    )
+    return TestScoreSummary(
+        mode_id=mode_id,
+        window=window,
+        scores=scores,
+        rolling_score=rolling,
+        placement=placement,
+        ranked_count=len(ranked),
+    )
+
+
 @router.get("/quota", response_model=QuotaStatus)
 def get_quota(
     conn: Connection = Depends(get_db),
@@ -193,6 +244,28 @@ def enqueue(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "player project not found")
         requested_by = principal.id
 
+    if body.mode_id is not None:
+        mode = get_mode(conn, body.mode_id)
+        if mode is None or not mode.enabled:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "mode not found")
+        needed = mode.participant_count - 1
+        if len(body.opponent_project_ids) != needed:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"mode {mode.name} needs exactly {needed} opponent(s)",
+            )
+        sim_args = SimArgs.model_validate(mode.sim_args)
+        avg_budget_ms = mode.avg_budget_ms
+    else:
+        assert body.sim_args is not None  # schema guarantees one of the two
+        if len(body.opponent_project_ids) > TEST_MATCH_MAX_CUSTOM_OPPONENTS:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"custom test matches allow at most {TEST_MATCH_MAX_CUSTOM_OPPONENTS} opponents",
+            )
+        sim_args = body.sim_args
+        avg_budget_ms = DEFAULT_AVG_BUDGET_MS
+
     for opp_id in body.opponent_project_ids:
         opp = get_project_meta(conn, opp_id)
         if opp is None or opp.submitted_version == 0:
@@ -211,7 +284,9 @@ def enqueue(
         conn,
         player_project_id=body.player_project_id,
         opponent_project_ids=body.opponent_project_ids,
-        sim_args=body.sim_args,
+        sim_args=sim_args,
+        avg_budget_ms=avg_budget_ms,
+        mode_id=body.mode_id,
         requested_by=requested_by,
     )
 

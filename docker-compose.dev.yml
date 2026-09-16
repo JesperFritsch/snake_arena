@@ -1,0 +1,43 @@
+# docker-compose.dev.yml — local dev overrides layered on docker-compose.yml.
+#
+# Replaces R2 with the nginx WebDAV file-server: runners PUT bundles to
+# http://file-server/upload, nginx stores them under ./sim-artifacts and
+# serves them (with CORS) on 127.0.0.1:8081 for the browser.
+#
+# The API runs on the host in dev and reaches the same file-server via
+# localhost:8081 (see .env.dev). The runners are containers, so their
+# upload/read URLs use the compose hostname and are set here instead.
+#
+# Normally started via scripts/dev_start.sh, which runs:
+#   docker compose --env-file .env.dev -f docker-compose.yml -f docker-compose.dev.yml up -d ...
+
+x-dev-bundler-env: &dev-bundler-env
+  BUNDLER_BACKEND:   http
+  BUNDLE_UPLOAD_URL: http://file-server/upload
+  BUNDLE_READ_URL:   http://file-server
+
+services:
+  file-server:
+    image: nginx:alpine
+    container_name: snake-arena-files
+    restart: unless-stopped
+    # Pre-create top-level bucket dirs so create_full_put_path only needs to
+    # create one level deep (the per-job/match subdirectory).
+    command: ["/bin/sh", "-c", "mkdir -p /srv/files/matches /srv/files/test-matches && chown -R nginx:nginx /srv/files && exec nginx -g 'daemon off;'"]
+    volumes:
+      - ./sim-artifacts:/srv/files
+      - ./nginx-files.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8081:80"
+
+  test-runner:
+    environment:
+      <<: *dev-bundler-env
+    depends_on:
+      - file-server
+
+  match-runner:
+    environment:
+      <<: *dev-bundler-env
+    depends_on:
+      - file-server

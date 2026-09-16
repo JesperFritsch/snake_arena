@@ -42,7 +42,8 @@ from sa_common.scoring import (
     ScoringKind,
     categories_for,
     cpu_factor,
-    fraction_of_leader,
+    multi_match_quality,
+    solo_match_quality,
 )
 
 
@@ -71,7 +72,7 @@ class _Participation:
     avg_cpu_ms: float                    # this project's avg_cpu_ms in this match
 
 
-def _min_matches(target: int) -> int:
+def min_matches(target: int) -> int:
     """Eligibility threshold: must have played at least this many ranked
     success matches at the current submitted version to get a non-None
     aggregate score."""
@@ -196,7 +197,7 @@ def compute_mode_scores(
     """
     kind, target_matches, avg_budget_ms = _fetch_mode(conn, mode_id)
     categories = categories_for(kind)
-    min_required = _min_matches(target_matches)
+    min_required = min_matches(target_matches)
 
     participations = _fetch_participations(conn, mode_id, categories)
     if not participations:
@@ -250,15 +251,11 @@ def _aggregate_multi(
                     f"multi match_id={p.match_id} has {len(p.peers)} participant(s) — "
                     f"multi modes require >= 2"
                 )
-            per_cat_qs: list[float] = []
+            fracs = multi_match_quality(p.peers, p.seat, categories)
             for cat in categories:
-                pop = {seat: peer[cat.name] for seat, peer in p.peers.items()}
-                fracs = fraction_of_leader(pop, cat.direction)
-                own = fracs[p.seat]
-                per_cat_qs.append(own)
-                per_cat_quality_acc[cat.name].append(own)
+                per_cat_quality_acc[cat.name].append(fracs[cat.name])
                 raw_means_acc[cat.name].append(p.category_values[cat.name])
-            match_quality = sum(per_cat_qs) / len(per_cat_qs)
+            match_quality = _mean(list(fracs.values()))
             match_cpu = cpu_factor(p.avg_cpu_ms, avg_budget_ms)
             per_match_finals.append(match_quality * match_cpu)
             per_match_cpu_factors.append(match_cpu)
@@ -286,6 +283,22 @@ def _aggregate_multi(
             category_breakdown=breakdown,
         ))
     return out
+
+
+def _solo_leader_basis(
+    categories: list[Category],
+    per_project_means: dict[int, dict[str, float]],
+    eligible: list[int],
+) -> dict[str, float]:
+    """Leader basis per category, computed over the eligible population
+    only — keeps an unqualified outlier from warping ranks for the rest.
+    Empty when nobody is eligible."""
+    basis: dict[str, float] = {}
+    if eligible:
+        for cat in categories:
+            vals = [per_project_means[pid][cat.name] for pid in eligible]
+            basis[cat.name] = max(vals) if cat.direction == "higher" else min(vals)
+    return basis
 
 
 def _aggregate_solo(
@@ -317,14 +330,7 @@ def _aggregate_solo(
         per_project_means[project_id] = means
 
     eligible = [pid for pid, n in matches_played.items() if n >= min_required]
-
-    # Leader basis per category, computed over the eligible population
-    # only — keeps an unqualified outlier from warping ranks for the rest.
-    leader_basis: dict[str, float] = {}
-    if eligible:
-        for cat in categories:
-            vals = [per_project_means[pid][cat.name] for pid in eligible]
-            leader_basis[cat.name] = max(vals) if cat.direction == "higher" else min(vals)
+    leader_basis = _solo_leader_basis(categories, per_project_means, eligible)
 
     out: list[AgentScoreRow] = []
     for project_id, parts in by_project.items():
@@ -343,17 +349,10 @@ def _aggregate_solo(
 
         if is_eligible and len(eligible) >= 2:
             for p, p_cpu in zip(parts, per_match_cpus):
-                per_cat_qs: list[float] = []
+                fracs = solo_match_quality(p.category_values, leader_basis, categories)
                 for cat in categories:
-                    raw = p.category_values[cat.name]
-                    basis = leader_basis[cat.name]
-                    if cat.direction == "higher":
-                        frac = 0.0 if basis <= 0 else max(0.0, min(1.0, raw / basis))
-                    else:
-                        frac = 0.0 if raw <= 0 else max(0.0, min(1.0, basis / raw))
-                    per_cat_qs.append(frac)
-                    per_cat_quality_acc[cat.name].append(frac)
-                match_quality = sum(per_cat_qs) / len(per_cat_qs)
+                    per_cat_quality_acc[cat.name].append(fracs[cat.name])
+                match_quality = _mean(list(fracs.values()))
                 per_match_finals.append(match_quality * p_cpu)
             score: float | None = _mean(per_match_finals)
         elif is_eligible:
@@ -398,3 +397,78 @@ def get_agent_score(
         if r.project_id == project_id:
             return r
     return None
+
+
+# ---- test matches -----------------------------------------------------------
+
+def score_test_match(
+    conn: psycopg.Connection,
+    participants: list[dict[str, Any]],
+    dev_seat: int,
+    avg_budget_ms: float,
+    mode_id: int | None,
+) -> dict[str, Any] | None:
+    """Score the dev agent's test match with the same per-match formula a
+    ranked match uses. Nothing here is written anywhere ranked queries read.
+
+    `participants` are ParticipantRow dicts (seat, final_length,
+    survival_rank, metrics). With a mode, the mode's scoring kind applies;
+    solo scores against the mode's current leader basis. Without a mode
+    (custom config) only multi-snake matches are scored, since solo has no
+    population to compare against.
+
+    Returns {"score", "quality", "cpu_factor", "categories": {name: {raw,
+    rank}}} or None when the match can't be scored (dev never played, no
+    opponents in a multi match, no eligible ranked agents for solo).
+    """
+    if mode_id is not None:
+        kind, target_matches, _ = _fetch_mode(conn, mode_id)
+    else:
+        kind, target_matches = "multi", 0
+    categories = categories_for(kind)
+
+    rows = {r["seat"]: {**r, "match_id": None} for r in participants}
+    dev = rows.get(dev_seat)
+    if dev is None or dev["final_length"] is None or "avg_cpu_ms" not in dev["metrics"]:
+        return None
+    values = {
+        seat: {c.name: _category_value(r, c) for c in categories}
+        for seat, r in rows.items()
+        if r["final_length"] is not None and r["survival_rank"] is not None
+    }
+
+    if kind == "multi":
+        if len(values) < 2:
+            return None
+        fracs = multi_match_quality(values, dev_seat, categories)
+    else:
+        if mode_id is None:
+            return None
+        # Same basis the leaderboard uses: eligible agents' mean raw values.
+        by_project: dict[int, list[_Participation]] = {}
+        for p in _fetch_participations(conn, mode_id, categories):
+            by_project.setdefault(p.project_id, []).append(p)
+        min_required = min_matches(target_matches)
+        means = {
+            pid: {c.name: _mean([p.category_values[c.name] for p in parts]) for c in categories}
+            for pid, parts in by_project.items()
+        }
+        eligible = [pid for pid, parts in by_project.items() if len(parts) >= min_required]
+        basis = _solo_leader_basis(categories, means, eligible)
+        if not basis:
+            return None
+        fracs = solo_match_quality(values[dev_seat], basis, categories)
+
+    quality = _mean(list(fracs.values()))
+    cpu = cpu_factor(float(dev["metrics"]["avg_cpu_ms"]), avg_budget_ms)
+    breakdown: dict[str, Any] = {
+        c.name: {"raw": values[dev_seat][c.name], "rank": fracs[c.name]}
+        for c in categories
+    }
+    breakdown["cpu_factor"] = {"raw": float(dev["metrics"]["avg_cpu_ms"]), "rank": cpu}
+    return {
+        "score": quality * cpu,
+        "quality": quality,
+        "cpu_factor": cpu,
+        "categories": breakdown,
+    }

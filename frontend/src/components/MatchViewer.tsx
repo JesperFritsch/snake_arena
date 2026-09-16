@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { TestMatchJob } from "../api/types";
+import type { TestMatchJob, TestScoreSummary } from "../api/types";
 import { useApi } from "../api/client";
 import { LiveSimPlayer } from "./LiveSimPlayer";
 
@@ -20,6 +20,15 @@ function formatAgo(iso: string): string {
   if (diff < 3_600_000)     return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000)    return `${Math.floor(diff / 3_600_000)}h ago`;
   return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function scoreTitle(job: TestMatchJob): string {
+  const b = job.score_breakdown;
+  if (!b) return "";
+  const cats = Object.entries(b.categories)
+    .map(([name, v]) => `${name}: ${(v.rank * 100).toFixed(0)}% (raw ${v.raw.toFixed(2)})`)
+    .join("\n");
+  return `quality ${b.quality.toFixed(3)} × cpu ${b.cpu_factor.toFixed(3)}\n${cats}`;
 }
 
 function matchLabel(job: TestMatchJob): string {
@@ -67,6 +76,21 @@ export function MatchViewer({
   const [execTimes, setExecTimes]       = useState<Record<string, number> | null>(null);
 
   const activeJob = matchTabs.find((t) => t.id === activeTabId) ?? null;
+  const [scoreSummary, setScoreSummary] = useState<TestScoreSummary | null>(null);
+
+  // Rolling score + leaderboard estimate for the active job's mode. Refetched
+  // when the job lands a new score, so it tracks improvements live.
+  const summaryModeId = activeJob?.mode_id ?? null;
+  const activeScore = activeJob?.score ?? null;
+  useEffect(() => {
+    setScoreSummary(null);
+    if (!projectId || summaryModeId == null) return;
+    let cancelled = false;
+    api.getTestScoreSummary(projectId, summaryModeId)
+      .then((s) => { if (!cancelled) setScoreSummary(s); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [api, projectId, summaryModeId, activeScore]);
   const pinnedCount = historyJobs.filter((j) => j.pinned).length;
 
   // ── Watch container width ─────────────────────────────────────────────────
@@ -263,6 +287,22 @@ export function MatchViewer({
             {activeJob.status}
           </span>
         )}
+        {activeJob?.score != null && (
+          <span className="muted" style={{ fontSize: 12 }} title={scoreTitle(activeJob)}>
+            score <b>{activeJob.score.toFixed(3)}</b>
+          </span>
+        )}
+        {scoreSummary && scoreSummary.scores.length > 0 && (
+          <span
+            className="muted"
+            style={{ fontSize: 12 }}
+            title={`Mean of your last ${scoreSummary.window} scored tests in this mode — the number of matches a ranked agent needs before it is placed.`}
+          >
+            {scoreSummary.rolling_score != null
+              ? <>avg {scoreSummary.rolling_score.toFixed(3)} · ≈#{scoreSummary.placement} of {scoreSummary.ranked_count + 1}</>
+              : <>{scoreSummary.scores.length}/{scoreSummary.window} tests for estimate</>}
+          </span>
+        )}
         <span className="spacer" />
         {activeJob?.status === "queued" && (
           <button
@@ -410,6 +450,11 @@ function HistoryRow({ job, pinBusy, canPin, onOpen, onPinToggle }: HistoryRowPro
       <span className="mv-history-id">{`#${job.match_number ?? job.id}`}</span>
       <span className="mv-history-runid">{job.id}</span>
       <span className="mv-history-time muted">{formatAgo(job.requested_at)}</span>
+      {job.score != null && (
+        <span className="muted" style={{ fontSize: 12, fontFamily: "monospace" }} title={scoreTitle(job)}>
+          {job.score.toFixed(3)}
+        </span>
+      )}
       <button
         className="btn ghost mv-history-btn"
         title="Open in this tab"

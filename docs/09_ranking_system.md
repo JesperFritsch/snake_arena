@@ -99,15 +99,27 @@ poor-playing agent still loses on quality.
 
 ### Test matches and scoring
 
-Test matches (`is_test = TRUE`, `mode_id IS NULL`) are **not scored**
-today. The scorer's claim query filters `mode_id IS NOT NULL` so it never
-touches them, and `test_runner_daemon` doesn't compute scores either.
+A test match runs either with a ranked **mode** (`test_match_jobs.mode_id`
+set; the mode's `sim_args` and `avg_budget_ms` are snapshotted onto the job,
+and exactly `participant_count - 1` opponents are required) or a **custom**
+config (`mode_id` NULL, `DEFAULT_AVG_BUDGET_MS`). Both go through
+`orchestrator.match_policy.run_match_kwargs`, so budgets and end rules match
+ranked play.
 
-When test-match scoring is added for dev-agent feedback in the UI, it must
-land on a dedicated `test_match_jobs` column (e.g. `scores JSONB`) —
-physically separate from ranked match scoring (`match_participants.metrics`).
-Sharing the storage location relies on every leaderboard query remembering
-`is_test = FALSE`; a separate column makes leakage impossible.
+The test runner scores the dev agent with the same per-match formula
+(`sa_common.scoring.multi_match_quality` / `solo_match_quality` ×
+`cpu_factor`) via `agent_scores.score_test_match`:
+
+- multi: within-match fraction of leader — self-contained, also for custom
+  configs with opponents.
+- solo: fraction of the mode's current leader basis (eligible ranked
+  agents' mean raw). Custom solo tests aren't scored.
+
+Scores land on `test_match_jobs.score` / `score_breakdown` only — physically
+separate from ranked scoring (`match_participants`), and `matches.mode_id`
+stays NULL for test matches — so leaderboard queries can't pick them up.
+`GET /test-matches/score-summary` averages the last `min_matches(target)`
+scored tests in a mode and estimates the placement among ranked agents.
 
 ---
 

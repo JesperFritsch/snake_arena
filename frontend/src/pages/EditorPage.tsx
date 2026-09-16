@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { useAuth, SignInButton } from "@clerk/clerk-react";
 import { useApi, ApiError, getGuestSessionId } from "../api/client";
-import type { GuestSession, LanguageInfo, ProjectFile, ProjectMeta, ProjectSource, QuotaStatus, SubmitQuotaStatus, TestMatchJob } from "../api/types";
+import type { GuestSession, LanguageInfo, ProjectFile, ProjectMeta, ProjectSource, QuotaStatus, SubmitQuotaStatus, TestMatchCreate, TestMatchJob } from "../api/types";
 import { FileTree } from "../components/FileTree";
 import { CodeEditor } from "../components/CodeEditor";
 import { ImageUploadPanel } from "../components/ImageUploadPanel";
@@ -295,21 +295,24 @@ export function EditorPage() {
 
   const runTestMatch = useCallback(async (settings: TestSettings) => {
     if (!meta) return;
-    const sim_args: { food: number; grid_width?: number; grid_height?: number; map?: string } = { food: settings.food };
-    if (settings.arenaMode === "map" && settings.map) {
-      sim_args.map = settings.map;
+    const body: TestMatchCreate = {
+      player_project_id: meta.id,
+      opponent_project_ids: settings.opponentIds,
+    };
+    if (settings.modeId != null) {
+      body.mode_id = settings.modeId;
     } else {
-      const w = parseInt(settings.gridWidth);
-      const h = parseInt(settings.gridHeight);
-      sim_args.grid_width = w;
-      sim_args.grid_height = h;
+      const sim_args: NonNullable<TestMatchCreate["sim_args"]> = { food: settings.food };
+      if (settings.arenaMode === "map" && settings.map) {
+        sim_args.map = settings.map;
+      } else {
+        sim_args.grid_width = parseInt(settings.gridWidth);
+        sim_args.grid_height = parseInt(settings.gridHeight);
+      }
+      body.sim_args = sim_args;
     }
     try {
-      const job = await api.enqueueTestMatch({
-        player_project_id: meta.id,
-        opponent_project_ids: settings.opponentIds,
-        sim_args,
-      });
+      const job = await api.enqueueTestMatch(body);
       saveTestSettings(meta.id, settings);
       onTestMatchEnqueued(job);
     } catch (e) {
@@ -333,14 +336,17 @@ export function EditorPage() {
       await runTestMatch(saved);
     } catch (e) {
       // Toast already shown by runTestMatch. Only fall back into the settings
-      // dialog when the failure is settings-related (stale opponent IDs after
-      // a project was deleted / DB reset). Other errors — e.g. 409 because a
-      // match is already queued — should not pop the dialog.
-      const staleOpponent =
-        e instanceof ApiError && e.status === 404 && /opponent/i.test(e.detail);
-      if (staleOpponent) {
-        saveTestSettings(meta.id, { ...saved, opponentIds: [] });
-        setTestDialogOpen(true);
+      // dialog when the failure is settings-related: stale opponent IDs after
+      // a project was deleted / DB reset, a mode that was disabled, or an
+      // opponent count that no longer fits the mode. Other errors — e.g. 409
+      // because a match is already queued — should not pop the dialog.
+      if (e instanceof ApiError) {
+        if (e.status === 404 && /opponent/i.test(e.detail)) {
+          saveTestSettings(meta.id, { ...saved, opponentIds: [] });
+          setTestDialogOpen(true);
+        } else if ((e.status === 404 || e.status === 422) && /mode/i.test(e.detail)) {
+          setTestDialogOpen(true);
+        }
       }
     }
   };

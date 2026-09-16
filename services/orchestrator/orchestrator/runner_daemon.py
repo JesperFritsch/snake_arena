@@ -44,7 +44,6 @@ from sa_common.db.matches import record_match_result
 from sa_common.db.modes import get_mode
 from sa_common.db.connection import get_conn
 from sa_common.db.projects import mark_submitted_crashed
-from sa_common.scoring import PER_STEP_BUDGET_MULTIPLIER
 from sa_common.types import SimArgs
 
 from snake_sim.loop_observers.file_persist_observer import FilePersistObserver
@@ -52,6 +51,7 @@ from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from orchestrator.agents import SetupError, resolve_agents
 from orchestrator.bundle import assemble_bundle
+from orchestrator.match_policy import run_match_kwargs
 
 log = logging.getLogger(__name__)
 
@@ -98,16 +98,9 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
 
     try:
         sim_args = SimArgs.model_validate(job.sim_args)
-        # Mode owns the sustained-average CPU budget; the per-step peak the
-        # runner enforces is derived as avg × PER_STEP_BUDGET_MULTIPLIER. The
-        # bundle captures the actual enforced per-step value for the scorer
-        # to read back.
         mode = get_mode(conn, job.mode_id)
         if mode is None:
             raise SetupError(f"job {job.id} references missing mode_id={job.mode_id}")
-        per_step_budget_seconds = (
-            mode.avg_budget_ms * PER_STEP_BUDGET_MULTIPLIER / 1000.0
-        )
         setup = resolve_agents(conn, job.project_ids)
         # --- The match itself: no transaction, no row locks held ---
         result = run_match(
@@ -118,24 +111,8 @@ def run_one_iteration(conn: psycopg.Connection, config: RunnerDaemonConfig) -> b
             runner_id=config.runner_id,
             router=config.router,
             d_client=config.d_client,
-            per_step_budget_seconds=per_step_budget_seconds,
             extra_observers=[file_observer],
-            # Multi matches end once one snake is alive AND longest — shortens
-            # the long tail without making suicide a winning move (a suicidal
-            # snake locks in its length at death). MUST NOT be passed for solo
-            # modes: with one snake total, it is trivially both "last standing"
-            # and "longest" from step 0, so the rule fires immediately and the
-            # match ends without ever moving.
-            end_on_last_standing_when_longest=mode.participant_count > 1,
-            # Once "alone AND longest" first holds, give the survivor this many
-            # extra steps to actually grow length. Without the buffer the rule
-            # fires the moment the survivor edges past the longest dead snake
-            # (often just 1 apple ahead), so a smart snake gets no time to
-            # demonstrate length over short-lived opponents. None for solo
-            # (companion flag isn't set there either).
-            end_on_last_standing_buffer_steps=(
-                200 if mode.participant_count > 1 else None
-            ),
+            **run_match_kwargs(mode.avg_budget_ms, mode.participant_count),
         )
 
         # Quarantine any submitted image that failed the gRPC probe. The

@@ -70,7 +70,7 @@ The full schema lives in `migrations/001.sql`. Key tables:
 
 **`match_jobs`** — Ranked match queue. `project_ids` (array) is resolved to current submitted images at dispatch time, not at enqueue time. `FOR UPDATE SKIP LOCKED` for concurrent orchestrator safety.
 
-**`test_match_jobs`** — Dev test match queue. `player_project_id` uses `dev_image_tag`; `opponent_project_ids` use their `submitted_image_tag`. `bundle_key` on this row (not on `matches`) because test bundles are pruned independently. `pinned = TRUE` prevents pruning.
+**`test_match_jobs`** — Dev test match queue. `player_project_id` uses `dev_image_tag`; `opponent_project_ids` use their `submitted_image_tag`. `bundle_key` on this row (not on `matches`) because test bundles are pruned independently. `pinned = TRUE` prevents pruning. `mode_id` (NULL = custom config) plus the `sim_args` / `avg_budget_ms` snapshot hold the config that was run; `score` / `score_breakdown` hold the dev agent's test score (see `09_ranking_system.md`).
 
 ### `seat` vs `project_id` — cross-match identity
 

@@ -44,6 +44,7 @@ from sa_common.db.test_match_jobs import (
     mark_test_job_success,
     prune_unpinned_test_jobs,
 )
+from sa_common.db.agent_scores import score_test_match
 from sa_common.db.matches import record_match_result
 from sa_common.db.connection import get_conn
 from sa_common.types import ParticipantRow, SimArgs
@@ -53,6 +54,7 @@ from snake_sim.analyze.scripts.run_analyzer import analyze
 
 from orchestrator.agents import SetupError, resolve_test_agents
 from orchestrator.bundle import assemble_bundle
+from orchestrator.match_policy import run_match_kwargs
 from orchestrator.redis_observer import RedisStreamObserver
 
 log = logging.getLogger(__name__)
@@ -75,7 +77,6 @@ class TestRunnerDaemonConfig:
         redis_url: str = "redis://localhost:6379",
         registry_prefix: str = "snake",
         build_timeout_s: int = 60,
-        test_per_step_budget_seconds: float = 0.025,
     ):
         self.sim_image = sim_image
         self.bundler = bundler
@@ -85,11 +86,6 @@ class TestRunnerDaemonConfig:
         self.redis_url = redis_url
         self.registry_prefix = registry_prefix
         self.build_timeout_s = build_timeout_s
-        # Test matches don't belong to a mode, so the budget can't be looked
-        # up from the modes table — use this default. The bundle still
-        # captures whatever was actually enforced so the in-process scoring
-        # in run_one_iteration reads the right value.
-        self.test_per_step_budget_seconds = test_per_step_budget_seconds
         self.d_client = docker.from_env()
         self.router = router_from_env(self.d_client)
 
@@ -138,18 +134,17 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         except Exception:
             log.warning("failed to persist dev-build verdict for job id=%d", job.id, exc_info=True)
         observer.publish_build(verdict)
-        if observer.step_count == 0 and result.dev_agent_step_logs:
-            observer.publish_step_log(0, result.dev_agent_step_logs[0])
-        # Live viewers don't reload `agent_logs.json` after the match ends,
-        # so the kill banner (added to dev_agent_step_logs at end-of-match by
-        # the runner) wouldn't reach them otherwise. Re-publish the entry
-        # carrying the banner as a step_log so it lands in the store at the
-        # right step index. Idempotent with the line above for startup kills.
+        # Live viewers don't reload `agent_logs.json` after the match ends, so
+        # anything the live streamer couldn't send has to go out here. The
+        # streamer only emits a chunk once the harness prints the step
+        # separator, which never happens for output from an update() that
+        # crashed, or from a crash before the first step. The runner also
+        # appends the budget-kill banner at end of match. All of those sit
+        # past the last streamed chunk.
         if result.dev_agent_step_logs is not None:
-            for step, log_text in enumerate(result.dev_agent_step_logs):
-                if log_text and log_text.startswith("=== Agent killed"):
-                    observer.publish_step_log(step, log_text)
-                    break
+            first_unsent = observer.step_logs_published
+            for step in range(first_unsent, len(result.dev_agent_step_logs)):
+                observer.publish_step_log(step, result.dev_agent_step_logs[step])
         observer.publish_stop()
 
     try:
@@ -201,8 +196,11 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
             runner_id=config.runner_id,
             router=config.router,
             d_client=config.d_client,
-            per_step_budget_seconds=config.test_per_step_budget_seconds,
             extra_observers=[observer, file_observer],
+            # Budget was resolved at enqueue (the mode's, or the default for
+            # a custom config); budgets and end rules go through the same
+            # helper as ranked so a test judges the agent the same way.
+            **run_match_kwargs(job.avg_budget_ms, len(setup.specs)),
             on_step_log=observer.publish_step_log,
             on_exec_times=observer.publish_exec_time,
             on_result=on_match_result,
@@ -277,12 +275,27 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
         except Exception:
             log.warning("failed to store bundle for job id=%d", job.id, exc_info=True)
 
+        # Same per-match formula as ranked scoring, stored only on the job
+        # row. A scoring failure must not lose the match.
+        score = None
+        if participants:
+            try:
+                score = score_test_match(
+                    conn,
+                    [p.model_dump() for p in participants],
+                    dev_seat=0,
+                    avg_budget_ms=job.avg_budget_ms,
+                    mode_id=job.mode_id,
+                )
+            except Exception:
+                log.warning("failed to score test job id=%d", job.id, exc_info=True)
+
         with conn.transaction():
             match_id = record_match_result(
                 conn,
                 match_uuid=match_uuid,
                 status="success" if result.success else "failure",
-                mode_id=None,                       # test matches have no mode
+                mode_id=None,  # always NULL for tests: ranked queries key on mode_id; the mode lives on the job row
                 sim_args=sim_args,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
@@ -294,16 +307,15 @@ def run_one_iteration(conn: psycopg.Connection, config: TestRunnerDaemonConfig) 
                 participants=participants,
                 is_test=True,
             )
-            # Test matches are NOT scored. When the UI needs a score for
-            # dev-agent feedback, store it on a dedicated test_match_jobs
-            # column (or a scores JSONB) — separate from ranked
-            # match_participants.metrics so there's no leaderboard-leakage
+            # The test score lives on test_match_jobs only — never in
+            # match_participants.metrics — so there's no leaderboard-leakage
             # risk via a future query that forgets `is_test = FALSE`.
             mark_test_job_success(
                 conn,
                 job.id,
                 match_id,
                 bundle_key=saved_key,
+                score=score,
             )
             pruned_keys = prune_unpinned_test_jobs(conn, job.player_project_id)
         _delete_pruned_bundles(config.bundler, pruned_keys)

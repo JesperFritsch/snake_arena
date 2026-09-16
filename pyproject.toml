@@ -9,6 +9,10 @@ dependencies = []
 
 [tool.uv]
 package = false
+# snake_sim regenerates its protobuf gencode at build time with whatever
+# grpcio-tools its build env resolves. Pin it to the locked runtime's version
+# so the gencode is never newer than the protobuf runtime in uv.lock.
+build-constraint-dependencies = ["grpcio-tools==1.80.0"]
 
 [tool.uv.workspace]
 members = ["services/*"]

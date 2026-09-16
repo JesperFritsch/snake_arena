@@ -12,7 +12,13 @@ resource usage during a match. There are exactly five enforcement rules:
 | Sustained wall bank           | notify_step    | Long-run "excess wall" per step                     | Sleep-just-under-the-per-step-line over many steps                   |
 | Snake-died check              | notify_step    | —                                                   | In-game death; not a budget violation, just cleans up the container  |
 
-The configured values in `match.py`:
+Every value below is derived in `match.py` from one per-step CPU budget,
+which `orchestrator/match_policy.py:run_match_kwargs` computes as
+`avg_budget_ms × PER_STEP_BUDGET_MULTIPLIER`. Ranked matches use their
+mode's `avg_budget_ms`; test matches have no mode and use
+`sa_common.scoring.DEFAULT_AVG_BUDGET_MS`. Both runners go through the same
+helper, so a test run enforces exactly what a ranked match would. With the
+seeded 10 ms average:
 
 ```
 per_step_cpu_budget_seconds       = 0.05    # 50 ms CPU per step
@@ -216,6 +222,11 @@ notify_start**: when the sim publishes its `snake_tags`, the manager
 reads each container's current cgroup CPU and compares to the baseline
 captured at `set_agent_containers`. Over-budget seats are killed with
 reason `startup_cpu`.
+
+Only CPU burned *after* the gRPC port is ready counts. Runtimes with
+heavy first-call costs should pay them before binding the port — the Java
+harness drives the full RPC sequence through a throwaway loopback server
+before it binds 50051.
 
 No continuous startup monitoring during the init handshake itself —
 the gRPC channel-ready timeout (typically 10 s, set in `match.py`) is

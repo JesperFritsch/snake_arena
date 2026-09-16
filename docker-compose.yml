@@ -63,7 +63,8 @@ services:
       BUILDER_BUILD_TIMEOUT_S:  "60"
       SANDBOX_IMAGES_DIR:       /app/sandbox-images
     env_file:
-      - .env  # for STEP_CPU_BUDGET_MS and any other overrides
+      - path: .env
+        required: false
     volumes:
       - *vol-docker-sock
       - *vol-cgroup
@@ -83,7 +84,8 @@ services:
     environment:
       <<: [*orchestrator-env, *bundler-env]
     env_file:
-      - .env  # for RANKED_MATCH_STEP_CPU_BUDGET_MS and any other overrides
+      - path: .env
+        required: false
     volumes:
       - *vol-docker-sock
       - *vol-cgroup

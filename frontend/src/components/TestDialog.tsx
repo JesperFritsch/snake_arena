@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApi, ApiError, BASE_URL } from "../api/client";
-import type { LanguageInfo, MapInfo, ProjectMeta, PublicProjectSummary, QuotaStatus } from "../api/types";
+import type { LanguageInfo, MapInfo, Mode, ProjectMeta, PublicProjectSummary, QuotaStatus } from "../api/types";
 import { fmtLang } from "../lib/editor";
 import { QuotaIndicator } from "./QuotaIndicator";
 import { useToast } from "./Toast";
 
-const MAX_OPPONENTS = 4;
+// Custom configs only; a mode needs exactly participant_count - 1.
+const MAX_CUSTOM_OPPONENTS = 4;
 const MIN_GRID = 5;
 const MAX_GRID = 20;
 
 export interface TestSettings {
+  // Ranked mode to test with; null (or missing in older saved settings)
+  // means the custom config below.
+  modeId?: number | null;
   food: number;
   arenaMode: "custom" | "map";
   gridWidth: string;
@@ -30,6 +34,7 @@ export function saveTestSettings(pid: number, s: TestSettings): void {
 }
 
 const DEFAULT_SETTINGS: TestSettings = {
+  modeId: null,
   food: 3,
   arenaMode: "custom",
   gridWidth: String(MIN_GRID),
@@ -55,6 +60,8 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
 
   const [opponents, setOpponents]     = useState<PublicProjectSummary[]>([]);
   const [maps, setMaps]               = useState<MapInfo[]>([]);
+  const [modes, setModes]             = useState<Mode[]>([]);
+  const [modeId, setModeId]           = useState<number | null>(init.modeId ?? null);
   const [counts, setCounts]           = useState<Record<number, number>>(() => {
     const c: Record<number, number> = {};
     for (const id of init.opponentIds) c[id] = (c[id] ?? 0) + 1;
@@ -73,10 +80,14 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
     Promise.all([
       api.listOpponents(),
       api.listMaps(),
+      api.getModes(),
     ])
-      .then(([opps, mapList]) => {
+      .then(([opps, mapList, modeList]) => {
         setOpponents(opps);
         setMaps(mapList);
+        setModes(modeList);
+        // Saved mode was disabled or removed — fall back to custom.
+        setModeId((id) => (id != null && modeList.some((m) => m.id === id) ? id : null));
       })
       .catch((e) => push(`Could not load data: ${e instanceof ApiError ? e.detail : e}`, "error"))
       .finally(() => setLoading(false));
@@ -84,6 +95,11 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
   }, []);
 
   const totalSelected = Object.values(counts).reduce((a, b) => a + b, 0);
+  const mode = modes.find((m) => m.id === modeId) ?? null;
+  const maxOpponents = mode ? mode.participant_count - 1 : MAX_CUSTOM_OPPONENTS;
+  // Solo modes have no opponents: hide the picker and ignore any selection
+  // kept from the custom config (it comes back when switching to custom).
+  const soloMode = mode != null && maxOpponents === 0;
 
   const { minFood, maxFood } = useMemo(() => {
     let w: number, h: number;
@@ -109,7 +125,7 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
   const adjust = (id: number, delta: number) => {
     setCounts((prev) => {
       const total = Object.values(prev).reduce((a, b) => a + b, 0);
-      if (delta > 0 && total >= MAX_OPPONENTS) return prev;
+      if (delta > 0 && total >= maxOpponents) return prev;
       const next = Math.max(0, (prev[id] ?? 0) + delta);
       return { ...prev, [id]: next };
     });
@@ -131,7 +147,12 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
   });
 
   const run = async () => {
-    if (arenaMode === "custom") {
+    if (mode) {
+      if (!soloMode && totalSelected !== maxOpponents) {
+        push(`${mode.name} needs exactly ${maxOpponents} opponent${maxOpponents === 1 ? "" : "s"}.`, "error");
+        return;
+      }
+    } else if (arenaMode === "custom") {
       const w = parseInt(gridWidth);
       const h = parseInt(gridHeight);
       const hasW = gridWidth !== "" && !isNaN(w);
@@ -151,8 +172,11 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
       }
     }
 
-    const opponentIds = Object.entries(counts).flatMap(([id, n]) => Array<number>(n).fill(Number(id)));
+    const opponentIds = soloMode
+      ? []
+      : Object.entries(counts).flatMap(([id, n]) => Array<number>(n).fill(Number(id)));
     const settings: TestSettings = {
+      modeId: mode?.id ?? null,
       food,
       arenaMode,
       gridWidth,
@@ -185,8 +209,34 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
         </div>
 
         <div className="modal-body">
-          <div className="modal-section-label">
-            Opponents <span className="muted">({totalSelected}/{MAX_OPPONENTS} selected)</span>
+          <div className="modal-section-label">Game mode</div>
+          <div className="form-row">
+            <select
+              className="select"
+              value={modeId ?? ""}
+              disabled={loading}
+              onChange={(e) => setModeId(e.target.value === "" ? null : Number(e.target.value))}
+            >
+              <option value="">Custom</option>
+              {modes.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.participant_count === 1 ? "solo" : `${m.participant_count} players`})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            {mode
+              ? <>Same config and {mode.avg_budget_ms} ms avg CPU budget as ranked matches. Scored like ranked matches.</>
+              : <>Your own settings with the default CPU budget. Scored only when you add opponents; no leaderboard estimate.</>}
+          </div>
+
+          {!soloMode && (<>
+          <div className="modal-section-label" style={{ marginTop: 16 }}>
+            Opponents{" "}
+            <span className="muted" style={mode && totalSelected !== maxOpponents ? { color: "var(--red)" } : undefined}>
+              ({totalSelected}/{maxOpponents} {mode ? "required" : "selected"})
+            </span>
           </div>
           {loading ? (
             <span className="muted">loading…</span>
@@ -204,7 +254,7 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
               <div className="check-list">
                 {filteredOpponents.map((p) => {
                   const count = counts[p.id] ?? 0;
-                  const atMax = totalSelected >= MAX_OPPONENTS;
+                  const atMax = totalSelected >= maxOpponents;
                   return (
                     <div key={p.id} className="check-row">
                       <span className="check-name">{p.name}</span>
@@ -226,7 +276,22 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
               </div>
             </>
           )}
+          </>)}
 
+          {mode ? (
+            <>
+              <div className="modal-section-label" style={{ marginTop: 16 }}>Sim settings</div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {mode.description && <div>{mode.description}</div>}
+                <div>
+                  {typeof mode.sim_args.map === "string"
+                    ? `Map ${mode.sim_args.map}`
+                    : `Grid ${String(mode.sim_args.grid_width)}×${String(mode.sim_args.grid_height)}`}
+                  {" · "}food {String(mode.sim_args.food)}
+                </div>
+              </div>
+            </>
+          ) : (<>
           <div className="modal-section-label" style={{ marginTop: 16 }}>Sim settings</div>
           <div className="form-row">
             <label>Food</label>
@@ -320,6 +385,7 @@ export function TestDialog({ project, initialSettings, languages, quota, onClose
               )}
             </div>
           )}
+          </>)}
         </div>
 
         <div className="modal-foot">

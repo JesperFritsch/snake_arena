@@ -36,6 +36,10 @@ class TestMatchJob:
     error: str | None
     bundle_key: str | None
     pinned: bool
+    mode_id: int | None
+    avg_budget_ms: float
+    score: float | None
+    score_breakdown: dict[str, Any] | None
     # Populated by the API layer (join with projects); not stored in this table.
     participant_names: list[str] = field(default_factory=list)
     # Computed via ROW_NUMBER window function; None when not needed.
@@ -45,7 +49,7 @@ class TestMatchJob:
 _JOB_COLUMNS = """
     id, status, player_project_id, opponent_project_ids, sim_args,
     requested_by, requested_at, started_at, finished_at, match_id, error,
-    bundle_key, pinned
+    bundle_key, pinned, mode_id, avg_budget_ms, score, score_breakdown
 """
 
 # Columns for the CTE-based queries that also compute match_number.
@@ -67,6 +71,10 @@ def _row_to_job(row: dict[str, Any]) -> TestMatchJob:
         error=row["error"],
         bundle_key=row["bundle_key"],
         pinned=row["pinned"],
+        mode_id=row["mode_id"],
+        avg_budget_ms=float(row["avg_budget_ms"]),
+        score=row["score"],
+        score_breakdown=row["score_breakdown"],
         match_number=row.get("match_number"),
     )
 
@@ -76,18 +84,28 @@ def enqueue_test_match_job(
     player_project_id: int,
     opponent_project_ids: list[int],
     sim_args: SimArgs,
+    avg_budget_ms: float,
+    mode_id: int | None = None,
     requested_by: int | None = None,
 ) -> int:
-    """Insert a queued test match job. Returns the new job's id."""
+    """Insert a queued test match job. Returns the new job's id.
+
+    `sim_args` and `avg_budget_ms` are the resolved config — the mode's
+    values when `mode_id` is set, the custom config otherwise."""
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO test_match_jobs
-                (player_project_id, opponent_project_ids, sim_args, requested_by)
-            VALUES (%s, %s, %s, %s)
+                (player_project_id, opponent_project_ids, sim_args,
+                 avg_budget_ms, mode_id, requested_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (player_project_id, opponent_project_ids, Jsonb(sim_args.model_dump()), requested_by),
+            (
+                player_project_id, opponent_project_ids,
+                Jsonb(sim_args.model_dump()),
+                avg_budget_ms, mode_id, requested_by,
+            ),
         )
         row = cur.fetchone()
         assert row is not None
@@ -115,7 +133,8 @@ def claim_one_queued_test_job(conn: psycopg.Connection) -> TestMatchJob | None:
             RETURNING
                 j.id, j.status, j.player_project_id, j.opponent_project_ids,
                 j.sim_args, j.requested_by, j.requested_at, j.started_at,
-                j.finished_at, j.match_id, j.error, j.bundle_key, j.pinned
+                j.finished_at, j.match_id, j.error, j.bundle_key, j.pinned,
+                j.mode_id, j.avg_budget_ms, j.score, j.score_breakdown
             """
         )
         row = cur.fetchone()
@@ -127,17 +146,46 @@ def mark_test_job_success(
     job_id: int,
     match_id: int,
     bundle_key: str | None = None,
+    score: dict[str, Any] | None = None,
 ) -> None:
+    """`score` is the dict from agent_scores.score_test_match (or None)."""
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE test_match_jobs
             SET status = 'success', finished_at = NOW(), match_id = %s,
-                bundle_key = %s, error = NULL
+                bundle_key = %s, error = NULL,
+                score = %s, score_breakdown = %s
             WHERE id = %s
             """,
-            (match_id, bundle_key, job_id),
+            (
+                match_id, bundle_key,
+                score["score"] if score else None,
+                Jsonb(score) if score else None,
+                job_id,
+            ),
         )
+
+
+def recent_test_scores(
+    conn: psycopg.Connection,
+    player_project_id: int,
+    mode_id: int,
+    limit: int,
+) -> list[float]:
+    """Scores of the project's most recent scored test matches in a mode,
+    newest first."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT score FROM test_match_jobs
+            WHERE player_project_id = %s AND mode_id = %s AND score IS NOT NULL
+            ORDER BY requested_at DESC, id DESC
+            LIMIT %s
+            """,
+            (player_project_id, mode_id, limit),
+        )
+        return [float(row[0]) for row in cur.fetchall()]
 
 
 def mark_test_job_failure(conn: psycopg.Connection, job_id: int, error: str) -> None:

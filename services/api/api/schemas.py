@@ -25,6 +25,7 @@ from sa_common.types import SimArgs
 # replays small and renderable.
 TEST_MATCH_MIN_GRID = 5
 TEST_MATCH_MAX_GRID = 20
+TEST_MATCH_MAX_CUSTOM_OPPONENTS = 4
 
 
 # ---- project files (the wire form of project code) ------------------------
@@ -61,12 +62,21 @@ class ProjectCreate(BaseModel):
 
 
 class TestMatchCreate(BaseModel):
+    """Either `mode_id` (run with a ranked mode's config) or `sim_args`
+    (custom config) — exactly one. Opponent count is checked in the route:
+    a mode needs exactly participant_count - 1, custom allows up to
+    TEST_MATCH_MAX_CUSTOM_OPPONENTS."""
     player_project_id: int
-    opponent_project_ids: list[int] = Field(default_factory=list, max_length=4)
-    sim_args: SimArgs
+    opponent_project_ids: list[int] = Field(default_factory=list, max_length=16)
+    mode_id: int | None = None
+    sim_args: SimArgs | None = None
 
     @model_validator(mode="after")
     def _cap_grid(self) -> "TestMatchCreate":
+        if (self.mode_id is None) == (self.sim_args is None):
+            raise ValueError("provide exactly one of mode_id or sim_args")
+        if self.sim_args is None:
+            return self
         dims = (self.sim_args.grid_width, self.sim_args.grid_height)
         if any(d is not None for d in dims):
             for d in dims:
@@ -79,6 +89,21 @@ class TestMatchCreate(BaseModel):
 
 
 # ---- responses ------------------------------------------------------------
+
+class TestScoreSummary(BaseModel):
+    """Rolling test score for a project in a mode, next to the leaderboard.
+
+    `window` is the mode's eligibility threshold — the same number of
+    matches a ranked agent needs before it gets a score. `placement` is
+    where `rolling_score` would land among the mode's scored ranked agents
+    (excluding this project's own ranked entry); None until the window is
+    full."""
+    mode_id: int
+    window: int
+    scores: list[float]            # newest first, at most `window`
+    rolling_score: float | None
+    placement: int | None
+    ranked_count: int
 
 class UserOut(BaseModel):
     id: int

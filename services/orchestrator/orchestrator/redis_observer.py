@@ -42,6 +42,10 @@ class RedisStreamObserver(ILoopObserver):
         self.target_by_seat: dict[int, str] | None = None
         self.final_step: int | None = None
         self.step_count = 0
+        # One past the highest step whose stdout chunk has been published.
+        # Lets the orchestrator send, after the match, only the chunks the
+        # live streamer never could (output with no trailing separator).
+        self.step_logs_published = 0
         # True once the dev agent makes it into the match start, i.e. it survived
         # construction + init + the startup budget. This is the signal that the
         # dev build is runnable (submittable).
@@ -81,6 +85,7 @@ class RedisStreamObserver(ILoopObserver):
 
     def publish_step_log(self, step: int, text: str) -> None:
         """Live, per-step dev-agent stdout (called from the runner's streamer)."""
+        self.step_logs_published = max(self.step_logs_published, step + 1)
         self._publish({"type": "step_log", "data": {"step": step, "log": text}})
 
     def publish_exec_time(self, step: int, times: dict[int, float]) -> None:

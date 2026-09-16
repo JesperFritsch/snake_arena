@@ -19,10 +19,17 @@ cd frontend && VITE_API_BASE_URL=https://gridsnake.com/api npm run build && cd .
 # prod
 docker-compose up -d
 
-# dev — api in docker
-docker-compose up -d postgres redis api test-runner && cd frontend && npm run dev
 
-# dev — api on host (with reload)
-docker-compose up -d postgres redis test-runner && API_RELOAD=1 uv run --env-file .env api
-# then in a second terminal:
-cd frontend && npm run dev
+# dev — docker: postgres, redis, file-server, test-runner; host: API (auto-reload) + vite
+
+# env from .env.dev (+ optional gitignored .env.dev.local); bundles go to ./sim-artifacts via file-server on :8081
+
+# requires gVisor (runsc) installed and registered with docker
+
+./scripts/dev_start.sh   
+
+# frontend: http://localhost:5173, API: http://127.0.0.1:8000
+
+# ctrl-c stops API + frontend; docker services keep running
+
+docker compose --env-file .env.dev -f docker-compose.yml -f docker-compose.dev.yml stop
